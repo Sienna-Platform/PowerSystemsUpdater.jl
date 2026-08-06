@@ -55,6 +55,31 @@
         @test PSU.is_skipped(led2, "uuid-dependent")
     end
 
+    @testset "root skip wins over cascade" begin
+        led4 = PSU.Ledger()
+        rep4 = PSU.ConversionReport()
+        ctx4 = PSU.TranslationContext(led4, rep4, 100.0)
+
+        PSU.assign_id!(led4, "uuid-gadget2")
+        raw_gadget2 = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "Gadget"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-gadget2")),
+        )
+        PSU.translate_component(raw_gadget2, ctx4)
+
+        PSU.assign_id!(led4, "uuid-widget2")
+        raw_widget2 = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "Widget"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-widget2")),
+            "area" => Dict("value" => "uuid-gadget2"),
+        )
+        out_widget2 = PSU.translate_component(raw_widget2, ctx4)
+        @test isempty(out_widget2)
+        @test rep4.unmapped_types["Widget"] == 1
+        @test !haskey(rep4.cascaded_skips, "Widget")
+        @test PSU.is_skipped(led4, "uuid-widget2")
+    end
+
     @testset "base_power synthesized only where the model declares it" begin
         led3 = PSU.Ledger()
         rep3 = PSU.ConversionReport()

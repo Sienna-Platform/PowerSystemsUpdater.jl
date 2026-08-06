@@ -26,6 +26,9 @@ and the ledger.
 """
 function translate_component(raw::AbstractDict, ctx::TranslationContext)
     type_name = component_type(raw)
+    if !has_translator(type_name)
+        return translate(Val(Symbol(type_name)), raw, ctx)
+    end
     uuid = component_uuid(raw)
     if references_skipped(raw, ctx.ledger)
         mark_skipped!(ctx.ledger, uuid, "references a skipped component")
