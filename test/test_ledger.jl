@@ -7,7 +7,9 @@
     @test b == 2
     @test PSU.assign_id!(led, "uuid-a") == 1      # idempotent
     @test PSU.has_id(led, "uuid-a")
+    @test !PSU.has_id(led, "uuid-never-assigned")
     @test PSU.lookup_id(led, "uuid-b") == 2
+    @test_throws PSU.DanglingReferenceError PSU.lookup_id(led, "uuid-nonexistent")
 
     synth = PSU.allocate_id!(led)
     @test synth == 3
@@ -21,5 +23,6 @@
     @test PSU.is_reference(Dict("value" => "uuid-a"))
     @test !PSU.is_reference(Dict("min" => 0.9, "max" => 1.05))
     @test !PSU.is_reference(1.0)
+    @test !PSU.is_reference(Dict("value" => 5))
     @test PSU.reference_uuid(Dict("value" => "uuid-a")) == "uuid-a"
 end
