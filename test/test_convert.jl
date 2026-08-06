@@ -10,27 +10,61 @@
             system_json = joinpath(tmp, "system.json")
             @test isfile(system_json)
 
-            # PCOM.read_document throws on every corpus system carrying a cost curve:
-            # PSY6's ProductionVariableCostCurve/ValueCurve/FunctionData family is
-            # oneOf-discriminated (variable_cost_type/curve_type/...), but translate_value
-            # (Task 4) forwards PSY5's nested cost dicts verbatim with no discriminator
-            # inserted. Every real corpus system with a generator hits this; tracked as
-            # @test_broken rather than worked around here. See task-11-report.md.
-            read_ok = true
-            try
-                PSU.PCOM.read_document(system_json)
-            catch
-                read_ok = false
-            end
-            @test_broken read_ok
-
-            raw = PSU.JSON.parsefile(system_json; dicttype = Dict{String, Any})
-            @test raw["unit_system"] == "DEVICE_BASE"
-            @test raw["base_power"] == 100.0
-            @test !isempty(raw["components"]["ACBus"])
+            doc = PSU.PCOM.read_document(system_json)
+            @test PSU.PCOM.get_unit_system(doc) == "DEVICE_BASE"
+            @test PSU.PCOM.get_base_power(doc) == 100.0
+            @test !isempty(PSU.PCOM.get_components(doc, "ACBus"))
 
             @test isempty(report.unmapped_types)
             @test isempty(report.cascaded_skips)
+        end
+    end
+end
+
+@testset "convert_system: round trip with a FuelCurve" begin
+    dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
+    path = joinpath(dir, "c_linear_fuel_test")
+    if !isfile(path)
+        @warn "corpus absent; skipping" path
+    else
+        mktempdir() do tmp
+            PSU.convert_system(path, tmp)
+            system_json = joinpath(tmp, "system.json")
+            raw = PSU.JSON.parsefile(system_json; dicttype = Dict{String, Any})
+            fuel_curves = [
+                thermal["operation_cost"]["variable"] for
+                thermal in raw["components"]["ThermalStandard"] if
+                thermal["operation_cost"]["variable"]["variable_cost_type"] == "FUEL"
+            ]
+            @test !isempty(fuel_curves)
+
+            doc = PSU.PCOM.read_document(system_json)
+            for type_name in PSU.PCOM.component_type_names(doc)
+                @test length(PSU.PCOM.get_components(doc, type_name)) ==
+                      length(raw["components"][type_name])
+            end
+        end
+    end
+end
+
+@testset "convert_system: hybrid systems convert without throwing" begin
+    dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
+    for name in
+        (
+        "c_sys5_hybrid",
+        "c_sys5_hybrid_uc",
+        "c_sys5_hybrid_ed",
+        "test_RTS_GMLC_sys_with_hybrid",
+    )
+        path = joinpath(dir, name)
+        if !isfile(path)
+            @warn "corpus absent; skipping" path
+            continue
+        end
+        mktempdir() do tmp
+            report = PSU.convert_system(path, tmp)
+            @test isfile(joinpath(tmp, "system.json"))
+            @test isempty(report.unmapped_types)
         end
     end
 end

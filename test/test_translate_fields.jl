@@ -117,6 +117,80 @@
         end
     end
 
+    @testset "oneOf discriminator injection" begin
+        # one row per PSY6 union in the fix-round spec; property name and value both
+        # asserted exactly, so a wrong value (not just a missing key) would fail here.
+        cases = [
+            ("ProductionVariableCostCurve", "CostCurve", :variable_cost_type, "COST"),
+            ("ProductionVariableCostCurve", "FuelCurve", :variable_cost_type, "FUEL"),
+            ("ValueCurve", "InputOutputCurve", :curve_type, "INPUT_OUTPUT"),
+            ("ValueCurve", "IncrementalCurve", :curve_type, "INCREMENTAL"),
+            ("ValueCurve", "AverageRateCurve", :curve_type, "AVERAGE_RATE"),
+            ("FunctionData", "LinearFunctionData", :function_type, "LINEAR"),
+            ("FunctionData", "QuadraticFunctionData", :function_type, "QUADRATIC"),
+            ("FunctionData", "PiecewiseLinearData", :function_type, "PIECEWISE_LINEAR"),
+            ("FunctionData", "PiecewiseStepData", :function_type, "PIECEWISE_STEP"),
+            # TwoTerminalLoss reads the same property off the same two PSY5 types as
+            # ValueCurve, and the spec says the value is identical either way.
+            ("TwoTerminalLoss", "IncrementalCurve", :curve_type, "INCREMENTAL"),
+            ("TwoTerminalLoss", "InputOutputCurve", :curve_type, "INPUT_OUTPUT"),
+            ("GenericOperationCost", "RenewableGenerationCost", :cost_type, "RENEWABLE"),
+            ("GenericOperationCost", "ThermalGenerationCost", :cost_type, "THERMAL"),
+            ("GenericOperationCost", "HydroGenerationCost", :cost_type, "HYDRO_GEN"),
+            # HydroStorageGenerationCost reads the same property off HydroGenerationCost
+            # as GenericOperationCost, again with the same value.
+            ("HydroStorageGenerationCost", "HydroGenerationCost", :cost_type, "HYDRO_GEN"),
+            ("HydroStorageGenerationCost", "StorageCost", :cost_type, "STORAGE"),
+        ]
+        for (union, psy5_type, property, value) in cases
+            raw_value = Dict{String, Any}(
+                "__metadata__" => Dict("module" => "PowerSystems", "type" => psy5_type),
+                "some_field" => 1.0,
+            )
+            translated = PSU.translate_value(raw_value, led)
+            @test translated[String(property)] == value
+            @test translated["__metadata__"]["type"] == psy5_type
+            @test translated["some_field"] == 1.0
+        end
+
+        # nesting: a CostCurve's value_curve is an InputOutputCurve, whose function_data
+        # is a LinearFunctionData — all three need their own discriminator in one pass.
+        nested = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "CostCurve"),
+            "value_curve" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "InputOutputCurve"),
+                "function_data" => Dict{String, Any}(
+                    "__metadata__" => Dict("type" => "LinearFunctionData"),
+                    "constant_term" => 0.0,
+                    "proportional_term" => 30.0,
+                ),
+            ),
+        )
+        translated_nested = PSU.translate_value(nested, led)
+        @test translated_nested["variable_cost_type"] == "COST"
+        @test translated_nested["value_curve"]["curve_type"] == "INPUT_OUTPUT"
+        @test translated_nested["value_curve"]["function_data"]["function_type"] ==
+              "LINEAR"
+
+        # a PSY5 type not in the table is forwarded unchanged, discriminator or not
+        untagged = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "SomeUnrelatedType"),
+            "field" => 1,
+        )
+        @test !haskey(PSU.translate_value(untagged, led), "curve_type")
+        @test PSU.translate_value(untagged, led)["field"] == 1
+
+        # StartUpStages carries no __metadata__ at all in PSY5, so it is detected by its
+        # exact key set rather than a type tag.
+        start_up_stages = Dict{String, Any}("hot" => 1.0, "warm" => 2.0, "cold" => 3.0)
+        translated_stages = PSU.translate_value(start_up_stages, led)
+        @test translated_stages["startup_stages_type"] == "STAGES"
+
+        # a plain composite with a disjoint key set is not mistaken for StartUpStages
+        min_max = Dict{String, Any}("min" => 0.0, "max" => 1.0)
+        @test !haskey(PSU.translate_value(min_max, led), "startup_stages_type")
+    end
+
     @testset "unmapped field counts accumulate across calls" begin
         counting_rep = PSU.ConversionReport()
         raw_with_extra = Dict{String, Any}(

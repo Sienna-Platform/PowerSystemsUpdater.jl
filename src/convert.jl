@@ -6,7 +6,7 @@ order PSY5 wrote them; the second translates.
 """
 function build_document(case::Psy5Case, report::ConversionReport)
     ledger = Ledger()
-    raw_components = components(case)
+    raw_components = vcat(components(case), masked_components(case))
     for raw in raw_components
         assign_id!(ledger, component_uuid(raw))
     end
