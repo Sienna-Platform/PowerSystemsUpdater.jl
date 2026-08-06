@@ -14,6 +14,8 @@ const WINDING_GROUP_ALPHA = Dict{String, Float64}(
     "GROUP_6" => pi,
     "GROUP_7" => 5pi / 6,
     "GROUP_11" => pi / 6,
+    # "not specified" takes PSY6's own schema default for alpha, not an invented angle.
+    "UNDEFINED" => 0.0,
 )
 
 function winding_group_alpha(group::AbstractString)
@@ -43,18 +45,45 @@ function _circuit_source(raw::AbstractDict)
 end
 
 """
-PSY5's `primary_shunt` serializes a `Complex{Float64}` with keys `re`/`im`; PSY6's
-`ComplexNumber` schema (`SiennaSchemas/Core/common.json#/definitions/ComplexNumber`) uses
-`real`/`imag`. Passing the raw dict through verbatim would build a valid `ComplexNumber`
-value in Julia (the field is untyped) but serialize with the wrong keys, so the keys are
-translated here rather than forwarded as-is.
+Fields consumed directly by the `TwoWindingTransformer` container rather than by
+`_circuit_source`'s allow-list or `build_kwargs`.
+"""
+const TRANSFORMER_CONSUMED_FIELDS =
+    Set(["name", "primary_shunt", "winding_group_number", "α"])
+
+"""
+Record every PSY5 key on `raw` that is neither internal, nor routed to the circuit via
+`CIRCUIT_FIELDS`, nor consumed directly by the transformer container. `_circuit_source`'s
+allow-list means such keys never reach `build_kwargs`, so without this they would vanish
+with no trace in `ConversionReport` — exactly the silent loss this package exists to catch.
+"""
+function _record_dropped_fields!(raw::AbstractDict, ctx::TranslationContext)
+    type_name = component_type(raw)
+    for key in keys(raw)
+        if key in PSY5_INTERNAL_FIELDS || key in CIRCUIT_FIELDS ||
+           key in TRANSFORMER_CONSUMED_FIELDS
+            continue
+        end
+        record_unmapped_field!(ctx.report, type_name, key)
+    end
+    return nothing
+end
+
+"""
+PSY5's `primary_shunt` serializes a `Complex{Float64}` with keys `real`/`imag`, matching
+PSY6's `ComplexNumber` schema (`SiennaSchemas/Core/common.json#/definitions/ComplexNumber`)
+exactly. Built explicitly rather than forwarding the raw dict so construction does not
+depend on the two shapes coinciding.
 """
 function _magnetizing_shunt(raw::AbstractDict)
     shunt = get(raw, "primary_shunt", nothing)
     if isnothing(shunt)
         return nothing
     end
-    return PCOM.ComplexNumber(; real = Float64(shunt["re"]), imag = Float64(shunt["im"]))
+    return PCOM.ComplexNumber(;
+        real = Float64(shunt["real"]),
+        imag = Float64(shunt["imag"]),
+    )
 end
 
 """
@@ -89,6 +118,7 @@ function _translate_two_winding(
     ctx::TranslationContext,
     alpha::Float64,
 )
+    _record_dropped_fields!(raw, ctx)
     circuit = _build_circuit(raw, ctx, alpha)
     transformer = POM.TwoWindingTransformer(;
         id = lookup_id(ctx.ledger, component_uuid(raw)),

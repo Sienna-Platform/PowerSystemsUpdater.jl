@@ -36,6 +36,11 @@ end
     @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("")
 end
 
+@testset "UNDEFINED winding group takes the schema default" begin
+    @test PSU.winding_group_alpha("UNDEFINED") == 0.0
+    @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("GROUP_3")
+end
+
 @testset "translate Transformer2W" begin
     using PowerOpenAPIModels: TwoWindingTransformer, TransformerCircuit
 
@@ -51,7 +56,7 @@ end
         "name" => "tx1", "available" => true,
         "arc" => Dict("value" => "uuid-arc"),
         "r" => 0.01, "x" => 0.1,
-        "primary_shunt" => Dict("re" => 0.0, "im" => 0.0),
+        "primary_shunt" => Dict("real" => 0.0, "imag" => 0.0),
         "rating" => 2.0, "base_power" => 100.0,
         "base_voltage_primary" => 230.0, "base_voltage_secondary" => 115.0,
         "winding_group_number" => "GROUP_1",
@@ -106,7 +111,7 @@ end
         "name" => "tap1", "available" => true,
         "arc" => Dict("value" => "uuid-arc-tap"),
         "r" => 0.02, "x" => 0.2, "tap" => 1.05,
-        "primary_shunt" => Dict("re" => 0.0, "im" => 0.0),
+        "primary_shunt" => Dict("real" => 0.0, "imag" => 0.0),
         "rating" => 3.0, "base_power" => 100.0,
         "base_voltage_primary" => 138.0, "base_voltage_secondary" => 69.0,
         "winding_group_number" => "GROUP_11",
@@ -191,7 +196,7 @@ end
     @test circuit.alpha == -0.37
 end
 
-@testset "magnetizing_shunt: re/im translated to real/imag" begin
+@testset "magnetizing_shunt: real/imag survive" begin
     led = PSU.Ledger()
     rep = PSU.ConversionReport()
     ctx = PSU.TranslationContext(led, rep, 100.0)
@@ -204,7 +209,7 @@ end
         "name" => "tx_shunt", "available" => true,
         "arc" => Dict("value" => "uuid-arc-shunt"),
         "r" => 0.01, "x" => 0.1,
-        "primary_shunt" => Dict("re" => 0.001, "im" => 0.02),
+        "primary_shunt" => Dict("real" => 0.001, "imag" => 0.02),
         "base_power" => 100.0,
         "winding_group_number" => "GROUP_0",
         "active_power_flow" => 0.0, "reactive_power_flow" => 0.0,
@@ -214,4 +219,57 @@ end
     transformer = only(filter(_is_two_winding, out))
     @test transformer.magnetizing_shunt.real == 0.001
     @test transformer.magnetizing_shunt.imag == 0.02
+end
+
+@testset "unmapped fields are recorded, not silently dropped" begin
+    led = PSU.Ledger()
+    rep = PSU.ConversionReport()
+    ctx = PSU.TranslationContext(led, rep, 100.0)
+    PSU.assign_id!(led, "uuid-tap-limits")
+    PSU.assign_id!(led, "uuid-arc-tap-limits")
+
+    raw = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "TapTransformer"),
+        "internal" => Dict("uuid" => Dict("value" => "uuid-tap-limits")),
+        "name" => "tap_limits1", "available" => true,
+        "arc" => Dict("value" => "uuid-arc-tap-limits"),
+        "r" => 0.02, "x" => 0.2, "tap" => 1.0,
+        "primary_shunt" => Dict("real" => 0.0, "imag" => 0.0),
+        "base_power" => 100.0,
+        "winding_group_number" => "UNDEFINED",
+        "tap_limits" => Dict("min" => 0.9, "max" => 1.1),
+        "active_power_flow" => 0.0, "reactive_power_flow" => 0.0,
+    )
+
+    PSU.translate_component(raw, ctx)
+    @test rep.unmapped_fields[("TapTransformer", "tap_limits")] == 1
+end
+
+@testset "real transformer from c_sys14" begin
+    dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
+    path = joinpath(dir, "c_sys14")
+    if !isfile(path)
+        @warn "corpus absent; skipping" path
+    else
+        case = PSU.read_psy5(path)
+        led = PSU.Ledger()
+        rep = PSU.ConversionReport()
+        ctx = PSU.TranslationContext(led, rep, PSU.system_base_power(case))
+
+        tap_raw = first(
+            c for c in PSU.components(case) if PSU.component_type(c) == "TapTransformer"
+        )
+        PSU.assign_id!(led, PSU.component_uuid(tap_raw))
+        PSU.assign_id!(led, tap_raw["arc"]["value"])
+
+        out = PSU.translate_component(tap_raw, ctx)
+        circuit = only(filter(_is_circuit, out))
+        transformer = only(filter(_is_two_winding, out))
+
+        @test circuit.alpha == 0.0                       # UNDEFINED group in this corpus
+        @test circuit.tap == tap_raw["tap"]
+        @test transformer.magnetizing_shunt.real == tap_raw["primary_shunt"]["real"]
+        @test transformer.magnetizing_shunt.imag == tap_raw["primary_shunt"]["imag"]
+        @test rep.unmapped_fields[("TapTransformer", "tap_limits")] == 1
+    end
 end
