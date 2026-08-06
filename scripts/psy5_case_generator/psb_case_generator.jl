@@ -1,11 +1,13 @@
 using PowerSystems
 using PowerSystemCaseBuilder
 
-if !isdir("data/PSITestSystems")
-    mkpath("data/PSITestSystems")
-end
+const DATA_DIR = normpath(joinpath(@__DIR__, "..", "..", "data"))
 
-for n in list_systems(PSITestSystems)
-    sys = build_system(PSITestSystems, n)
-    to_json(sys, "data/PSITestSystems/$n")
+for cat in [PSISystems, PSITestSystems]
+    outdir = joinpath(DATA_DIR, string(nameof(cat)))
+    mkpath(outdir)
+    for n in list_systems(cat)
+        sys = build_system(cat, n; force_build = true)
+        to_json(sys, joinpath(outdir, n); force = true)
+    end
 end
