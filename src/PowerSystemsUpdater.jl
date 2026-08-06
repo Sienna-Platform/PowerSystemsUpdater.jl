@@ -1,13 +1,13 @@
 module PowerSystemsUpdater
 
+import InfrastructureSystems
 import JSON
+import OpenAPI
+import PowerOpenAPIModels
+import PowerOpenAPIModels.PowerCoreOpenAPIModels
 import SQLite
 import Tables
 import TimeZones
-import InfrastructureSystems
-import PowerOpenAPIModels
-import PowerOpenAPIModels.PowerCoreOpenAPIModels
-import PowerOpenAPIModels.OpenAPI
 
 const IS = InfrastructureSystems
 const POM = PowerOpenAPIModels
