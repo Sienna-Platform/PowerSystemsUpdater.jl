@@ -1,6 +1,6 @@
 name = "PowerSystemsUpdater"
 uuid = "11b707e9-e006-4f7c-8f76-be36cb0f20e4"
-authors = ["YOUR_NAME"]
+authors = ["SIENNA_TEAM"]
 version = "0.1.0"
 
 [deps]
