@@ -10,7 +10,7 @@ bespoke `translate` method.
 """
 const DIRECT_TYPES = (
     :ACBus, :Arc, :Area, :AreaInterchange, :DCBus, :EnergyReservoirStorage,
-    :FixedAdmittance, :HybridSystem, :HydroDispatch, :HydroPumpTurbine, :HydroReservoir,
+    :FixedAdmittance, :HybridSystem, :HydroDispatch, :HydroPumpTurbine,
     :HydroTurbine, :InterconnectingConverter, :InterruptiblePowerLoad, :Line, :LoadZone,
     :MonitoredLine, :PowerLoad, :RenewableDispatch, :RenewableNonDispatch, :Source,
     :StandardLoad, :SynchronousCondenser, :ThermalMultiStart, :ThermalStandard,
@@ -80,7 +80,7 @@ const TRANSLATED_TYPES = Set(
         [
             "ConstantReserve", "VariableReserve",
             "Transformer2W", "TapTransformer", "PhaseShiftingTransformer",
-            "Transformer3W",
+            "Transformer3W", "HydroReservoir",
         ],
     ),
 )

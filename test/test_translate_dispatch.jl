@@ -120,7 +120,7 @@
     end
 
     @testset "DIRECT_TYPES" begin
-        @test length(PSU.DIRECT_TYPES) == 29
+        @test length(PSU.DIRECT_TYPES) == 28
         for name in PSU.DIRECT_TYPES
             @test isdefined(PSU.POM, name)
         end

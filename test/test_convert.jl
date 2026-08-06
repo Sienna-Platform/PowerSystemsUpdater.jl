@@ -47,6 +47,57 @@ end
     end
 end
 
+@testset "convert_system: round trip with a HydroReservoir" begin
+    dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
+    path = joinpath(dir, "c_sys5_hy_uc")
+    if !isfile(path)
+        @warn "corpus absent; skipping" path
+    else
+        mktempdir() do tmp
+            report = PSU.convert_system(path, tmp)
+            system_json = joinpath(tmp, "system.json")
+            raw = PSU.JSON.parsefile(system_json; dicttype = Dict{String, Any})
+            @test !isempty(raw["components"]["HydroReservoir"])
+
+            doc = PSU.PCOM.read_document(system_json)
+            for type_name in PSU.PCOM.component_type_names(doc)
+                @test length(PSU.PCOM.get_components(doc, type_name)) ==
+                      length(raw["components"][type_name])
+            end
+            @test isempty(report.unmapped_types)
+        end
+    end
+end
+
+@testset "convert_system: MarketBidCost scalar cost fields (documented schema gap, not fixed)" begin
+    # PSY6's MarketBidCost.no_load_cost/shut_down are typed as the concrete InputOutputCurve
+    # struct (SiennaSchemas/Core/common.json), with no oneOf/anyOf admitting a bare number —
+    # only a *default* curve for when the field is omitted, which is not the same as a
+    # sanctioned scalar instance value. PSY5's HybridSystem-level MarketBidCost writes
+    # shut_down as a bare Float64, so this is left failing rather than guessing at an
+    # unsanctioned promotion; see task-11-report.md fix round 2.
+    dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
+    path = joinpath(dir, "c_sys5_hybrid")
+    if !isfile(path)
+        @warn "corpus absent; skipping" path
+    else
+        mktempdir() do tmp
+            PSU.convert_system(path, tmp)
+            system_json = joinpath(tmp, "system.json")
+            raw = PSU.JSON.parsefile(system_json; dicttype = Dict{String, Any})
+            shut_downs =
+                [
+                    h["operation_cost"]["shut_down"] for
+                    h in raw["components"]["HybridSystem"]
+                ]
+            @test !isempty(shut_downs)
+            @test all(value -> typeof(value) === Float64, shut_downs)
+
+            @test_throws MethodError PSU.PCOM.read_document(system_json)
+        end
+    end
+end
+
 @testset "convert_system: hybrid systems convert without throwing" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     for name in
