@@ -245,6 +245,216 @@ end
     @test rep.unmapped_fields[("TapTransformer", "tap_limits")] == 1
 end
 
+@testset "translate Transformer3W" begin
+    using PowerOpenAPIModels: ThreeWindingTransformer, TransformerCircuit
+
+    led = PSU.Ledger()
+    rep = PSU.ConversionReport()
+    ctx = PSU.TranslationContext(led, rep, 100.0)
+    PSU.assign_id!(led, "uuid-3w")
+    star = PSU.assign_id!(led, "uuid-star")
+    pa = PSU.assign_id!(led, "uuid-parc")
+    sa = PSU.assign_id!(led, "uuid-sarc")
+    ta = PSU.assign_id!(led, "uuid-tarc")
+
+    raw = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "Transformer3W"),
+        "internal" => Dict("uuid" => Dict("value" => "uuid-3w")),
+        "name" => "HV-LV-MV", "available" => true,
+        "star_bus" => Dict("value" => "uuid-star"),
+        "primary_star_arc" => Dict("value" => "uuid-parc"),
+        "secondary_star_arc" => Dict("value" => "uuid-sarc"),
+        "tertiary_star_arc" => Dict("value" => "uuid-tarc"),
+        "r_primary" => 0.0022, "x_primary" => 0.0021,
+        "r_secondary" => 0.0012, "x_secondary" => 0.0021,
+        "r_tertiary" => 0.0018, "x_tertiary" => 0.0002,
+        "r_12" => 0.0034, "x_12" => 0.0042,
+        "r_23" => 0.003, "x_23" => 0.0002,
+        "r_13" => 0.004, "x_13" => 0.0002,
+        "base_power_12" => 100.0, "base_power_23" => 100.0, "base_power_13" => 100.0,
+        "primary_turns_ratio" => 1.0, "secondary_turns_ratio" => 1.0,
+        "tertiary_turns_ratio" => 1.0,
+        "available_primary" => true, "available_secondary" => true,
+        "available_tertiary" => true,
+        "rating_primary" => 10.0, "rating_secondary" => 10.0, "rating_tertiary" => 10.0,
+        "base_voltage_primary" => 110.0, "base_voltage_secondary" => 11.0,
+        "base_voltage_tertiary" => 33.0,
+        "g" => 0.0, "b" => 0.0,
+        "active_power_flow_primary" => 0.0, "reactive_power_flow_primary" => 0.0,
+        "active_power_flow_secondary" => 0.0, "reactive_power_flow_secondary" => 0.0,
+        "active_power_flow_tertiary" => 0.0, "reactive_power_flow_tertiary" => 0.0,
+    )
+
+    out = PSU.translate_component(raw, ctx)
+    @test length(out) == 4
+
+    tx = only(filter(_is_three_winding, out))
+    circuits = filter(_is_circuit, out)
+    @test length(circuits) == 3
+    @test tx.star_bus == star
+    @test Set([tx.primary_circuit, tx.secondary_circuit, tx.tertiary_circuit]) ==
+          Set(c.id for c in circuits)
+
+    # THE TRAP: PSY5 1-3 becomes PSY6 3-1. Index order flips.
+    @test tx.r_31 == 0.004
+    @test tx.x_31 == 0.0002
+    @test tx.base_power_31 == 100.0
+    @test tx.r_12 == 0.0034
+    @test tx.r_23 == 0.003
+
+    primary = only(c for c in circuits if c.arc == pa)
+    @test primary.r == 0.0022
+    @test primary.x == 0.0021
+    @test primary.rating == 10.0
+    @test primary.base_voltage_primary == 110.0
+
+    @testset "index flip: pairwise pairs stay distinct, not just correctly named" begin
+        @test tx.r_12 != tx.r_23
+        @test tx.r_23 != tx.r_31
+        @test tx.r_12 != tx.r_31
+    end
+
+    @testset "per-winding field routing: each circuit keeps its own values" begin
+        secondary = only(c for c in circuits if c.arc == sa)
+        tertiary = only(c for c in circuits if c.arc == ta)
+
+        @test secondary.r == 0.0012
+        @test secondary.x == 0.0021
+        @test secondary.rating == 10.0
+        @test secondary.base_voltage_primary == 11.0
+
+        @test tertiary.r == 0.0018
+        @test tertiary.x == 0.0002
+        @test tertiary.rating == 10.0
+        @test tertiary.base_voltage_primary == 33.0
+
+        # Distinguishing values so a wrong-winding mix-up cannot pass silently.
+        @test primary.r != secondary.r != tertiary.r
+        @test primary.base_voltage_primary != secondary.base_voltage_primary !=
+              tertiary.base_voltage_primary
+    end
+
+    @testset "ids are non-nothing and distinct" begin
+        @test !isnothing(tx.id)
+        for c in circuits
+            @test !isnothing(c.id)
+            @test c.id != tx.id
+        end
+        @test length(Set(c.id for c in circuits)) == 3
+    end
+end
+
+@testset "Transformer3W: per-winding tap, available, alpha routing" begin
+    led = PSU.Ledger()
+    rep = PSU.ConversionReport()
+    ctx = PSU.TranslationContext(led, rep, 100.0)
+    PSU.assign_id!(led, "uuid-3w-route")
+    PSU.assign_id!(led, "uuid-star-route")
+    PSU.assign_id!(led, "uuid-parc-route")
+    PSU.assign_id!(led, "uuid-sarc-route")
+    PSU.assign_id!(led, "uuid-tarc-route")
+
+    raw = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "Transformer3W"),
+        "internal" => Dict("uuid" => Dict("value" => "uuid-3w-route")),
+        "name" => "route-test", "available" => true,
+        "star_bus" => Dict("value" => "uuid-star-route"),
+        "primary_star_arc" => Dict("value" => "uuid-parc-route"),
+        "secondary_star_arc" => Dict("value" => "uuid-sarc-route"),
+        "tertiary_star_arc" => Dict("value" => "uuid-tarc-route"),
+        "r_primary" => 0.01, "x_primary" => 0.02,
+        "r_secondary" => 0.03, "x_secondary" => 0.04,
+        "r_tertiary" => 0.05, "x_tertiary" => 0.06,
+        "r_12" => 0.07, "x_12" => 0.08,
+        "r_23" => 0.09, "x_23" => 0.10,
+        "r_13" => 0.11, "x_13" => 0.12,
+        "base_power_12" => 100.0, "base_power_23" => 100.0, "base_power_13" => 100.0,
+        "primary_turns_ratio" => 1.01, "secondary_turns_ratio" => 1.02,
+        "tertiary_turns_ratio" => 1.03,
+        "available_primary" => true, "available_secondary" => false,
+        "available_tertiary" => true,
+        "primary_group_number" => "GROUP_1",
+        "secondary_group_number" => "GROUP_0",
+        "tertiary_group_number" => "GROUP_11",
+        "rating_primary" => 1.0, "rating_secondary" => 2.0, "rating_tertiary" => 3.0,
+        "base_voltage_primary" => 110.0, "base_voltage_secondary" => 22.0,
+        "base_voltage_tertiary" => 33.0,
+        "g" => 0.0, "b" => 0.0,
+        "active_power_flow_primary" => 0.0, "reactive_power_flow_primary" => 0.0,
+        "active_power_flow_secondary" => 0.0, "reactive_power_flow_secondary" => 0.0,
+        "active_power_flow_tertiary" => 0.0, "reactive_power_flow_tertiary" => 0.0,
+    )
+
+    out = PSU.translate_component(raw, ctx)
+    circuits = filter(_is_circuit, out)
+    primary = only(c for c in circuits if c.tap == 1.01)
+    secondary = only(c for c in circuits if c.tap == 1.02)
+    tertiary = only(c for c in circuits if c.tap == 1.03)
+
+    @test primary.available
+    @test !secondary.available
+    @test tertiary.available
+
+    # This is the case the real corpus cannot exercise: a non-GROUP_0 winding group.
+    @test primary.alpha ≈ -pi / 6
+    @test secondary.alpha == 0.0
+    @test tertiary.alpha ≈ pi / 6
+end
+
+@testset "real Transformer3W from case10_radial_series_reductions" begin
+    dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
+    path = joinpath(dir, "case10_radial_series_reductions")
+    if !isfile(path)
+        @warn "corpus absent; skipping" path
+    else
+        case = PSU.read_psy5(path)
+        led = PSU.Ledger()
+        rep = PSU.ConversionReport()
+        ctx = PSU.TranslationContext(led, rep, PSU.system_base_power(case))
+
+        tx_raw = only(
+            c for c in PSU.components(case) if PSU.component_type(c) == "Transformer3W"
+        )
+        PSU.assign_id!(led, PSU.component_uuid(tx_raw))
+        PSU.assign_id!(led, tx_raw["star_bus"]["value"])
+        PSU.assign_id!(led, tx_raw["primary_star_arc"]["value"])
+        PSU.assign_id!(led, tx_raw["secondary_star_arc"]["value"])
+        PSU.assign_id!(led, tx_raw["tertiary_star_arc"]["value"])
+
+        out = PSU.translate_component(tx_raw, ctx)
+        @test length(out) == 4
+
+        tx = only(filter(_is_three_winding, out))
+        circuits = filter(_is_circuit, out)
+        @test length(circuits) == 3
+
+        ids = Set(c.id for c in circuits)
+        push!(ids, tx.id)
+        @test length(ids) == 4
+
+        # THE TRAP, against the real file: PSY5 r_13/x_13/base_power_13 land on r_31/x_31/base_power_31.
+        @test tx.r_31 == tx_raw["r_13"]
+        @test tx.x_31 == tx_raw["x_13"]
+        @test tx.base_power_31 == tx_raw["base_power_13"]
+
+        # The brief's brief claims a correct implementation drops nothing here once
+        # *_group_number is consumed by winding_group_alpha. That does not hold: PSY5's
+        # top-level `available`, top-level `rating`, and `g`/`b` (star-to-ground shunt) are
+        # never read by translate(::Val{:Transformer3W}, ...) or _winding_circuit, so they
+        # are genuinely, correctly recorded as dropped rather than vanishing silently.
+        @test Set(keys(rep.unmapped_fields)) ==
+              Set([
+            ("Transformer3W", "available"),
+            ("Transformer3W", "rating"),
+            ("Transformer3W", "g"),
+            ("Transformer3W", "b"),
+        ])
+        for count in values(rep.unmapped_fields)
+            @test count == 1
+        end
+    end
+end
+
 @testset "real transformer from c_sys14" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "c_sys14")

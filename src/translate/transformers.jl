@@ -149,3 +149,105 @@ function translate(
 )
     return _translate_two_winding(raw, ctx, Float64(raw["α"]))
 end
+
+const THREE_WINDING_TERMINALS = (:primary, :secondary, :tertiary)
+
+# Fields consumed by `translate(::Val{:Transformer3W}, ...)` and `_winding_circuit`,
+# mirroring their exact key-name construction so this stays in lockstep with the reader.
+const THREE_WINDING_CONSUMED_FIELDS = Set{String}(
+    vcat(
+        [
+            "name", "star_bus", "r_12", "x_12", "r_23", "x_23", "r_13", "x_13",
+            "base_power_12", "base_power_23", "base_power_13",
+        ],
+        vcat(
+            [
+                [
+                    "$(suffix)_star_arc",
+                    "$(suffix)_turns_ratio",
+                    "$(suffix)_group_number",
+                    "available_$suffix",
+                    "r_$suffix",
+                    "x_$suffix",
+                    "rating_$suffix",
+                    "active_power_flow_$suffix",
+                    "reactive_power_flow_$suffix",
+                    "base_voltage_$suffix",
+                    "control_objective_$suffix",
+                ] for suffix in string.(THREE_WINDING_TERMINALS)
+            ]...,
+        ),
+    ),
+)
+
+"""
+Record every PSY5 key on `raw` that is neither internal nor consumed by
+`translate(::Val{:Transformer3W}, ...)`. PSY5's `Transformer3W` carries a top-level
+`available`, a top-level `rating`, and a `g`/`b` shunt-to-ground pair alongside the
+per-winding fields; PSY6's `ThreeWindingTransformer` derives availability and rating from
+its circuits and has no wiring for a transformer-level magnetizing shunt here, so those four
+keys are genuinely dropped. Recording them keeps that loss visible instead of silent.
+"""
+function _record_dropped_three_winding_fields!(raw::AbstractDict, ctx::TranslationContext)
+    type_name = component_type(raw)
+    for key in keys(raw)
+        if key in PSY5_INTERNAL_FIELDS || key in THREE_WINDING_CONSUMED_FIELDS
+            continue
+        end
+        record_unmapped_field!(ctx.report, type_name, key)
+    end
+    return nothing
+end
+
+function _winding_circuit(
+    raw::AbstractDict,
+    ctx::TranslationContext,
+    terminal::Symbol,
+)
+    suffix = string(terminal)
+    circuit_id = allocate_id!(ctx.ledger)
+    return POM.TransformerCircuit(;
+        id = circuit_id,
+        available = raw["available_$suffix"],
+        arc = lookup_id(ctx.ledger, reference_uuid(raw["$(suffix)_star_arc"])),
+        tap = raw["$(suffix)_turns_ratio"],
+        alpha = winding_group_alpha(get(raw, "$(suffix)_group_number", "UNDEFINED")),
+        r = raw["r_$suffix"],
+        x = raw["x_$suffix"],
+        rating = get(raw, "rating_$suffix", nothing),
+        active_power_flow = get(raw, "active_power_flow_$suffix", nothing),
+        reactive_power_flow = get(raw, "reactive_power_flow_$suffix", nothing),
+        base_power = base_power_for(raw, ctx.system_base),
+        base_voltage_primary = get(raw, "base_voltage_$suffix", nothing),
+        control_objective = get(raw, "control_objective_$suffix", nothing),
+    )
+end
+
+"""
+PSY5 stores both the pairwise-measured and the star-equivalent forms, so nothing is
+inverted. Note PSY5's 1-3 pair is PSY6's 3-1: the index order flips.
+"""
+function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationContext)
+    _record_dropped_three_winding_fields!(raw, ctx)
+    circuits = [_winding_circuit(raw, ctx, t) for t in THREE_WINDING_TERMINALS]
+    transformer = POM.ThreeWindingTransformer(;
+        id = lookup_id(ctx.ledger, component_uuid(raw)),
+        name = raw["name"],
+        primary_circuit = circuits[1].id,
+        secondary_circuit = circuits[2].id,
+        tertiary_circuit = circuits[3].id,
+        star_bus = lookup_id(ctx.ledger, reference_uuid(raw["star_bus"])),
+        r_12 = raw["r_12"],
+        x_12 = raw["x_12"],
+        r_23 = raw["r_23"],
+        x_23 = raw["x_23"],
+        r_31 = raw["r_13"],
+        x_31 = raw["x_13"],
+        base_power_12 = raw["base_power_12"],
+        base_power_23 = raw["base_power_23"],
+        base_power_31 = raw["base_power_13"],
+    )
+    models = OpenAPI.APIModel[c for c in circuits]
+    push!(models, transformer)
+    return models
+end
