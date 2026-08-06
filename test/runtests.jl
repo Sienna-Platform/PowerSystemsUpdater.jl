@@ -2,6 +2,7 @@ using Test
 using Logging
 import InfrastructureSystems as IS
 using PowerSystemsUpdater
+const PSU = PowerSystemsUpdater
 
 import Aqua
 Aqua.test_unbound_args(PowerSystemsUpdater)
