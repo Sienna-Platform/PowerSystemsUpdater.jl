@@ -29,5 +29,10 @@ include("translate/dispatch.jl")
 include("translate/reserves.jl")
 include("translate/transformers.jl")
 include("time_series.jl")
+include("convert.jl")
+
+export convert_system
+export ConversionReport
+export has_findings
 
 end
