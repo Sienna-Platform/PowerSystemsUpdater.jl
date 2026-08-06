@@ -14,6 +14,9 @@ Base.showerror(io::IO, e::SkippedReferenceSignal) =
 
 translate_value(value, ::Ledger) = value
 
+# Non-reference dicts are forwarded verbatim: PSY5's nested composite shapes (MinMax,
+# FromTo, UpDown, InOut) must stay in lockstep with PSY6's field names. Drift is guarded
+# by the canary testset in test/test_translate_fields.jl, not checked here.
 function translate_value(value::AbstractDict, ledger::Ledger)
     if is_reference(value)
         return lookup_id(ledger, reference_uuid(value))

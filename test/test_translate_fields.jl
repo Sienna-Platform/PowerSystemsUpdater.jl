@@ -102,6 +102,21 @@
         end
     end
 
+    @testset "nested composite shapes match PSY5 pass-through" begin
+        # build_kwargs forwards non-reference nested dicts verbatim, so PSY5's key
+        # shape must stay identical to the PSY6 model's fieldnames. Drift here would
+        # be silent: these fields carry no type annotation in the generated models.
+        expected = Dict(
+            :MinMax => Set([:min, :max]),
+            :FromTo => Set([:from, :to]),
+            :UpDown => Set([:up, :down]),
+            :InOut => Set([:in, :out]),
+        )
+        for (name, keys) in expected
+            @test Set(fieldnames(getfield(PSU.POM, name))) == keys
+        end
+    end
+
     @testset "unmapped field counts accumulate across calls" begin
         counting_rep = PSU.ConversionReport()
         raw_with_extra = Dict{String, Any}(
