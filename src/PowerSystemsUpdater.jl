@@ -22,5 +22,6 @@ using DocStringExtensions
 
 include("read_psy5.jl")
 include("ledger.jl")
+include("report.jl")
 
 end
