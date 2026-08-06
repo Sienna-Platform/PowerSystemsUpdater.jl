@@ -25,5 +25,6 @@ include("ledger.jl")
 include("report.jl")
 include("translate/fields.jl")
 include("base_power.jl")
+include("translate/dispatch.jl")
 
 end
