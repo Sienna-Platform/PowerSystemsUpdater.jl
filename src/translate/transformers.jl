@@ -253,6 +253,9 @@ function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationCon
             real = Float64(raw["g"]),
             imag = Float64(raw["b"]),
         ),
+        # PSY5's g/b are star-bus-to-ground (Transformer3W.jl:98-99), not primary-side, so
+        # the schema's PRIMARY default is wrong here — unlike the two-winding path.
+        shunt_location = "STAR",
     )
     models = OpenAPI.APIModel[c for c in circuits]
     push!(models, transformer)
