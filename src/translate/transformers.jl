@@ -158,7 +158,7 @@ const THREE_WINDING_CONSUMED_FIELDS = Set{String}(
     vcat(
         [
             "name", "star_bus", "r_12", "x_12", "r_23", "x_23", "r_13", "x_13",
-            "base_power_12", "base_power_23", "base_power_13",
+            "base_power_12", "base_power_23", "base_power_13", "g", "b",
         ],
         vcat(
             [
@@ -183,10 +183,11 @@ const THREE_WINDING_CONSUMED_FIELDS = Set{String}(
 """
 Record every PSY5 key on `raw` that is neither internal nor consumed by
 `translate(::Val{:Transformer3W}, ...)`. PSY5's `Transformer3W` carries a top-level
-`available`, a top-level `rating`, and a `g`/`b` shunt-to-ground pair alongside the
-per-winding fields; PSY6's `ThreeWindingTransformer` derives availability and rating from
-its circuits and has no wiring for a transformer-level magnetizing shunt here, so those four
-keys are genuinely dropped. Recording them keeps that loss visible instead of silent.
+`available` and a top-level `rating` alongside the per-winding fields; PSY6's
+`ThreeWindingTransformer` has neither, since availability and rating are circuit-level
+(each `TransformerCircuit` already carries its own, from `available_\$suffix`/
+`rating_\$suffix`). Those two keys are genuinely redundant with the per-circuit data and are
+dropped; recording them keeps that finding visible instead of silent.
 """
 function _record_dropped_three_winding_fields!(raw::AbstractDict, ctx::TranslationContext)
     type_name = component_type(raw)
@@ -246,6 +247,12 @@ function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationCon
         base_power_12 = raw["base_power_12"],
         base_power_23 = raw["base_power_23"],
         base_power_31 = raw["base_power_13"],
+        # PSY5 stores the star-to-ground magnetizing shunt as two floats (g, b); PSY6
+        # stores it as one ComplexNumber.
+        magnetizing_shunt = PCOM.ComplexNumber(;
+            real = Float64(raw["g"]),
+            imag = Float64(raw["b"]),
+        ),
     )
     models = OpenAPI.APIModel[c for c in circuits]
     push!(models, transformer)

@@ -342,6 +342,59 @@ end
         end
         @test length(Set(c.id for c in circuits)) == 3
     end
+
+    @testset "magnetizing_shunt: g/b survive as ComplexNumber, zero case" begin
+        @test tx.magnetizing_shunt.real == 0.0
+        @test tx.magnetizing_shunt.imag == 0.0
+    end
+end
+
+@testset "Transformer3W: g/b magnetizing_shunt, nonzero case" begin
+    led = PSU.Ledger()
+    rep = PSU.ConversionReport()
+    ctx = PSU.TranslationContext(led, rep, 100.0)
+    PSU.assign_id!(led, "uuid-3w-shunt")
+    PSU.assign_id!(led, "uuid-star-shunt")
+    PSU.assign_id!(led, "uuid-parc-shunt")
+    PSU.assign_id!(led, "uuid-sarc-shunt")
+    PSU.assign_id!(led, "uuid-tarc-shunt")
+
+    raw = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "Transformer3W"),
+        "internal" => Dict("uuid" => Dict("value" => "uuid-3w-shunt")),
+        "name" => "shunt-test", "available" => true,
+        "star_bus" => Dict("value" => "uuid-star-shunt"),
+        "primary_star_arc" => Dict("value" => "uuid-parc-shunt"),
+        "secondary_star_arc" => Dict("value" => "uuid-sarc-shunt"),
+        "tertiary_star_arc" => Dict("value" => "uuid-tarc-shunt"),
+        "r_primary" => 0.01, "x_primary" => 0.02,
+        "r_secondary" => 0.03, "x_secondary" => 0.04,
+        "r_tertiary" => 0.05, "x_tertiary" => 0.06,
+        "r_12" => 0.07, "x_12" => 0.08,
+        "r_23" => 0.09, "x_23" => 0.10,
+        "r_13" => 0.11, "x_13" => 0.12,
+        "base_power_12" => 100.0, "base_power_23" => 100.0, "base_power_13" => 100.0,
+        "primary_turns_ratio" => 1.0, "secondary_turns_ratio" => 1.0,
+        "tertiary_turns_ratio" => 1.0,
+        "available_primary" => true, "available_secondary" => true,
+        "available_tertiary" => true,
+        "rating_primary" => 1.0, "rating_secondary" => 2.0, "rating_tertiary" => 3.0,
+        "base_voltage_primary" => 110.0, "base_voltage_secondary" => 22.0,
+        "base_voltage_tertiary" => 33.0,
+        # The case the corpus cannot exercise: a nonzero magnetizing shunt.
+        "g" => 0.0013, "b" => 0.021,
+        "active_power_flow_primary" => 0.0, "reactive_power_flow_primary" => 0.0,
+        "active_power_flow_secondary" => 0.0, "reactive_power_flow_secondary" => 0.0,
+        "active_power_flow_tertiary" => 0.0, "reactive_power_flow_tertiary" => 0.0,
+    )
+
+    out = PSU.translate_component(raw, ctx)
+    tx = only(filter(_is_three_winding, out))
+    @test tx.magnetizing_shunt.real == 0.0013
+    @test tx.magnetizing_shunt.imag == 0.021
+    # g/b are consumed now; top-level available (no top-level rating in this fixture) is
+    # still redundant with the per-circuit fields and stays a recorded drop.
+    @test Set(keys(rep.unmapped_fields)) == Set([("Transformer3W", "available")])
 end
 
 @testset "Transformer3W: per-winding tap, available, alpha routing" begin
@@ -437,18 +490,15 @@ end
         @test tx.x_31 == tx_raw["x_13"]
         @test tx.base_power_31 == tx_raw["base_power_13"]
 
-        # The brief's brief claims a correct implementation drops nothing here once
-        # *_group_number is consumed by winding_group_alpha. That does not hold: PSY5's
-        # top-level `available`, top-level `rating`, and `g`/`b` (star-to-ground shunt) are
-        # never read by translate(::Val{:Transformer3W}, ...) or _winding_circuit, so they
-        # are genuinely, correctly recorded as dropped rather than vanishing silently.
+        @test tx.magnetizing_shunt.real == tx_raw["g"]
+        @test tx.magnetizing_shunt.imag == tx_raw["b"]
+
+        # PSY5's top-level `available`/`rating` are redundant with the per-circuit
+        # available_$suffix/rating_$suffix fields (PSY6 has neither on the transformer
+        # itself, only on TransformerCircuit) and are correctly dropped-and-recorded. `g`/`b`
+        # now feed magnetizing_shunt, so they no longer appear here.
         @test Set(keys(rep.unmapped_fields)) ==
-              Set([
-            ("Transformer3W", "available"),
-            ("Transformer3W", "rating"),
-            ("Transformer3W", "g"),
-            ("Transformer3W", "b"),
-        ])
+              Set([("Transformer3W", "available"), ("Transformer3W", "rating")])
         for count in values(rep.unmapped_fields)
             @test count == 1
         end
