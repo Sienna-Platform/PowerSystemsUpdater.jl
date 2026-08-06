@@ -207,3 +207,52 @@ end
         @test PSU.PCOM.get_base_power(doc) == PSU.system_base_power(case)
     end
 end
+
+@testset "build_document: HybridSystem cascades when a masked sub-unit is skipped" begin
+    raw_data = Dict{String, Any}(
+        "components" => Any[
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "HybridSystem"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-hybrid")),
+                "name" => "hybrid1",
+                "available" => true,
+                "status" => true,
+                "bus" => Dict("value" => "uuid-bus"),
+                "active_power" => 1.0,
+                "reactive_power" => 0.0,
+                "base_power" => 100.0,
+                "thermal_unit" => Dict("value" => "uuid-thermal"),
+            ),
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "ACBus"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-bus")),
+                "name" => "bus1",
+                "number" => 1,
+                "available" => true,
+                "bustype" => "REF",
+            ),
+        ],
+        "masked_components" => Any[
+            Dict{String, Any}(
+            "__metadata__" => Dict("type" => "SomeUnmappedGeneratorType"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-thermal")),
+            "name" => "gen1",
+        ),
+        ],
+    )
+    raw = Dict{String, Any}(
+        "data" => raw_data,
+        "units_settings" => Dict("base_value" => 100.0),
+        "frequency" => 60.0,
+        "metadata" => Dict{String, Any}("name" => nothing, "description" => nothing),
+        "data_format_version" => "5.0.0",
+    )
+    case = PSU.Psy5Case(raw, "test-hybrid-cascade", nothing)
+    report = PSU.ConversionReport()
+    doc, ledger = PSU.build_document(case, report)
+
+    @test report.unmapped_types["SomeUnmappedGeneratorType"] == 1
+    @test report.cascaded_skips["HybridSystem"] == 1
+    @test PSU.is_skipped(ledger, "uuid-hybrid")
+    @test isempty(PSU.PCOM.get_components(doc, "HybridSystem"))
+end

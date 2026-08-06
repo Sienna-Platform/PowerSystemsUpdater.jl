@@ -6,8 +6,12 @@ order PSY5 wrote them; the second translates.
 """
 function build_document(case::Psy5Case, report::ConversionReport)
     ledger = Ledger()
-    raw_components = vcat(components(case), masked_components(case))
-    for raw in raw_components
+    own_components = components(case)
+    masked = masked_components(case)
+    for raw in own_components
+        assign_id!(ledger, component_uuid(raw))
+    end
+    for raw in masked
         assign_id!(ledger, component_uuid(raw))
     end
 
@@ -28,7 +32,14 @@ function build_document(case::Psy5Case, report::ConversionReport)
     PCOM.reserve_ids!(doc, ledger.counter[])
 
     ctx = TranslationContext(ledger, report, system_base_power(case))
-    for raw in raw_components
+    # Masked sub-units translate before the HybridSystem that references them, so a
+    # sub-unit's skip is known to references_skipped by the time its owner is checked.
+    for raw in masked
+        for model in translate_component(raw, ctx)
+            PCOM.add_component!(doc, model)
+        end
+    end
+    for raw in own_components
         for model in translate_component(raw, ctx)
             PCOM.add_component!(doc, model)
         end
@@ -54,6 +65,7 @@ function _add_supplemental_attributes!(
         attribute_uuid = association["attribute_uuid"]
         owner_uuid = association["component_uuid"]
         if !haskey(by_uuid, attribute_uuid)
+            record_cascaded_skip!(ctx.report, association["attribute_type"])
             continue
         end
         if is_skipped(ctx.ledger, owner_uuid)

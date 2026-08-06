@@ -1,13 +1,7 @@
 """
-PSY6's `HydroReservoir.head_to_volume_factor` is a bare `FunctionData`
-(`SiennaSchemas/Operations/StaticInjection/HydroReservoir.json`: "`FunctionData` mapping
-reservoir head to stored volume."). PSY5 nests it one level deeper: every corpus occurrence
-(75 `PSITestSystems` + 28 `PSISystems` + CATS) wraps it in an `InputOutputCurve` —
-`{"__metadata__": {"type": "InputOutputCurve"}, "input_at_zero": null, "function_data":
-{"__metadata__": {"type": "LinearFunctionData"}, ...}}` — and the generic verbatim/
-discriminator path tags the outer wrapper correctly but leaves PSY6 looking for
-`function_type` one level too shallow. `input_at_zero` is `null` in every occurrence seen, so
-unwrapping loses nothing today; a future non-null value is recorded rather than assumed away.
+PSY6's `head_to_volume_factor` is a bare `FunctionData`; PSY5 wraps it one level deeper in
+an `InputOutputCurve`. `input_at_zero` is `null` in every corpus occurrence, but a future
+non-null value is recorded rather than assumed away.
 """
 function _head_to_volume_factor(raw::AbstractDict, ctx::TranslationContext)
     curve = raw["head_to_volume_factor"]

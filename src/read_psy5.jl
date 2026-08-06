@@ -49,12 +49,8 @@ end
 components(case::Psy5Case) = case.raw["data"]["components"]
 
 """
-Components PSY5 excludes from its own default iteration because a `HybridSystem` owns them
-(its `thermal_unit`/`renewable_unit`/`storage`/`electric_load` sub-units). PSY6 has no such
-masking concept — `HybridSystem`'s sub-unit fields are plain integer ids naming an ordinary
-component (confirmed against `PowerOpenAPIModels.HybridSystem`) — so these are ordinary
-components for translation purposes and need ledger ids like any other; `components(case)`
-alone omits them, which is why `build_document`'s first pass must combine both.
+`HybridSystem` sub-units (`thermal_unit`/`renewable_unit`/`storage`/`electric_load`), which
+PSY5 excludes from `components(case)` but PSY6 treats as ordinary referenced components.
 """
 function masked_components(case::Psy5Case)
     return get(case.raw["data"], "masked_components", Any[])
