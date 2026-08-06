@@ -1,14 +1,14 @@
 using Test
 using Logging
 import InfrastructureSystems as IS
-using SiennaTemplate
+using PowerSystemsUpdater
 
 import Aqua
-Aqua.test_unbound_args(SiennaTemplate)
-Aqua.test_undefined_exports(SiennaTemplate)
-Aqua.test_ambiguities(SiennaTemplate)
-Aqua.test_stale_deps(SiennaTemplate)
-Aqua.test_deps_compat(SiennaTemplate)
+Aqua.test_unbound_args(PowerSystemsUpdater)
+Aqua.test_undefined_exports(PowerSystemsUpdater)
+Aqua.test_ambiguities(PowerSystemsUpdater)
+Aqua.test_stale_deps(PowerSystemsUpdater)
+Aqua.test_deps_compat(PowerSystemsUpdater)
 
 LOG_FILE = "power-systems.log"
 LOG_LEVELS = Dict(
@@ -84,7 +84,7 @@ function run_tests()
         end
 
         # Testing Topological components of the schema
-        @time @testset "Begin SiennaTemplate tests" begin
+        @time @testset "Begin PowerSystemsUpdater tests" begin
             @includetests ARGS
         end
 

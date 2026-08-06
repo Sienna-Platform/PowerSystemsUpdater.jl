@@ -1,6 +1,6 @@
 using Documenter
 import DataStructures: OrderedDict
-using SiennaTemplate
+using PowerSystemsUpdater
 using DocumenterInterLinks
 
 
@@ -30,11 +30,11 @@ pages = OrderedDict(
 )
 
 makedocs(
-    modules = [SiennaTemplate],
+    modules = [PowerSystemsUpdater],
     format = Documenter.HTML(
         prettyurls = haskey(ENV, "GITHUB_ACTIONS"),
         size_threshold = nothing,),
-    sitename = "github.com/Sienna-Platform/SiennaTemplate.jl",
+    sitename = "github.com/Sienna-Platform/PowerSystemsUpdater.jl",
     authors = "Freddy Mercury",
     pages = Any[p for p in pages],
     draft = false,
@@ -42,7 +42,7 @@ makedocs(
 )
 
 deploydocs(
-    repo="github.com/Sienna-Platform/SiennaTemplate.jl",
+    repo="github.com/Sienna-Platform/PowerSystemsUpdater.jl",
     target="build",
     branch="gh-pages",
     devbranch="main",

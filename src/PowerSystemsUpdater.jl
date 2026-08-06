@@ -1,4 +1,4 @@
-module SiennaTemplate
+module PowerSystemsUpdater
 using DocStringExtensions
 
 @template (FUNCTIONS, METHODS) = """

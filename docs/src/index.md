@@ -1,16 +1,16 @@
-# SiennaTemplate.jl
+# PowerSystemsUpdater.jl
 
 ```@meta
-CurrentModule = SiennaTemplate
+CurrentModule = PowerSystemsUpdater
 ```
 
 ## Overview
 
-`SiennaTemplate.jl` is a [`Julia`](http://www.julialang.org) package that provides blah blah
+`PowerSystemsUpdater.jl` is a [`Julia`](http://www.julialang.org) package that provides tools for updating and managing power systems data.
 
 ## About Sienna
 
-`SiennaTemplate` is part of the National Laboratory of the Rockies (formerly known as NREL)'s
+`PowerSystemsUpdater` is part of the National Laboratory of the Rockies (formerly known as NREL)'s
 [Sienna ecosystem](https://sienna-platform.github.io/Sienna/), an open source framework for
 scheduling problems and dynamic simulations for power systems. The Sienna ecosystem can be
 [found on github](https://github.com/Sienna-Platform). It contains three applications:
@@ -29,6 +29,6 @@ programming language.
 ## Installation and Quick Links
 
   - [Sienna installation page](https://sienna-platform.github.io/Sienna/SiennaDocs/docs/build/how-to/install/):
-    Instructions to install `SiennaTemplate.jl` and other Sienna packages
+    Instructions to install `PowerSystemsUpdater.jl` and other Sienna packages
   - [Sienna Documentation Hub](https://sienna-platform.github.io/Sienna/SiennaDocs/docs/build/index.html):
     Links to other Sienna packages' documentation
