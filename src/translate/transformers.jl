@@ -1,0 +1,121 @@
+"""
+PSY6 drops `WindingGroupNumber` and keeps only the angle, in `TransformerCircuit.alpha`
+(radians).
+
+A literal table, deliberately not `-n * pi / 6`: the enum is sparse, and its sign is
+inverted relative to the obvious reading — `GROUP_1` is -30 degrees, not +30. See
+`PowerSystems/src/definitions.jl:229-236` and the inverse map at
+`src/parsers/power_models_data.jl:1229`.
+"""
+const WINDING_GROUP_ALPHA = Dict{String, Float64}(
+    "GROUP_0" => 0.0,
+    "GROUP_1" => -pi / 6,
+    "GROUP_5" => -5pi / 6,
+    "GROUP_6" => pi,
+    "GROUP_7" => 5pi / 6,
+    "GROUP_11" => pi / 6,
+)
+
+function winding_group_alpha(group::AbstractString)
+    key = String(group)
+    if !haskey(WINDING_GROUP_ALPHA, key)
+        throw(Psy5FormatError("unknown WindingGroupNumber $key"))
+    end
+    return WINDING_GROUP_ALPHA[key]
+end
+
+# Fields consumed by the circuit rather than the transformer container.
+const CIRCUIT_FIELDS = Set([
+    "arc", "tap", "r", "x", "rating", "rating_b", "rating_c",
+    "active_power_flow", "reactive_power_flow", "base_power",
+    "base_voltage_primary", "base_voltage_secondary", "control_objective",
+    "regulated_bus_number", "number_of_tap_positions", "available",
+])
+
+function _circuit_source(raw::AbstractDict)
+    source = Dict{String, Any}("__metadata__" => raw["__metadata__"])
+    for (key, value) in raw
+        if key in CIRCUIT_FIELDS
+            source[key] = value
+        end
+    end
+    return source
+end
+
+"""
+PSY5's `primary_shunt` serializes a `Complex{Float64}` with keys `re`/`im`; PSY6's
+`ComplexNumber` schema (`SiennaSchemas/Core/common.json#/definitions/ComplexNumber`) uses
+`real`/`imag`. Passing the raw dict through verbatim would build a valid `ComplexNumber`
+value in Julia (the field is untyped) but serialize with the wrong keys, so the keys are
+translated here rather than forwarded as-is.
+"""
+function _magnetizing_shunt(raw::AbstractDict)
+    shunt = get(raw, "primary_shunt", nothing)
+    if isnothing(shunt)
+        return nothing
+    end
+    return PCOM.ComplexNumber(; real = Float64(shunt["re"]), imag = Float64(shunt["im"]))
+end
+
+"""
+Build the `TransformerCircuit` for a two-winding transformer.
+
+`alpha` comes from `α` when the PSY5 type carries one (`PhaseShiftingTransformer`) and from
+the winding group otherwise. The two never coexist on the same PSY5 type, so nothing is
+summed.
+"""
+function _build_circuit(raw::AbstractDict, ctx::TranslationContext, alpha::Float64)
+    circuit_id = allocate_id!(ctx.ledger)
+    extra = Dict{Symbol, Any}(
+        :id => circuit_id,
+        :alpha => alpha,
+        :base_power => base_power_for(raw, ctx.system_base),
+    )
+    if !haskey(raw, "tap")
+        extra[:tap] = 1.0
+    end
+    kwargs = build_kwargs(
+        POM.TransformerCircuit,
+        _circuit_source(raw),
+        ctx.ledger,
+        ctx.report;
+        extra = extra,
+    )
+    return POM.TransformerCircuit(; kwargs...)
+end
+
+function _translate_two_winding(
+    raw::AbstractDict,
+    ctx::TranslationContext,
+    alpha::Float64,
+)
+    circuit = _build_circuit(raw, ctx, alpha)
+    transformer = POM.TwoWindingTransformer(;
+        id = lookup_id(ctx.ledger, component_uuid(raw)),
+        name = raw["name"],
+        circuit = circuit.id,
+        magnetizing_shunt = _magnetizing_shunt(raw),
+    )
+    return OpenAPI.APIModel[circuit, transformer]
+end
+
+function _group_alpha(raw::AbstractDict)
+    group = get(raw, "winding_group_number", "GROUP_0")
+    return winding_group_alpha(group)
+end
+
+function translate(::Val{:Transformer2W}, raw::AbstractDict, ctx::TranslationContext)
+    return _translate_two_winding(raw, ctx, _group_alpha(raw))
+end
+
+function translate(::Val{:TapTransformer}, raw::AbstractDict, ctx::TranslationContext)
+    return _translate_two_winding(raw, ctx, _group_alpha(raw))
+end
+
+function translate(
+    ::Val{:PhaseShiftingTransformer},
+    raw::AbstractDict,
+    ctx::TranslationContext,
+)
+    return _translate_two_winding(raw, ctx, Float64(raw["α"]))
+end
