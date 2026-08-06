@@ -24,5 +24,6 @@ include("read_psy5.jl")
 include("ledger.jl")
 include("report.jl")
 include("translate/fields.jl")
+include("base_power.jl")
 
 end
