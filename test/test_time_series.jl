@@ -97,4 +97,54 @@
         case = PSU.read_psy5(no_ts_path)
         @test !PSU.has_time_series(case)
     end
+
+    # Real corpus rows always carry empty features; this must survive as `[]`, not vanish.
+    if isfile(path)
+        case = PSU.read_psy5(path)
+        rows = PSU.read_associations(case.time_series_path)
+        led = PSU.Ledger()
+        row = first(rows)
+        PSU.assign_id!(led, row["owner_uuid"])
+        assoc = PSU.to_time_series_association(row, led)
+        @test isempty(assoc.features)
+    end
+
+    # A non-empty features list has no destination; it must fail loudly, not be dropped.
+    let
+        led = PSU.Ledger()
+        PSU.assign_id!(led, "uuid-owner")
+        row = Dict{String, Any}(
+            "id" => 1, "time_series_uuid" => "ts-uuid",
+            "time_series_type" => "SingleTimeSeries",
+            "initial_timestamp" => "2024-01-01T00:00:00",
+            "resolution" => "P0DT3600.000S", "horizon" => nothing,
+            "interval" => nothing, "window_count" => nothing, "length" => 24,
+            "name" => "max_active_power", "owner_uuid" => "uuid-owner",
+            "owner_type" => "PowerLoad", "owner_category" => "Component",
+            "features" => "[{\"type\":\"scenario\"}]",
+            "scaling_factor_multiplier" => nothing, "metadata_uuid" => "meta-uuid",
+            "units" => nothing,
+        )
+        @test_throws PSU.Psy5FormatError PSU.to_time_series_association(row, led)
+    end
+
+    # `lookup_id` resolves the owner unconditionally; a skipped owner must abort loudly
+    # rather than silently produce a dangling `owner_id`. Filtering is the caller's job
+    # (documented on `to_time_series_association`), not this function's.
+    let
+        led = PSU.Ledger()
+        PSU.mark_skipped!(led, "uuid-owner", "no PSY6 schema for Widget")
+        row = Dict{String, Any}(
+            "id" => 1, "time_series_uuid" => "ts-uuid",
+            "time_series_type" => "SingleTimeSeries",
+            "initial_timestamp" => "2024-01-01T00:00:00",
+            "resolution" => "P0DT3600.000S", "horizon" => nothing,
+            "interval" => nothing, "window_count" => nothing, "length" => 24,
+            "name" => "max_active_power", "owner_uuid" => "uuid-owner",
+            "owner_type" => "PowerLoad", "owner_category" => "Component",
+            "features" => "[]", "scaling_factor_multiplier" => nothing,
+            "metadata_uuid" => "meta-uuid", "units" => nothing,
+        )
+        @test_throws PSU.DanglingReferenceError PSU.to_time_series_association(row, led)
+    end
 end

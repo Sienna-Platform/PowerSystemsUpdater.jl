@@ -23,10 +23,12 @@ function read_associations(h5_path::AbstractString)
         close(io)
         db = SQLite.DB(filename)
         query = SQLite.DBInterface.execute(db, "SELECT * FROM time_series_associations")
-        return [
+        rows = [
             Dict{String, Any}(string(k) => v for (k, v) in pairs(row))
             for row in Tables.rowtable(query)
         ]
+        SQLite.DBInterface.close!(db)
+        return rows
     end
 end
 
@@ -62,8 +64,34 @@ function _scaling_factor_multiplier(row::AbstractDict)
 end
 
 """
+PSY5's `features` column is a JSON-encoded list. Every row observed in the corpus carries
+`"[]"`, and this translator has no destination for a populated features list, so a non-empty
+value must fail loudly rather than be silently dropped.
+"""
+function _features(row::AbstractDict)
+    value = _association_value(get(row, "features", nothing))
+    if isnothing(value)
+        return Dict{String, PCOM.FeatureValue}[]
+    end
+    parsed = JSON.parse(String(value))
+    if !isempty(parsed)
+        throw(
+            Psy5FormatError(
+                "non-empty time series features are not supported: " *
+                "name=$(row["name"]) owner_type=$(row["owner_type"]) features=$value",
+            ),
+        )
+    end
+    return Dict{String, PCOM.FeatureValue}[]
+end
+
+"""
 PSY5's association columns match PSY6's `TimeSeriesAssociation` field-for-field except that
 the owner is a UUID rather than an integer id.
+
+The caller must exclude rows whose owner was skipped (`is_skipped(ledger, owner_uuid)`) —
+this function resolves `owner_id` unconditionally via `lookup_id` and raises
+`DanglingReferenceError` if the owner has no assigned id.
 """
 function to_time_series_association(row::AbstractDict, ledger::Ledger)
     owner_uuid = row["owner_uuid"]
@@ -84,7 +112,7 @@ function to_time_series_association(row::AbstractDict, ledger::Ledger)
         owner_id = lookup_id(ledger, owner_uuid),
         owner_type = string(row["owner_type"]),
         owner_category = string(row["owner_category"]),
-        features = Dict{String, PCOM.FeatureValue}[],
+        features = _features(row),
         scaling_factor_multiplier = _scaling_factor_multiplier(row),
         metadata_uuid = _optional_string_field(row, "metadata_uuid"),
         units = _optional_string_field(row, "units"),
