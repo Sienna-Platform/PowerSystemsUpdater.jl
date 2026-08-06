@@ -28,5 +28,6 @@ include("base_power.jl")
 include("translate/dispatch.jl")
 include("translate/reserves.jl")
 include("translate/transformers.jl")
+include("time_series.jl")
 
 end
