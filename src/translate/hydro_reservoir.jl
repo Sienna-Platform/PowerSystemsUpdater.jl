@@ -13,7 +13,7 @@ function _head_to_volume_factor(raw::AbstractDict, ctx::TranslationContext)
             "head_to_volume_factor.input_at_zero",
         )
     end
-    return translate_value(curve["function_data"], ctx.ledger)
+    return translate_value(curve["function_data"], ctx.ledger, ctx.report)
 end
 
 function translate(::Val{:HydroReservoir}, raw::AbstractDict, ctx::TranslationContext)

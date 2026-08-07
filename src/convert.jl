@@ -52,6 +52,30 @@ function build_document(case::Psy5Case, report::ConversionReport)
     return doc, ledger
 end
 
+"""
+Push only the association row for an attribute that was already added under a different
+owner. IS supports one supplemental attribute shared by many components; `assign_id!` being
+idempotent means a naive repeat would push the same attribute model twice under the same id,
+which `validate_document` then rejects as a duplicate — the corpus simply has no shared
+attribute to expose this, not that it cannot happen.
+"""
+function _add_supplemental_association!(
+    doc::PCOM.SystemDocument,
+    attribute_id::Int,
+    owner_id::Int,
+    type_name::AbstractString,
+)
+    push!(
+        doc.supplemental_attribute_associations,
+        PCOM.SupplementalAttributeAssociation(;
+            attribute_id = attribute_id,
+            entity_id = owner_id,
+            attribute_type = String(type_name),
+        ),
+    )
+    return nothing
+end
+
 function _add_supplemental_attributes!(
     doc::PCOM.SystemDocument,
     case::Psy5Case,
@@ -61,6 +85,7 @@ function _add_supplemental_attributes!(
     for attribute in supplemental_attributes(case)
         by_uuid[attribute["internal"]["uuid"]["value"]] = attribute
     end
+    added = Set{String}()
     for association in supplemental_associations(case)
         attribute_uuid = association["attribute_uuid"]
         owner_uuid = association["component_uuid"]
@@ -78,8 +103,14 @@ function _add_supplemental_attributes!(
             record_unmapped_type!(ctx.report, type_name)
             continue
         end
-        model_type = PCOM.model_type(type_name)
+        owner_id = lookup_id(ctx.ledger, owner_uuid)
         attribute_id = assign_id!(ctx.ledger, attribute_uuid)
+        if attribute_uuid in added
+            _add_supplemental_association!(doc, attribute_id, owner_id, type_name)
+            continue
+        end
+        push!(added, attribute_uuid)
+        model_type = PCOM.model_type(type_name)
         kwargs = build_kwargs(
             model_type,
             raw_attribute,
@@ -87,11 +118,7 @@ function _add_supplemental_attributes!(
             ctx.report;
             extra = Dict{Symbol, Any}(:id => attribute_id),
         )
-        PCOM.add_supplemental_attribute!(
-            doc,
-            model_type(; kwargs...),
-            lookup_id(ctx.ledger, owner_uuid),
-        )
+        PCOM.add_supplemental_attribute!(doc, model_type(; kwargs...), owner_id)
     end
     PCOM.reserve_ids!(doc, ctx.ledger.counter[])
     return nothing

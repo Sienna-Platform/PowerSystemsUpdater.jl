@@ -50,22 +50,22 @@
 
     @testset "translate_value" begin
         # scalars pass through unchanged
-        @test PSU.translate_value(42, led) == 42
-        @test PSU.translate_value("plain-string", led) == "plain-string"
-        @test PSU.translate_value(3.14, led) == 3.14
-        @test PSU.translate_value(nothing, led) === nothing
+        @test PSU.translate_value(42, led, rep) == 42
+        @test PSU.translate_value("plain-string", led, rep) == "plain-string"
+        @test PSU.translate_value(3.14, led, rep) == 3.14
+        @test PSU.translate_value(nothing, led, rep) === nothing
 
         # a non-reference dict passes through unchanged
         plain_dict = Dict("min" => 0.9, "max" => 1.05)
-        @test PSU.translate_value(plain_dict, led) == plain_dict
+        @test PSU.translate_value(plain_dict, led, rep) == plain_dict
 
         # a vector of references resolves each element
         refs = [Dict("value" => "uuid-bus"), Dict("value" => "uuid-area")]
-        @test PSU.translate_value(refs, led) == [bus_id, area_id]
+        @test PSU.translate_value(refs, led, rep) == [bus_id, area_id]
 
         # a vector mixing references and scalars resolves only the references
         mixed = [Dict("value" => "uuid-bus"), 7, "tag"]
-        @test PSU.translate_value(mixed, led) == [bus_id, 7, "tag"]
+        @test PSU.translate_value(mixed, led, rep) == [bus_id, 7, "tag"]
     end
 
     @testset "references_skipped negative and vector paths" begin
@@ -147,7 +147,8 @@
                 "__metadata__" => Dict("module" => "PowerSystems", "type" => psy5_type),
                 "some_field" => 1.0,
             )
-            translated = PSU.translate_value(raw_value, led)
+            discriminator_rep = PSU.ConversionReport()
+            translated = PSU.translate_value(raw_value, led, discriminator_rep)
             @test translated[String(property)] == value
             @test translated["__metadata__"]["type"] == psy5_type
             @test translated["some_field"] == 1.0
@@ -166,29 +167,83 @@
                 ),
             ),
         )
-        translated_nested = PSU.translate_value(nested, led)
+        nested_rep = PSU.ConversionReport()
+        translated_nested = PSU.translate_value(nested, led, nested_rep)
         @test translated_nested["variable_cost_type"] == "COST"
         @test translated_nested["value_curve"]["curve_type"] == "INPUT_OUTPUT"
         @test translated_nested["value_curve"]["function_data"]["function_type"] ==
               "LINEAR"
+        @test isempty(nested_rep.unmapped_fields)
 
         # a PSY5 type not in the table is forwarded unchanged, discriminator or not
         untagged = Dict{String, Any}(
             "__metadata__" => Dict("type" => "SomeUnrelatedType"),
             "field" => 1,
         )
-        @test !haskey(PSU.translate_value(untagged, led), "curve_type")
-        @test PSU.translate_value(untagged, led)["field"] == 1
+        untagged_rep = PSU.ConversionReport()
+        @test !haskey(PSU.translate_value(untagged, led, untagged_rep), "curve_type")
+        @test PSU.translate_value(untagged, led, untagged_rep)["field"] == 1
 
         # StartUpStages carries no __metadata__ at all in PSY5, so it is detected by its
         # exact key set rather than a type tag.
         start_up_stages = Dict{String, Any}("hot" => 1.0, "warm" => 2.0, "cold" => 3.0)
-        translated_stages = PSU.translate_value(start_up_stages, led)
+        stages_rep = PSU.ConversionReport()
+        translated_stages = PSU.translate_value(start_up_stages, led, stages_rep)
         @test translated_stages["startup_stages_type"] == "STAGES"
+        @test isempty(stages_rep.unmapped_fields)
 
         # a plain composite with a disjoint key set is not mistaken for StartUpStages
         min_max = Dict{String, Any}("min" => 0.0, "max" => 1.0)
-        @test !haskey(PSU.translate_value(min_max, led), "startup_stages_type")
+        min_max_rep = PSU.ConversionReport()
+        @test !haskey(
+            PSU.translate_value(min_max, led, min_max_rep),
+            "startup_stages_type",
+        )
+    end
+
+    @testset "nested composite fields with no PSY6 counterpart are recorded, not dropped" begin
+        # FuelCurve has no `startup_fuel_offtake` field in any PSY6 schema; a nested
+        # FuelCurve carrying that key must be caught the same way build_kwargs catches an
+        # unmapped top-level field, not forwarded into the output silently.
+        fuel_curve_rep = PSU.ConversionReport()
+        fuel_curve = Dict{String, Any}(
+            "__metadata__" =>
+                Dict("module" => "InfrastructureSystems", "type" => "FuelCurve"),
+            "fuel_cost" => 0.0,
+            "power_units" => "NATURAL_UNITS",
+            "value_curve" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "InputOutputCurve"),
+                "function_data" => Dict{String, Any}(
+                    "__metadata__" => Dict("type" => "LinearFunctionData"),
+                    "constant_term" => 0.0,
+                    "proportional_term" => 0.0,
+                ),
+            ),
+            "startup_fuel_offtake" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "InputOutputCurve"),
+                "function_data" => Dict{String, Any}(
+                    "__metadata__" => Dict("type" => "LinearFunctionData"),
+                    "constant_term" => 0.0,
+                    "proportional_term" => 0.0,
+                ),
+            ),
+        )
+        translated_fuel = PSU.translate_value(fuel_curve, led, fuel_curve_rep)
+        @test haskey(translated_fuel, "startup_fuel_offtake")
+        @test fuel_curve_rep.unmapped_fields[("FuelCurve", "startup_fuel_offtake")] == 1
+
+        # a buried reference to an already-skipped uuid is caught however deep it is
+        # nested, since the fast path (references_skipped) does not recurse into a
+        # non-reference dict but translate_value/lookup_id does.
+        deep_rep = PSU.ConversionReport()
+        PSU.mark_skipped!(led, "uuid-buried-skip", "no PSY6 schema for Widget")
+        buried = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "SomeUnrelatedType"),
+            "wrapper" =>
+                Dict{String, Any}("inner" => Dict("value" => "uuid-buried-skip")),
+        )
+        @test !PSU.is_reference(buried["wrapper"])
+        @test_throws PSU.DanglingReferenceError PSU.translate_value(buried, led, deep_rep)
     end
 
     @testset "unmapped field counts accumulate across calls" begin

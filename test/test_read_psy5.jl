@@ -1,9 +1,7 @@
 @testset "read_psy5" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "c_sys5")
-    if !isfile(path)
-        @warn "corpus absent; skipping" path
-    else
+    if require_corpus_file(path)
         case = PSU.read_psy5(path)
         @test PSU.system_base_power(case) == 100.0
         @test !isempty(PSU.components(case))

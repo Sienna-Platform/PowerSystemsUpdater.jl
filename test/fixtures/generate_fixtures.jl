@@ -13,6 +13,22 @@ const FIXTURES = [
     (PSITestSystems, "case10_radial_series_reductions"),
     (PSITestSystems, "c_sys14_hvdc_lcc"),
     (PSITestSystems, "c_sys14_hvdc_vsc"),
+    # Every name below is hardcoded by a test (test_convert.jl, test_python_load.jl,
+    # test_time_series.jl, test_translate_transformers.jl) or by test_corpus.jl's
+    # REQUIRED_SYSTEMS manifest; the fixture set must produce all of them or the corpus
+    # tier fails when run against it.
+    (PSITestSystems, "c_sys5"),
+    (PSITestSystems, "c_linear_fuel_test"),
+    (PSITestSystems, "c_sys5_hy_uc"),
+    (PSITestSystems, "c_sys5_hybrid"),
+    (PSITestSystems, "c_sys5_hybrid_uc"),
+    (PSITestSystems, "c_sys5_hybrid_ed"),
+    (PSITestSystems, "test_RTS_GMLC_sys_with_hybrid"),
+    (PSITestSystems, "c_duration_test"),
+    (PSITestSystems, "c_sys5_uc"),
+    (PSITestSystems, "c_sys5_hy_ed"),
+    (PSITestSystems, "c_sys5_all_components"),
+    (PSITestSystems, "c_sys14"),
 ]
 
 for (category, name) in FIXTURES

@@ -47,31 +47,70 @@ key set instead, the same way `is_reference` classifies by shape rather than by 
 _is_start_up_stages_shape(dict::AbstractDict) =
     Set(keys(dict)) == Set(("hot", "warm", "cold"))
 
-translate_value(value, ::Ledger) = value
+translate_value(value, ::Ledger, ::ConversionReport) = value
+
+"""
+Record every key on a resolved nested composite (`type_name` from `__metadata__.type`, or
+`"StartUpStages"` for the untagged shape) that is not one of `PCOM.model_type(type_name)`'s
+fieldnames — the nested analogue of `build_kwargs`'s unmapped-field guard.
+
+Only fires when `type_name` resolves to a registered PSY6 model; an unresolved nested dict
+(no `__metadata__.type`, or a PSY5 type with no PSY6 counterpart) is forwarded unchanged, as
+before, with nothing to check its keys against. `__metadata__` itself is never flagged: the
+schemas allow the extra key.
+"""
+function _record_unmapped_nested_fields!(
+    translated::AbstractDict,
+    type_name::Union{Nothing, AbstractString},
+    report::ConversionReport,
+)
+    if isnothing(type_name) || !PCOM.has_model_type(type_name)
+        return nothing
+    end
+    targets = Set(fieldnames(PCOM.model_type(type_name)))
+    for key in keys(translated)
+        if key == "__metadata__"
+            continue
+        end
+        if !(Symbol(key) in targets)
+            record_unmapped_field!(report, type_name, key)
+        end
+    end
+    return nothing
+end
 
 """
 Non-reference dicts are forwarded recursively rather than verbatim, so a nested `oneOf`
 (a `CostCurve` containing a `ValueCurve` containing `FunctionData`) gets its discriminator
 at every level in one pass. `__metadata__` is left in place: the schemas allow the extra key.
+
+Every resolved nested composite is also checked against its PSY6 fieldnames
+(`_record_unmapped_nested_fields!`), the same guard `build_kwargs` applies at the top level —
+otherwise a PSY5 field with no PSY6 counterpart inside a nested object (for example
+`FuelCurve.startup_fuel_offtake`) would be forwarded into the output silently instead of
+being recorded as a finding.
 """
-function translate_value(value::AbstractDict, ledger::Ledger)
+function translate_value(value::AbstractDict, ledger::Ledger, report::ConversionReport)
     if is_reference(value)
         return lookup_id(ledger, reference_uuid(value))
     end
-    translated =
-        Dict{String, Any}(key => translate_value(v, ledger) for (key, v) in value)
+    translated = Dict{String, Any}(
+        key => translate_value(v, ledger, report) for (key, v) in value
+    )
     type_name = _psy5_type_name(translated)
     if !isnothing(type_name) && haskey(ONEOF_DISCRIMINATORS, type_name)
         property, discriminator_value = ONEOF_DISCRIMINATORS[type_name]
         translated[string(property)] = discriminator_value
     elseif isnothing(type_name) && _is_start_up_stages_shape(translated)
+        type_name = "StartUpStages"
         translated["startup_stages_type"] = "STAGES"
     end
+    _record_unmapped_nested_fields!(translated, type_name, report)
     return translated
 end
 
-function translate_value(value::AbstractVector, ledger::Ledger)
-    return [translate_value(v, ledger) for v in value]
+function translate_value(value::AbstractVector, ledger::Ledger, report::ConversionReport)
+    return [translate_value(v, ledger, report) for v in value]
 end
 
 """
@@ -133,7 +172,7 @@ function build_kwargs(
         if isnothing(value)
             continue
         end
-        kwargs[symbol] = translate_value(value, ledger)
+        kwargs[symbol] = translate_value(value, ledger, report)
     end
     for (key, value) in extra
         kwargs[key] = value

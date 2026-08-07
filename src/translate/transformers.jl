@@ -225,10 +225,49 @@ function _winding_circuit(
 end
 
 """
+`_winding_circuit` fills each circuit's `available`/`rating` from `available_\$suffix`/
+`rating_\$suffix`, whose PSY5 defaults are `true`/`0.0` — the same values a genuinely
+redundant top-level field would have. A real top-level `available=false` would be silently
+replaced by three available circuits, and a real top-level `rating` would be silently
+replaced by a zero-capacity one, if any per-winding rating is still at its default. Recording
+the drop (`_record_dropped_three_winding_fields!`) is not the same as not producing a wrong
+value, so both cases error instead.
+"""
+function _check_transformer3w_top_level!(raw::AbstractDict)
+    name = get(raw, "name", "<unnamed>")
+    available = get(raw, "available", true)
+    if available === false
+        throw(
+            Psy5FormatError(
+                "Transformer3W \"$name\": top-level available=false would be silently " *
+                "replaced by available_\$suffix's default (true) on every TransformerCircuit",
+            ),
+        )
+    end
+    rating = get(raw, "rating", 0.0)
+    if !iszero(rating)
+        for suffix in string.(THREE_WINDING_TERMINALS)
+            winding_rating = get(raw, "rating_$suffix", 0.0)
+            if isnothing(winding_rating) || iszero(winding_rating)
+                throw(
+                    Psy5FormatError(
+                        "Transformer3W \"$name\": top-level rating=$rating is non-zero " *
+                        "but rating_$suffix is zero — the circuit would silently get a " *
+                        "zero-capacity rating",
+                    ),
+                )
+            end
+        end
+    end
+    return nothing
+end
+
+"""
 PSY5 stores both the pairwise-measured and the star-equivalent forms, so nothing is
 inverted. Note PSY5's 1-3 pair is PSY6's 3-1: the index order flips.
 """
 function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationContext)
+    _check_transformer3w_top_level!(raw)
     _record_dropped_three_winding_fields!(raw, ctx)
     circuits = [_winding_circuit(raw, ctx, t) for t in THREE_WINDING_TERMINALS]
     transformer = POM.ThreeWindingTransformer(;

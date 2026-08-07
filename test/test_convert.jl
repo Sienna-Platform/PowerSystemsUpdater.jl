@@ -1,9 +1,7 @@
 @testset "convert_system" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "c_sys5")
-    if !isfile(path)
-        @warn "corpus absent; skipping convert test" path
-    else
+    if require_corpus_file(path)
         mktempdir() do tmp
             report = PSU.convert_system(path, tmp)
 
@@ -24,9 +22,7 @@ end
 @testset "convert_system: round trip with a FuelCurve" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "c_linear_fuel_test")
-    if !isfile(path)
-        @warn "corpus absent; skipping" path
-    else
+    if require_corpus_file(path)
         mktempdir() do tmp
             PSU.convert_system(path, tmp)
             system_json = joinpath(tmp, "system.json")
@@ -47,12 +43,25 @@ end
     end
 end
 
+@testset "convert_system: a nested FuelCurve field with no PSY6 counterpart is recorded" begin
+    # 5_bus_hydro_ed_sys's HydroDispatch carries operation_cost.variable.startup_fuel_offtake,
+    # a real PSY5 field inside a nested FuelCurve that no PSY6 schema declares. Before the
+    # fix, translate_value forwarded nested dict keys with no filtering at all, so this was
+    # emitted into output silently instead of being recorded like an unmapped top-level field.
+    dir = joinpath(@__DIR__, "..", "data", "PSISystems")
+    path = joinpath(dir, "5_bus_hydro_ed_sys")
+    if require_corpus_file(path)
+        mktempdir() do tmp
+            report = PSU.convert_system(path, tmp)
+            @test report.unmapped_fields[("FuelCurve", "startup_fuel_offtake")] > 0
+        end
+    end
+end
+
 @testset "convert_system: round trip with a HydroReservoir" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "c_sys5_hy_uc")
-    if !isfile(path)
-        @warn "corpus absent; skipping" path
-    else
+    if require_corpus_file(path)
         mktempdir() do tmp
             report = PSU.convert_system(path, tmp)
             system_json = joinpath(tmp, "system.json")
@@ -78,9 +87,7 @@ end
     # unsanctioned promotion; see task-11-report.md fix round 2.
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "c_sys5_hybrid")
-    if !isfile(path)
-        @warn "corpus absent; skipping" path
-    else
+    if require_corpus_file(path)
         mktempdir() do tmp
             PSU.convert_system(path, tmp)
             system_json = joinpath(tmp, "system.json")
@@ -108,8 +115,7 @@ end
         "test_RTS_GMLC_sys_with_hybrid",
     )
         path = joinpath(dir, name)
-        if !isfile(path)
-            @warn "corpus absent; skipping" path
+        if !require_corpus_file(path)
             continue
         end
         mktempdir() do tmp
@@ -123,9 +129,7 @@ end
 @testset "convert_system: with time series" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "c_sys5")
-    if !isfile(path)
-        @warn "corpus absent; skipping" path
-    else
+    if require_corpus_file(path)
         mktempdir() do tmp
             PSU.convert_system(path, tmp)
             @test isfile(joinpath(tmp, "time_series.h5"))
@@ -142,9 +146,7 @@ end
 @testset "convert_system: without time series" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "case10_radial_series_reductions")
-    if !isfile(path)
-        @warn "corpus absent; skipping" path
-    else
+    if require_corpus_file(path)
         mktempdir() do tmp
             PSU.convert_system(path, tmp)
             @test !isfile(joinpath(tmp, "time_series.h5"))
@@ -160,9 +162,7 @@ end
 @testset "convert_system: force semantics" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "c_sys5")
-    if !isfile(path)
-        @warn "corpus absent; skipping" path
-    else
+    if require_corpus_file(path)
         mktempdir() do tmp
             PSU.convert_system(path, tmp)
             @test_throws PSU.PCOM.DocumentFormatError PSU.convert_system(path, tmp)
@@ -175,9 +175,7 @@ end
 
 @testset "build_document: id disjointness and supplemental attributes" begin
     path = joinpath(@__DIR__, "..", "data", "CATS", "CATS_Sienna.json")
-    if !isfile(path)
-        @warn "CATS corpus absent; skipping" path
-    else
+    if require_corpus_file(path)
         case = PSU.read_psy5(path)
         report = PSU.ConversionReport()
         doc, _ = PSU.build_document(case, report)
@@ -255,4 +253,69 @@ end
     @test report.cascaded_skips["HybridSystem"] == 1
     @test PSU.is_skipped(ledger, "uuid-hybrid")
     @test isempty(PSU.PCOM.get_components(doc, "HybridSystem"))
+end
+
+@testset "build_document: one supplemental attribute shared by two owners" begin
+    raw_data = Dict{String, Any}(
+        "components" => Any[
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "ACBus"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-bus-a")),
+                "name" => "busA", "number" => 1, "available" => true,
+                "bustype" => "REF",
+            ),
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "ACBus"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-bus-b")),
+                "name" => "busB", "number" => 2, "available" => true,
+                "bustype" => "REF",
+            ),
+        ],
+        "supplemental_attribute_manager" => Dict{String, Any}(
+            "attributes" => Any[
+                Dict{String, Any}(
+                "__metadata__" => Dict("type" => "GeographicInfo"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-geo")),
+                "geo_json" => Dict{String, Any}("type" => "Point"),
+            ),
+            ],
+            "associations" => Any[
+                Dict{String, Any}(
+                    "attribute_uuid" => "uuid-geo",
+                    "attribute_type" => "GeographicInfo",
+                    "component_uuid" => "uuid-bus-a",
+                    "component_type" => "ACBus",
+                ),
+                Dict{String, Any}(
+                    "attribute_uuid" => "uuid-geo",
+                    "attribute_type" => "GeographicInfo",
+                    "component_uuid" => "uuid-bus-b",
+                    "component_type" => "ACBus",
+                ),
+            ],
+        ),
+    )
+    raw = Dict{String, Any}(
+        "data" => raw_data,
+        "units_settings" => Dict("base_value" => 100.0),
+        "frequency" => 60.0,
+        "metadata" => Dict{String, Any}("name" => nothing, "description" => nothing),
+        "data_format_version" => "5.0.0",
+    )
+    case = PSU.Psy5Case(raw, "test-shared-attribute", nothing)
+    report = PSU.ConversionReport()
+    doc, _ = PSU.build_document(case, report)
+
+    # the shared attribute is pushed once, not once per owner.
+    @test length(doc.supplemental_attributes) == 1
+
+    geo_associations = filter(
+        a -> a.attribute_type == "GeographicInfo",
+        doc.supplemental_attribute_associations,
+    )
+    @test length(geo_associations) == 2
+    @test length(Set(a.entity_id for a in geo_associations)) == 2
+    @test length(Set(a.attribute_id for a in geo_associations)) == 1
+
+    PSU.PCOM.validate_document(doc)
 end

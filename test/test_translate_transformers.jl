@@ -456,12 +456,59 @@ end
     @test tertiary.alpha ≈ pi / 6
 end
 
+@testset "Transformer3W: top-level available=false errors loudly" begin
+    # available_$suffix's own PSY5 default is true, so a dropped top-level
+    # available=false would otherwise be silently replaced by three available circuits.
+    led = PSU.Ledger()
+    rep = PSU.ConversionReport()
+    ctx = PSU.TranslationContext(led, rep, 100.0)
+
+    raw = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "Transformer3W"),
+        "internal" => Dict("uuid" => Dict("value" => "uuid-3w-unavailable")),
+        "name" => "unavailable-3w",
+        "available" => false,
+    )
+
+    @test_throws PSU.Psy5FormatError PSU.translate(Val(:Transformer3W), raw, ctx)
+end
+
+@testset "Transformer3W: non-zero top-level rating with a zero per-winding rating errors loudly" begin
+    # rating_$suffix's own PSY5 default is 0.0, so a real top-level rating paired with a
+    # still-default per-winding rating would otherwise be silently replaced by zero.
+    led = PSU.Ledger()
+    rep = PSU.ConversionReport()
+    ctx = PSU.TranslationContext(led, rep, 100.0)
+
+    raw = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "Transformer3W"),
+        "internal" => Dict("uuid" => Dict("value" => "uuid-3w-badrating")),
+        "name" => "badrating-3w",
+        "available" => true,
+        "rating" => 50.0,
+        "rating_primary" => 1.0e6, "rating_secondary" => 1.0e6, "rating_tertiary" =>
+            0.0,
+    )
+
+    @test_throws PSU.Psy5FormatError PSU.translate(Val(:Transformer3W), raw, ctx)
+end
+
+@testset "Transformer3W: the corpus's safe corner does not error" begin
+    # The real corpus's one instance: top-level rating at its own PSY5 default (0.0),
+    # every per-winding rating genuinely populated. Not an error case.
+    raw = Dict{String, Any}(
+        "available" => true,
+        "rating" => 0.0,
+        "rating_primary" => 1.0e6, "rating_secondary" => 1.0e6,
+        "rating_tertiary" => 1.0e6,
+    )
+    @test PSU._check_transformer3w_top_level!(raw) === nothing
+end
+
 @testset "real Transformer3W from case10_radial_series_reductions" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "case10_radial_series_reductions")
-    if !isfile(path)
-        @warn "corpus absent; skipping" path
-    else
+    if require_corpus_file(path)
         case = PSU.read_psy5(path)
         led = PSU.Ledger()
         rep = PSU.ConversionReport()
@@ -512,9 +559,7 @@ end
 @testset "real transformer from c_sys14" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "c_sys14")
-    if !isfile(path)
-        @warn "corpus absent; skipping" path
-    else
+    if require_corpus_file(path)
         case = PSU.read_psy5(path)
         led = PSU.Ledger()
         rep = PSU.ConversionReport()

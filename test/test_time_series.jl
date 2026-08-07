@@ -1,9 +1,7 @@
 @testset "time series" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "c_sys5_uc")
-    if !isfile(path)
-        @warn "corpus absent; skipping time series test" path
-    else
+    if require_corpus_file(path)
         case = PSU.read_psy5(path)
         @test PSU.has_time_series(case)
 
@@ -49,9 +47,7 @@
 
     # Every association in a real, multi-row system translates without throwing.
     many_path = joinpath(dir, "c_sys5_hy_ed")
-    if !isfile(many_path)
-        @warn "corpus absent; skipping multi-row time series test" many_path
-    else
+    if require_corpus_file(many_path)
         case = PSU.read_psy5(many_path)
         rows = PSU.read_associations(case.time_series_path)
         @test length(rows) > 1
@@ -71,9 +67,7 @@
     # must not depend on that reconstruction, and the decoded value must be the dot-encoded
     # name PSY6's schema documents, not the raw serialized-function JSON.
     scaled_path = joinpath(dir, "c_sys5_all_components")
-    if !isfile(scaled_path)
-        @warn "corpus absent; skipping scaling_factor_multiplier test" scaled_path
-    else
+    if require_corpus_file(scaled_path)
         case = PSU.read_psy5(scaled_path)
         rows = PSU.read_associations(case.time_series_path)
         @test !isempty(rows)
@@ -91,9 +85,7 @@
 
     # A system with no time series sidecar at all.
     no_ts_path = joinpath(dir, "case10_radial_series_reductions")
-    if !isfile(no_ts_path)
-        @warn "corpus absent; skipping no-time-series test" no_ts_path
-    else
+    if require_corpus_file(no_ts_path)
         case = PSU.read_psy5(no_ts_path)
         @test !PSU.has_time_series(case)
     end

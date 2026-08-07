@@ -103,31 +103,35 @@ end
 
     if isnothing(python)
         @warn PYTHON_TIER_SKIP_MESSAGE
-    elseif !isfile(with_time_series) || !isfile(without_time_series)
-        @warn "corpus absent; skipping python tier" with_time_series without_time_series
     else
-        mktempdir() do tmp
-            ok, out, err = convert_and_check(python, checker, with_time_series, tmp)
-            if !ok
-                @error "python validation failed on a system with time series" stderr = err
-            end
-            @test ok
-            @test parse_validated_count(out) > 0
-
-            ok, out, err = convert_and_check(python, checker, without_time_series, tmp)
-            reason = get(KNOWN_PYTHON_SCHEMA_DRIFT, basename(without_time_series), nothing)
-            if isnothing(reason)
+        has_with_ts = require_corpus_file(with_time_series)
+        has_without_ts = require_corpus_file(without_time_series)
+        if has_with_ts && has_without_ts
+            mktempdir() do tmp
+                ok, out, err = convert_and_check(python, checker, with_time_series, tmp)
                 if !ok
-                    @error "python validation failed on a system without time series" stderr =
+                    @error "python validation failed on a system with time series" stderr =
                         err
                 end
                 @test ok
-            else
-                if ok
-                    @warn "KNOWN_PYTHON_SCHEMA_DRIFT entry now passes; remove it" system =
-                        basename(without_time_series)
+                @test parse_validated_count(out) > 0
+
+                ok, out, err = convert_and_check(python, checker, without_time_series, tmp)
+                reason =
+                    get(KNOWN_PYTHON_SCHEMA_DRIFT, basename(without_time_series), nothing)
+                if isnothing(reason)
+                    if !ok
+                        @error "python validation failed on a system without time series" stderr =
+                            err
+                    end
+                    @test ok
+                else
+                    if ok
+                        @warn "KNOWN_PYTHON_SCHEMA_DRIFT entry now passes; remove it" system =
+                            basename(without_time_series)
+                    end
+                    @test !ok
                 end
-                @test !ok
             end
         end
     end
@@ -169,8 +173,8 @@ end
 
     if isnothing(python)
         @warn PYTHON_TIER_SKIP_MESSAGE
-    elseif isempty(systems)
-        @warn "corpus absent under data/; skipping python corpus scan"
+    elseif !require_corpus_systems(systems, "data/ contains no systems for the python tier")
+        # already reported by require_corpus_systems above
     else
         accepted = String[]
         rejected = Tuple{String, String}[]
@@ -196,7 +200,12 @@ end
             "c_pwl_average_cost_test", "c_pwl_average_fuel_test", "c_sys5_hybrid",
             "c_sys5_hybrid_ed", "c_sys5_hybrid_uc", "test_RTS_GMLC_sys_with_hybrid",
         ])
-        missing_from_python_rejects = setdiff(julia_gaps, rejected_names)
+        # Only check gap systems this run actually swept: a partial corpus (the 7-system
+        # fixture set) legitimately omits some of them, and that omission is not the same
+        # finding as one that was swept and unexpectedly started passing.
+        present = Set(basename.(systems))
+        applicable_gaps = filter(g -> g in present, julia_gaps)
+        missing_from_python_rejects = setdiff(applicable_gaps, rejected_names)
         if !isempty(missing_from_python_rejects)
             @error "a Julia round-trip gap now passes Python validation; check whether " *
                    "the corresponding KNOWN_ROUNDTRIP_GAPS entry in test_corpus.jl is stale" system =

@@ -1,9 +1,7 @@
 @testset "translate HydroReservoir: head_to_volume_factor unwrap" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "c_sys5_hy_uc")
-    if !isfile(path)
-        @warn "corpus absent; skipping" path
-    else
+    if require_corpus_file(path)
         case = PSU.read_psy5(path)
         led = PSU.Ledger()
         rep = PSU.ConversionReport()
