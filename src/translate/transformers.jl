@@ -3,9 +3,7 @@ PSY6 drops `WindingGroupNumber` and keeps only the angle, in `TransformerCircuit
 (radians).
 
 A literal table, deliberately not `-n * pi / 6`: the enum is sparse, and its sign is
-inverted relative to the obvious reading — `GROUP_1` is -30 degrees, not +30. See
-`PowerSystems/src/definitions.jl:229-236` and the inverse map at
-`src/parsers/power_models_data.jl:1229`.
+inverted relative to the obvious reading — `GROUP_1` is -30 degrees, not +30.
 """
 const WINDING_GROUP_ALPHA = Dict{String, Float64}(
     "GROUP_0" => 0.0,
@@ -292,7 +290,7 @@ function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationCon
             real = Float64(raw["g"]),
             imag = Float64(raw["b"]),
         ),
-        # PSY5's g/b are star-bus-to-ground (Transformer3W.jl:98-99), not primary-side, so
+        # PSY5's g/b are star-bus-to-ground, not primary-side, so
         # the schema's PRIMARY default is wrong here — unlike the two-winding path.
         shunt_location = "STAR",
     )
