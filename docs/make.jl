@@ -20,7 +20,11 @@ pages = OrderedDict(
     "Welcome Page" => "index.md",
     "Tutorials" => Any["stub" => "tutorials/generated_stub.md"],
     "How to..." => Any["stub" => "how_to_guides/stub.md"],
-    "Explanation" => Any["stub" => "explanation/stub.md"],
+    "Explanation" => Any[
+        "PSY5 to PSY6 component changes" =>
+            "explanation/psy5_to_psy6_component_changes.md",
+        "stub" => "explanation/stub.md",
+    ],
     "Reference" => Any[ 
         "Developers" => ["Developer Guidelines" => "reference/developer_guidelines.md",
         "Internals" => "reference/internal.md"],
