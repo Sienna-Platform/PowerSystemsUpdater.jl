@@ -21,17 +21,32 @@ const KNOWN_GAPS = String[]
 #
 # Correct repair upstream: make it exactly {LINEAR, PIECEWISE_STEP}, mirroring
 # IncrementalCurveFunctionData. Reported; do NOT work around it in the translator.
-# MarketBidCost.shut_down / no_load_cost are typed `$ref: InputOutputCurve` with no
-# oneOf/anyOf admitting a bare number, but PSY5 legally writes `shut_down: 0.0`. The object
-# under the schema's `default` applies only when the field is absent — it does not sanction
-# a scalar. Promoting 0.0 into a curve would be inventing a conversion, so we do not.
+#
+# MarketBidCost.shut_down / no_load_cost being a bare scalar in PSY5 is no longer a gap:
+# the converter promotes the scalar into a constant InputOutputCurve (see
+# src/translate/fields.jl). c_sys5_hybrid, c_sys5_hybrid_ed, c_sys5_hybrid_uc also carry an
+# embedded time-series pointer on a different MarketBidCost field and so now fail
+# conversion outright instead — see KNOWN_CONVERSION_GAPS below.
 const KNOWN_ROUNDTRIP_GAPS = Dict(
     "c_pwl_average_cost_test" => "SiennaSchemas: AverageRateCurveFunctionData omits PIECEWISE_STEP",
     "c_pwl_average_fuel_test" => "SiennaSchemas: AverageRateCurveFunctionData omits PIECEWISE_STEP",
-    "c_sys5_hybrid" => "SiennaSchemas: MarketBidCost.shut_down admits no scalar",
-    "c_sys5_hybrid_ed" => "SiennaSchemas: MarketBidCost.shut_down admits no scalar",
-    "c_sys5_hybrid_uc" => "SiennaSchemas: MarketBidCost.shut_down admits no scalar",
-    "test_RTS_GMLC_sys_with_hybrid" => "SiennaSchemas: MarketBidCost.shut_down admits no scalar",
+)
+
+# Systems that fail conversion outright because a PSY5 value field holds an embedded
+# time-series pointer (`__metadata__.type` of `ForecastKey` or `StaticTimeSeriesKey`)
+# instead of a literal value. PSY6 has no field type that can represent an embedded
+# time-series reference, so `translate_value` throws `Psy5FormatError` rather than
+# converting or dropping it — this is intentional, not a bug in the translator.
+const KNOWN_CONVERSION_GAPS = Dict(
+    "c_linear_fuel_test_ts" => "FuelCurve.fuel_cost is a time-series pointer",
+    "c_market_bid_cost" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
+    "c_pwl_incremental_fuel_test_ts" => "FuelCurve.fuel_cost is a time-series pointer",
+    "c_pwl_io_fuel_test_ts" => "FuelCurve.fuel_cost is a time-series pointer",
+    "c_quadratic_fuel_test_ts" => "FuelCurve.fuel_cost is a time-series pointer",
+    "c_sys5_hybrid" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
+    "c_sys5_hybrid_ed" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
+    "c_sys5_hybrid_uc" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
+    "c_sys5_re_fuel_cost" => "FuelCurve.fuel_cost is a time-series pointer",
 )
 
 """
@@ -102,10 +117,24 @@ end
         end
         @test isempty(missing_required)
 
-        for (name, message) in failures
-            @error "conversion failed" system = name message
+        unexpected_failures = [p for p in failures if !haskey(KNOWN_CONVERSION_GAPS, p[1])]
+        for (name, message) in unexpected_failures
+            @error "conversion failed and is not a known conversion gap" system = name message
         end
-        @test isempty(failures)
+        @test isempty(unexpected_failures)
+
+        # A known gap that starts passing means the translator was fixed — remove the
+        # entry rather than leaving a stale exemption that hides a future regression.
+        # Restricted to gaps this run actually swept, same reasoning as the round-trip tier.
+        present_conversion_gaps =
+            filter(k -> k in present, collect(keys(KNOWN_CONVERSION_GAPS)))
+        stale_conversion_gaps =
+            [k for k in present_conversion_gaps if !any(p -> p[1] == k, failures)]
+        for name in stale_conversion_gaps
+            @warn "KNOWN_CONVERSION_GAPS entry now passes; remove it" system = name
+        end
+        @test isempty(stale_conversion_gaps)
+
         @test length(report.systems) == length(systems)
 
         unexpected = setdiff(keys(report.unmapped_types), KNOWN_GAPS)
@@ -144,7 +173,13 @@ end
             end
         end
 
-        unexpected = [p for p in broke if !haskey(KNOWN_ROUNDTRIP_GAPS, p[1])]
+        # A system in KNOWN_CONVERSION_GAPS never reaches read_document — convert_system
+        # itself throws — so it shows up here too and must be exempted the same way, or
+        # every one of those systems would double as an "unexpected" round-trip failure.
+        unexpected = [
+            p for p in broke if
+            !haskey(KNOWN_ROUNDTRIP_GAPS, p[1]) && !haskey(KNOWN_CONVERSION_GAPS, p[1])
+        ]
         for (name, message) in unexpected
             @error "round trip failed and is not a known schema gap" system = name message
         end

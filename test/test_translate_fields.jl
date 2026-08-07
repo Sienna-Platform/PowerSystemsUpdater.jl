@@ -265,4 +265,125 @@
         PSU.build_kwargs(ACBus, raw_with_extra_2, led, counting_rep)
         @test counting_rep.unmapped_fields[("ACBus", "not_a_psy6_field")] == 2
     end
+
+    @testset "MarketBidCost scalar shut_down/no_load_cost promoted to a curve" begin
+        # PSY5 legally writes a bare Float64; PSY6 types both fields as a concrete
+        # InputOutputCurve. Real corpus systems (c_sys5_hybrid and siblings) hit this.
+        scalar_rep = PSU.ConversionReport()
+        raw = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "MarketBidCost"),
+            "cost_type" => "MARKET_BID",
+            "shut_down" => 0.0,
+            "no_load_cost" => 12.5,
+        )
+        translated = PSU.translate_value(raw, led, scalar_rep)
+        @test translated["shut_down"]["__metadata__"]["type"] == "InputOutputCurve"
+        @test translated["shut_down"]["curve_type"] == "INPUT_OUTPUT"
+        @test translated["shut_down"]["input_at_zero"] === nothing
+        @test translated["shut_down"]["function_data"]["__metadata__"]["type"] ==
+              "LinearFunctionData"
+        @test translated["shut_down"]["function_data"]["function_type"] == "LINEAR"
+        @test translated["shut_down"]["function_data"]["constant_term"] == 0.0
+        @test translated["shut_down"]["function_data"]["proportional_term"] == 0.0
+        @test translated["no_load_cost"]["function_data"]["constant_term"] == 12.5
+        @test translated["no_load_cost"]["function_data"]["proportional_term"] == 0.0
+        @test isempty(scalar_rep.unmapped_fields)
+
+        # actually constructs: OpenAPI.from_json is what PCOM.read_document uses to turn
+        # a JSON dict into a typed model, and this is the exact call that raised
+        # "MethodError: Cannot convert an object of type Float64 to ... InputOutputCurve"
+        # before this fix.
+        json_ready = Dict{String, Any}("cost_type" => "MARKET_BID")
+        for (key, value) in translated
+            if key == "__metadata__"
+                continue
+            end
+            json_ready[key] = value
+        end
+        model = PSU.OpenAPI.from_json(PSU.POM.MarketBidCost, json_ready)
+        @test typeof(model.shut_down) === PSU.PCOM.InputOutputCurve
+        # function_data is itself a discriminated oneOf; .value holds the resolved type.
+        @test model.shut_down.function_data.value.constant_term == 0.0
+        @test model.shut_down.function_data.value.proportional_term == 0.0
+        @test model.no_load_cost.function_data.value.constant_term == 12.5
+
+        # scoped narrowly: a scalar named "shut_down" on any other type is left alone
+        other_rep = PSU.ConversionReport()
+        unrelated = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "SomeUnrelatedType"),
+            "shut_down" => 0.0,
+        )
+        @test PSU.translate_value(unrelated, led, other_rep)["shut_down"] == 0.0
+
+        # a non-scalar shut_down (already a proper curve dict) is left for the ordinary
+        # discriminator-injection path, not double-promoted
+        curve_rep = PSU.ConversionReport()
+        already_curve = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "MarketBidCost"),
+            "shut_down" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "InputOutputCurve"),
+                "function_data" => Dict{String, Any}(
+                    "__metadata__" => Dict("type" => "LinearFunctionData"),
+                    "constant_term" => 5.0,
+                    "proportional_term" => 1.0,
+                ),
+            ),
+        )
+        translated_curve = PSU.translate_value(already_curve, led, curve_rep)
+        @test translated_curve["shut_down"]["function_data"]["constant_term"] == 5.0
+        @test translated_curve["shut_down"]["function_data"]["proportional_term"] == 1.0
+    end
+
+    @testset "embedded time-series pointers error loudly" begin
+        # PSY5 sometimes embeds a live time-series reference directly in a value field
+        # instead of a literal value. PSY6 has no field type for that, so it must throw
+        # rather than convert a bogus value or drop the pointer silently.
+        forecast_key_rep = PSU.ConversionReport()
+        fuel_curve = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "FuelCurve"),
+            "power_units" => "NATURAL_UNITS",
+            "fuel_cost" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "ForecastKey"),
+                "name" => "fuel_cost",
+            ),
+        )
+        err = try
+            PSU.translate_value(fuel_curve, led, forecast_key_rep)
+            nothing
+        catch e
+            e
+        end
+        @test typeof(err) === PSU.Psy5FormatError
+        message = sprint(showerror, err)
+        @test occursin("FuelCurve.fuel_cost", message)
+        @test occursin("ForecastKey", message)
+
+        static_ts_key_rep = PSU.ConversionReport()
+        market_bid = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "MarketBidCost"),
+            "incremental_offer_curves" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "StaticTimeSeriesKey"),
+                "name" => "variable_cost",
+            ),
+        )
+        static_err = try
+            PSU.translate_value(market_bid, led, static_ts_key_rep)
+            nothing
+        catch e
+            e
+        end
+        @test typeof(static_err) === PSU.Psy5FormatError
+        static_message = sprint(showerror, static_err)
+        @test occursin("MarketBidCost.incremental_offer_curves", static_message)
+        @test occursin("StaticTimeSeriesKey", static_message)
+
+        # a dict that merely looks like it might be a pointer (wrong type name) is left
+        # alone
+        harmless_rep = PSU.ConversionReport()
+        harmless = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "FuelCurve"),
+            "fuel_cost" => 3.5,
+        )
+        @test PSU.translate_value(harmless, led, harmless_rep)["fuel_cost"] == 3.5
+    end
 end

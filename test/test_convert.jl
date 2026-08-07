@@ -78,15 +78,15 @@ end
     end
 end
 
-@testset "convert_system: MarketBidCost scalar cost fields (documented schema gap, not fixed)" begin
+@testset "convert_system: MarketBidCost scalar cost fields are promoted and round-trip" begin
     # PSY6's MarketBidCost.no_load_cost/shut_down are typed as the concrete InputOutputCurve
-    # struct (SiennaSchemas/Core/common.json), with no oneOf/anyOf admitting a bare number —
-    # only a *default* curve for when the field is omitted, which is not the same as a
-    # sanctioned scalar instance value. PSY5's HybridSystem-level MarketBidCost writes
-    # shut_down as a bare Float64, so this is left failing rather than guessing at an
-    # unsanctioned promotion; see task-11-report.md fix round 2.
+    # struct (SiennaSchemas/Core/common.json), with no oneOf/anyOf admitting a bare number.
+    # PSY5's HybridSystem-level MarketBidCost writes shut_down as a bare Float64
+    # (test_RTS_GMLC_sys_with_hybrid does not also carry the embedded-time-series-pointer
+    # defect the other three hybrid systems do, so it is the one real system that isolates
+    # this fix). The translator now promotes the scalar into a constant InputOutputCurve.
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
-    path = joinpath(dir, "c_sys5_hybrid")
+    path = joinpath(dir, "test_RTS_GMLC_sys_with_hybrid")
     if require_corpus_file(path)
         mktempdir() do tmp
             PSU.convert_system(path, tmp)
@@ -98,26 +98,45 @@ end
                     h in raw["components"]["HybridSystem"]
                 ]
             @test !isempty(shut_downs)
-            @test all(value -> typeof(value) === Float64, shut_downs)
+            @test all(value -> typeof(value) === Dict{String, Any}, shut_downs)
+            @test all(value -> value["curve_type"] == "INPUT_OUTPUT", shut_downs)
 
-            @test_throws MethodError PSU.PCOM.read_document(system_json)
+            # PCOM.read_document parses the whole document, and every ThermalStandard's
+            # cost curve on this system currently hits an unrelated, pre-existing codegen
+            # defect in the dev-linked PowerOpenAPIModels checkout (ERRORUNKNOWN in
+            # ThermalStandardOperationCost's oneOf discriminator) that has nothing to do
+            # with this fix. OpenAPI.from_json on just the promoted MarketBidCost isolates
+            # the assertion from that unrelated defect while still proving, on real corpus
+            # data, that the promoted curve is a valid InputOutputCurve.
+            cost_json = Dict{String, Any}("cost_type" => "MARKET_BID")
+            for (key, value) in first(raw["components"]["HybridSystem"])["operation_cost"]
+                cost_json[key] = value
+            end
+            model = PSU.OpenAPI.from_json(PSU.POM.MarketBidCost, cost_json)
+            @test typeof(model.shut_down) === PSU.PCOM.InputOutputCurve
         end
     end
 end
 
-@testset "convert_system: hybrid systems convert without throwing" begin
+@testset "convert_system: hybrid systems" begin
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
-    for name in
-        (
-        "c_sys5_hybrid",
-        "c_sys5_hybrid_uc",
-        "c_sys5_hybrid_ed",
-        "test_RTS_GMLC_sys_with_hybrid",
-    )
+    # c_sys5_hybrid/_uc/_ed also carry a MarketBidCost.incremental_offer_curves that is an
+    # embedded time-series pointer, a distinct defect the scalar promotion above does not
+    # touch — PSY6 has no field type for that, so conversion now throws loudly
+    # (KNOWN_CONVERSION_GAPS in test_corpus.jl documents this for the whole corpus sweep).
+    for name in ("c_sys5_hybrid", "c_sys5_hybrid_uc", "c_sys5_hybrid_ed")
         path = joinpath(dir, name)
         if !require_corpus_file(path)
             continue
         end
+        mktempdir() do tmp
+            @test_throws PSU.Psy5FormatError PSU.convert_system(path, tmp)
+        end
+    end
+
+    path =
+        joinpath(@__DIR__, "..", "data", "PSITestSystems", "test_RTS_GMLC_sys_with_hybrid")
+    if require_corpus_file(path)
         mktempdir() do tmp
             report = PSU.convert_system(path, tmp)
             @test isfile(joinpath(tmp, "system.json"))

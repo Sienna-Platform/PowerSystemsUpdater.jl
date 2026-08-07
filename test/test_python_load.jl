@@ -182,11 +182,19 @@ end
             for path in systems
                 name = basename(path)
                 out = joinpath(tmp, name)
-                ok, _, err = convert_and_check(python, checker, path, out)
-                if ok
-                    push!(accepted, name)
-                else
-                    push!(rejected, (name, first(split(err, "\n"))))
+                # A system in KNOWN_CONVERSION_GAPS (test_corpus.jl) throws inside
+                # convert_system itself, before the python checker ever runs — caught here
+                # so one such system does not abort the whole sweep, and recorded as a
+                # rejection like any other so the gap bookkeeping below stays uniform.
+                try
+                    ok, _, err = convert_and_check(python, checker, path, out)
+                    if ok
+                        push!(accepted, name)
+                    else
+                        push!(rejected, (name, first(split(err, "\n"))))
+                    end
+                catch e
+                    push!(rejected, (name, first(split(sprint(showerror, e), "\n"))))
                 end
             end
         end
@@ -196,10 +204,18 @@ end
         @test !isempty(accepted)
 
         rejected_names = Set(first.(rejected))
-        julia_gaps = Set([
-            "c_pwl_average_cost_test", "c_pwl_average_fuel_test", "c_sys5_hybrid",
-            "c_sys5_hybrid_ed", "c_sys5_hybrid_uc", "test_RTS_GMLC_sys_with_hybrid",
-        ])
+        # c_sys5_hybrid/_ed/_uc are also in KNOWN_CONVERSION_GAPS (test_corpus.jl):
+        # MarketBidCost.incremental_offer_curves is an embedded time-series pointer on
+        # these three, so conversion now throws before reaching the python checker.
+        # test_RTS_GMLC_sys_with_hybrid carried only the scalar shut_down/no_load_cost
+        # defect, which the converter now promotes to a curve, so it is no longer a gap.
+        julia_gaps = union(
+            Set([
+                "c_pwl_average_cost_test", "c_pwl_average_fuel_test", "c_sys5_hybrid",
+                "c_sys5_hybrid_ed", "c_sys5_hybrid_uc",
+            ]),
+            Set(keys(KNOWN_CONVERSION_GAPS)),
+        )
         # Only check gap systems this run actually swept: a partial corpus (the 7-system
         # fixture set) legitimately omits some of them, and that omission is not the same
         # finding as one that was swept and unexpectedly started passing.
