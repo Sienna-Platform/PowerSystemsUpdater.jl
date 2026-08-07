@@ -53,11 +53,9 @@ function build_document(case::Psy5Case, report::ConversionReport)
 end
 
 """
-Push only the association row for an attribute that was already added under a different
-owner. IS supports one supplemental attribute shared by many components; `assign_id!` being
-idempotent means a naive repeat would push the same attribute model twice under the same id,
-which `validate_document` then rejects as a duplicate — the corpus simply has no shared
-attribute to expose this, not that it cannot happen.
+Push only the association row for an attribute already added under a different owner. IS
+supports one attribute shared by many components, and `assign_id!` is idempotent, so a naive
+repeat would push the same model twice under one id and `validate_document` would reject it.
 """
 function _add_supplemental_association!(
     doc::PCOM.SystemDocument,
@@ -153,7 +151,7 @@ end
 """
 Convert one PSY5 case into `out_dir/system.json` plus `out_dir/time_series.h5`.
 
-Returns the report so a caller converting a corpus can accumulate findings across systems.
+Returns the report so a caller can accumulate findings across systems.
 """
 function convert_system(
     src::AbstractString,

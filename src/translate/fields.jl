@@ -47,6 +47,98 @@ key set instead, the same way `is_reference` classifies by shape rather than by 
 _is_start_up_stages_shape(dict::AbstractDict) =
     Set(keys(dict)) == Set(("hot", "warm", "cold"))
 
+"""
+PSY6 has no field type that can hold a live time-series reference, but PSY5 sometimes embeds
+one in a value field. Dropping it would yield a document that validates while having lost data
+nothing downstream could recover, so this errors instead.
+"""
+const TIME_SERIES_POINTER_TYPES = Set(["ForecastKey", "StaticTimeSeriesKey"])
+
+_time_series_pointer_type(::Any) = nothing
+function _time_series_pointer_type(value::AbstractDict)
+    type_name = _psy5_type_name(value)
+    if isnothing(type_name) || !(type_name in TIME_SERIES_POINTER_TYPES)
+        return nothing
+    end
+    return type_name
+end
+
+function _owner_label(owner_type::Union{Nothing, AbstractString})
+    if isnothing(owner_type)
+        return "<unknown type>"
+    end
+    return owner_type
+end
+
+"""
+Throws `Psy5FormatError` if any immediate child of `value` is a time-series pointer.
+`owner_type` is `value`'s own PSY5 type name, so the message names the field as
+`Owner.field`.
+"""
+function _check_no_time_series_pointers!(
+    value::AbstractDict,
+    owner_type::Union{Nothing, AbstractString},
+)
+    for (key, v) in value
+        pointer_type = _time_series_pointer_type(v)
+        if !isnothing(pointer_type)
+            throw(
+                Psy5FormatError(
+                    "$(_owner_label(owner_type)).$key holds an embedded $pointer_type; " *
+                    "PSY6 has no field type that can represent an embedded time-series reference",
+                ),
+            )
+        end
+    end
+    return nothing
+end
+
+"""
+PSY5 permits `MarketBidCost.shut_down` / `no_load_cost` to be a bare scalar; PSY6 types both
+as a concrete `InputOutputCurve`. Promotes the scalar `s` into a constant function
+(`proportional_term = 0.0`, i.e. the multiplier, so the curve's value is just `s`) rather
+than dropping it — PSY5's use of 0.0 here is a real "no extra cost" curve, not a missing
+value. Built as a raw PSY5-shaped nested dict so the promoted curve goes through the ordinary
+`ONEOF_DISCRIMINATORS` injection on the recursive pass right after, instead of a second,
+hand-rolled discriminator mechanism.
+"""
+const MARKET_BID_COST_SCALAR_FIELDS = Set(["shut_down", "no_load_cost"])
+
+_is_scalar_cost(::Real) = true
+_is_scalar_cost(::Any) = false
+
+function _promote_market_bid_cost_scalar(scalar::Real)
+    return Dict{String, Any}(
+        "__metadata__" => Dict("type" => "InputOutputCurve"),
+        "input_at_zero" => nothing,
+        "function_data" => Dict{String, Any}(
+            "__metadata__" => Dict("type" => "LinearFunctionData"),
+            "constant_term" => scalar,
+            "proportional_term" => 0.0,
+        ),
+    )
+end
+
+function _promote_market_bid_cost_scalars(
+    value::AbstractDict,
+    owner_type::Union{Nothing, AbstractString},
+)
+    if owner_type != "MarketBidCost"
+        return value
+    end
+    promoted = value
+    for field in MARKET_BID_COST_SCALAR_FIELDS
+        scalar = get(value, field, nothing)
+        if _is_scalar_cost(scalar)
+            if promoted === value
+                promoted = copy(value)
+            end
+            promoted[field] = _promote_market_bid_cost_scalar(scalar)
+        end
+    end
+    return promoted
+end
+
 translate_value(value, ::Ledger, ::ConversionReport) = value
 
 """
@@ -94,8 +186,11 @@ function translate_value(value::AbstractDict, ledger::Ledger, report::Conversion
     if is_reference(value)
         return lookup_id(ledger, reference_uuid(value))
     end
+    owner_type = _psy5_type_name(value)
+    _check_no_time_series_pointers!(value, owner_type)
+    promoted = _promote_market_bid_cost_scalars(value, owner_type)
     translated = Dict{String, Any}(
-        key => translate_value(v, ledger, report) for (key, v) in value
+        key => translate_value(v, ledger, report) for (key, v) in promoted
     )
     type_name = _psy5_type_name(translated)
     if !isnothing(type_name) && haskey(ONEOF_DISCRIMINATORS, type_name)

@@ -3,15 +3,10 @@ const TIME_SERIES_FILENAME = "time_series.h5"
 """
 Read PSY5's `time_series_associations` table.
 
-The metadata is a whole SQLite database stored as a byte array inside the HDF5 file.
-`IS.from_h5_file` would extract it and hand back a fully reconstructed
-`TimeSeriesMetadataStore`, but building that reconstruction deserializes each row's
-`scaling_factor_multiplier` into an actual `Function` object — which, for real corpus data,
-requires the `PowerSystems` module to already be loaded (e.g. to resolve
-`PowerSystems.get_max_active_power`). This package does not and must not depend on
-PowerSystems, so 9 of the 73 corpus sidecars make that reconstruction throw. Since only the
-raw association rows are needed here, the same byte extraction IS performs is replicated and
-the resulting SQLite file is queried directly, skipping the reconstruction entirely.
+`IS.from_h5_file` cannot be used: it reconstructs a `TimeSeriesMetadataStore`, which
+deserializes `scaling_factor_multiplier` into a live `Function` and so requires `PowerSystems`
+to be loaded. This package must not depend on it. Only the raw rows are needed, so IS's byte
+extraction is replicated and the SQLite file queried directly.
 """
 function read_associations(h5_path::AbstractString)
     return mktempdir() do scratch
@@ -64,9 +59,8 @@ function _scaling_factor_multiplier(row::AbstractDict)
 end
 
 """
-PSY5's `features` column is a JSON-encoded list. Every row observed in the corpus carries
-`"[]"`, and this translator has no destination for a populated features list, so a non-empty
-value must fail loudly rather than be silently dropped.
+PSY5's `features` column is a JSON-encoded list. This translator has no destination for a
+populated one, so a non-empty value fails loudly rather than being dropped.
 """
 function _features(row::AbstractDict)
     value = _association_value(get(row, "features", nothing))
