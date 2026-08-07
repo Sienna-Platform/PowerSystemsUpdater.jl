@@ -18,6 +18,11 @@ function python_interpreter()
     return nothing
 end
 
+const PYTHON_TIER_SKIP_MESSAGE =
+    "SKIPPING python tier: no interpreter. Set PSU_PYTHON or run " *
+    "`python3 -m venv test/python/.venv && " *
+    "test/python/.venv/bin/pip install -r test/python/requirements.txt`"
+
 function run_checker(python::AbstractString, checker::AbstractString, path::AbstractString)
     out = IOBuffer()
     err = IOBuffer()
@@ -97,9 +102,7 @@ end
     without_time_series = joinpath(@__DIR__, "..", "data", "PSITestSystems", "c_sys5")
 
     if isnothing(python)
-        @warn "SKIPPING python tier: no interpreter. Set PSU_PYTHON or run " *
-              "`python3 -m venv test/python/.venv && " *
-              "test/python/.venv/bin/pip install -r test/python/requirements.txt`"
+        @warn PYTHON_TIER_SKIP_MESSAGE
     elseif !isfile(with_time_series) || !isfile(without_time_series)
         @warn "corpus absent; skipping python tier" with_time_series without_time_series
     else
@@ -135,7 +138,7 @@ end
     checker = joinpath(@__DIR__, "python", "check_document.py")
 
     if isnothing(python)
-        @warn "SKIPPING python tier: no interpreter"
+        @warn PYTHON_TIER_SKIP_MESSAGE
     else
         corrupted = Dict(
             "base_power" => 100.0,
@@ -165,7 +168,7 @@ end
     systems = _python_corpus_systems()
 
     if isnothing(python)
-        @warn "SKIPPING python tier: no interpreter"
+        @warn PYTHON_TIER_SKIP_MESSAGE
     elseif isempty(systems)
         @warn "corpus absent under data/; skipping python corpus scan"
     else

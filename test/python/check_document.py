@@ -43,6 +43,35 @@ def strip_none(value):
     return value
 
 
+def flatten_keys(value, prefix=""):
+    """Dotted/bracketed key-paths for every dict key reachable inside `value`.
+
+    Walks into nested dicts and into list elements so a misspelled field
+    buried inside a sub-object (a cost curve, a limits pair, a unit-tagged
+    value) is a distinct path, not silently absorbed into its parent key.
+    Call this on an already `strip_none`d structure: a leaf that isn't a
+    dict or list contributes no path of its own, so an optional field that
+    is simply absent contributes nothing on either side of the diff.
+
+    `__metadata__` is skipped everywhere it appears: the schemas deliberately
+    leave it on discriminated sub-objects as an allowed extra key (see
+    `fields.jl`), pydantic's `extra="ignore"` correctly drops it on re-dump,
+    and it is not a real field a translator could misspell.
+    """
+    paths = set()
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            if key == "__metadata__":
+                continue
+            path = f"{prefix}.{key}" if prefix else key
+            paths.add(path)
+            paths |= flatten_keys(sub, path)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            paths |= flatten_keys(item, f"{prefix}[{index}]")
+    return paths
+
+
 def check(path):
     with open(path) as handle:
         doc = json.load(handle)
@@ -66,10 +95,11 @@ def check(path):
                 errors.append(f"{type_name}[{index}]: {exc}")
                 continue
             validated += 1
-            # pydantic ignores unknown keys, so a misspelled field would vanish
-            # silently. Diff the re-dump to catch it.
+            # pydantic ignores unknown keys, so a misspelled field -- at any
+            # depth -- would vanish silently. Diff the re-dump recursively to
+            # catch it, not just at the top level.
             dumped = strip_none(model.model_dump(mode="json", by_alias=True))
-            dropped = set(strip_none(entry)) - set(dumped)
+            dropped = flatten_keys(strip_none(entry)) - flatten_keys(dumped)
             if dropped:
                 errors.append(f"{type_name}[{index}]: dropped fields {sorted(dropped)}")
 
