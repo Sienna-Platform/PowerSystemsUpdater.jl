@@ -131,10 +131,8 @@ end
             model = PSU.OpenAPI.from_json(PSU.POM.MarketBidCost, cost_json)
             @test typeof(model.shut_down) === PSU.PCOM.InputOutputCurve
 
-            # The schema regen's discriminator fix (ONEOF_DISCRIMINATORS' new "MarketBidCost"
-            # and "LoadCost" entries) means the whole document -- every ThermalStandard's
-            # THERMAL-costed curve alongside this system's MARKET_BID-costed one -- now reads
-            # back cleanly too, not just the isolated MarketBidCost above.
+            # With ONEOF_DISCRIMINATORS' MarketBidCost/LoadCost entries the whole document
+            # reads back, not just the isolated cost above.
             doc = PSU.PCOM.read_document(system_json)
             for type_name in PSU.PCOM.component_type_names(doc)
                 @test length(PSU.PCOM.get_components(doc, type_name)) ==

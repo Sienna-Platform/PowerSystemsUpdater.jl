@@ -149,13 +149,10 @@ function _add_time_series!(
 end
 
 """
-The composed result of one conversion: the assembled `PCOM.SystemDocument`, the
-`ConversionReport` of what could not be carried across, and the path to the copied
-time-series sidecar (`nothing` when the source had none). Mirrors the shape PTDP's
-`OpenAPISystem` presents for the same reason — document, findings, and time series as one
-value — even though PSU's time-series payload is a copied HDF5 file, not in-memory
-`IS.TimeSeriesData`: `convert_system` never loads time series values, only carries the file
-and translates its association metadata (`_add_time_series!`).
+The result of one conversion: the assembled `PCOM.SystemDocument`, the `ConversionReport`
+of what could not be carried across, and the path to the copied time-series sidecar
+(`nothing` when the source had none). The sidecar is copied, never read: only its
+association metadata is translated.
 """
 struct ConversionResult
     document::PCOM.SystemDocument
@@ -167,9 +164,8 @@ end
 Convert one PSY5 case into `out_dir/system.json` plus, when the source has time series,
 `out_dir/time_series.h5`.
 
-The `report` keyword lets a caller accumulate findings across systems by passing the same
-`ConversionReport` into repeated calls; the returned `ConversionResult` always wraps that
-same report object.
+Passing the same `report` into repeated calls accumulates findings across systems; the
+returned `ConversionResult` wraps that same report.
 """
 function convert_system(
     src::AbstractString,

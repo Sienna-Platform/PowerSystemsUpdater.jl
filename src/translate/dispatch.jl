@@ -74,21 +74,16 @@ for name in DIRECT_TYPES
     end
 end
 
-# PSY5 spells Arc's endpoints `from`/`to`; the PSY6 schema regen renamed them `from_id`/
-# `to_id`. Renaming the keys before `direct_translate`'s generic field copy lets the
-# existing reference-resolution path (`translate_value` -> `lookup_id`) pick them up like
-# any other reference field, rather than recording two spurious unmapped fields and
-# silently dropping Arc's topology. No docstring here: a docstring anywhere after the
-# `@eval` loop above confuses Documenter's autodocs into reporting a duplicate-docs error
-# (reproduced on unmodified HEAD too -- pre-existing, not this fix's doing), the same
+# PSY5 spells Arc's endpoints `from`/`to`; PSY6 names them `from_id`/`to_id`. Renaming
+# before `direct_translate`'s generic field copy routes them through the ordinary
+# reference-resolution path (`translate_value` -> `lookup_id`) instead of recording two
+# unmapped fields and dropping Arc's topology. No docstring here: any docstring after the
+# `@eval` loop above makes Documenter's autodocs report a duplicate-docs error, the same
 # reason `translate/reserves.jl`'s dispatch methods carry only comments.
-const ARC_FIELD_RENAMES = Dict("from" => "from_id", "to" => "to_id")
-
 function translate(::Val{:Arc}, raw::AbstractDict, ctx::TranslationContext)
     renamed = copy(raw)
-    for (old_key, new_key) in ARC_FIELD_RENAMES
-        renamed[new_key] = pop!(renamed, old_key)
-    end
+    renamed["from_id"] = pop!(renamed, "from")
+    renamed["to_id"] = pop!(renamed, "to")
     return direct_translate(POM.Arc, renamed, ctx)
 end
 
