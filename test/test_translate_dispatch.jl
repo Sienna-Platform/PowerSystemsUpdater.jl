@@ -112,7 +112,7 @@
     @testset "has_translator" begin
         @test PSU.has_translator("ThermalStandard")
         for name in
-            ("ConstantReserve", "VariableReserve", "Transformer2W", "TapTransformer",
+            ("Arc", "ConstantReserve", "VariableReserve", "Transformer2W", "TapTransformer",
             "PhaseShiftingTransformer", "Transformer3W")
             @test PSU.has_translator(name)
         end
@@ -120,9 +120,33 @@
     end
 
     @testset "DIRECT_TYPES" begin
-        @test length(PSU.DIRECT_TYPES) == 28
+        @test length(PSU.DIRECT_TYPES) == 27
+        @test !(:Arc in PSU.DIRECT_TYPES)
         for name in PSU.DIRECT_TYPES
             @test isdefined(PSU.POM, name)
         end
+    end
+
+    @testset "Arc: from/to renamed to from_id/to_id" begin
+        led5 = PSU.Ledger()
+        rep5 = PSU.ConversionReport()
+        ctx5 = PSU.TranslationContext(led5, rep5, 100.0)
+
+        PSU.assign_id!(led5, "uuid-arc-from")
+        PSU.assign_id!(led5, "uuid-arc-to")
+        PSU.assign_id!(led5, "uuid-arc")
+        raw_arc = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "Arc"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-arc")),
+            "from" => Dict("value" => "uuid-arc-from"),
+            "to" => Dict("value" => "uuid-arc-to"),
+        )
+        out_arc = PSU.translate_component(raw_arc, ctx5)
+        @test length(out_arc) == 1
+        arc = out_arc[1]
+        @test typeof(arc) === PSU.POM.Arc
+        @test arc.from_id == PSU.lookup_id(led5, "uuid-arc-from")
+        @test arc.to_id == PSU.lookup_id(led5, "uuid-arc-to")
+        @test isempty(rep5.unmapped_fields)
     end
 end

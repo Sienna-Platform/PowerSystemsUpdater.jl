@@ -118,8 +118,7 @@ Dropped by design: `services` (schema convention), `WindingGroupNumber` (superse
 `alpha`), `Transformer3W.available` / `.rating` (now circuit-level).
 
 Dropped without a stated replacement, and worth reporting when encountered:
-`TapTransformer.tap_limits`, `TapTransformer.voltage_setpoint`,
-`FuelCurve.startup_fuel_offtake`.
+`TapTransformer.tap_limits`, `TapTransformer.voltage_setpoint`.
 
 ## What PSY6 cannot yet express
 
@@ -128,6 +127,8 @@ a value field — `FuelCurve.fuel_cost` and `MarketBidCost.incremental_offer_cur
 corpus. PSY6 types these as scalars or curves, with no representation for "this comes from a
 time series."
 
-**Scalar operating costs.** `MarketBidCost.shut_down` and `no_load_cost` are typed as a
-concrete `InputOutputCurve`; PSY5 writes a bare `Float64`. The object under the schema's
-`default` applies only when the field is absent, and does not sanction a scalar.
+**Scalar operating costs, resolved.** `MarketBidCost.shut_down` and `no_load_cost` are typed as
+a concrete `InputOutputCurve`; PSY5 writes a bare `Float64`. The schema now sanctions this: its
+`description` documents the "legacy scalar promotion" and its `default` gives the exact
+`InputOutputCurve` shape the converter builds (`LinearFunctionData` with `constant_term = s`,
+`proportional_term = 0`) — see `Core/common.json`. The converter promotes accordingly.

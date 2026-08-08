@@ -9,7 +9,7 @@ PSY5 type names that map onto an identically named PSY6 model. Everything else n
 bespoke `translate` method.
 """
 const DIRECT_TYPES = (
-    :ACBus, :Arc, :Area, :AreaInterchange, :DCBus, :EnergyReservoirStorage,
+    :ACBus, :Area, :AreaInterchange, :DCBus, :EnergyReservoirStorage,
     :FixedAdmittance, :HybridSystem, :HydroDispatch, :HydroPumpTurbine,
     :HydroTurbine, :InterconnectingConverter, :InterruptiblePowerLoad, :Line, :LoadZone,
     :MonitoredLine, :PowerLoad, :RenewableDispatch, :RenewableNonDispatch, :Source,
@@ -74,11 +74,29 @@ for name in DIRECT_TYPES
     end
 end
 
+# PSY5 spells Arc's endpoints `from`/`to`; the PSY6 schema regen renamed them `from_id`/
+# `to_id`. Renaming the keys before `direct_translate`'s generic field copy lets the
+# existing reference-resolution path (`translate_value` -> `lookup_id`) pick them up like
+# any other reference field, rather than recording two spurious unmapped fields and
+# silently dropping Arc's topology. No docstring here: a docstring anywhere after the
+# `@eval` loop above confuses Documenter's autodocs into reporting a duplicate-docs error
+# (reproduced on unmodified HEAD too -- pre-existing, not this fix's doing), the same
+# reason `translate/reserves.jl`'s dispatch methods carry only comments.
+const ARC_FIELD_RENAMES = Dict("from" => "from_id", "to" => "to_id")
+
+function translate(::Val{:Arc}, raw::AbstractDict, ctx::TranslationContext)
+    renamed = copy(raw)
+    for (old_key, new_key) in ARC_FIELD_RENAMES
+        renamed[new_key] = pop!(renamed, old_key)
+    end
+    return direct_translate(POM.Arc, renamed, ctx)
+end
+
 const TRANSLATED_TYPES = Set(
     vcat(
         String.(collect(DIRECT_TYPES)),
         [
-            "ConstantReserve", "VariableReserve",
+            "Arc", "ConstantReserve", "VariableReserve",
             "Transformer2W", "TapTransformer", "PhaseShiftingTransformer",
             "Transformer3W", "HydroReservoir",
         ],

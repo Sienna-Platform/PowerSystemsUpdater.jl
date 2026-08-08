@@ -6,31 +6,22 @@ const KNOWN_GAPS = String[]
 # Systems whose output cannot be read back by PSY6's own reader because of a defect in
 # SiennaSchemas, not in this translator. Each entry must name the schema defect.
 #
-# AverageRateCurveFunctionData carries InputOutputCurve's value set, not its own. Ground
-# truth from InfrastructureSystems/src/value_curve.jl:
-#     InputOutputCurve{T <: Union{Quadratic, Linear, PiecewiseLinear}}
-#     IncrementalCurve{T <: Union{Linear, PiecewiseStep}}
-#     AverageRateCurve{T <: Union{Linear, PiecewiseStep}}
-# The schema models IncrementalCurveFunctionData correctly as {LINEAR, PIECEWISE_STEP} —
-# so it understands PiecewiseStepData — but gives AverageRateCurveFunctionData
-# {LINEAR, PIECEWISE_LINEAR, QUADRATIC}, a copy of InputOutputCurve's set.
-#
-# The defect runs both ways: it rejects AverageRateCurve{PiecewiseStepData}, which is
-# constructible and appears in real systems, and it accepts AverageRateCurve{Quadratic} and
-# {PiecewiseLinear}, which PowerSystems cannot construct at all.
-#
-# Correct repair upstream: make it exactly {LINEAR, PIECEWISE_STEP}, mirroring
-# IncrementalCurveFunctionData. Reported; do NOT work around it in the translator.
+# AverageRateCurveFunctionData used to carry InputOutputCurve's value set
+# ({LINEAR, PIECEWISE_LINEAR, QUADRATIC}) instead of its own ({LINEAR, PIECEWISE_STEP}, same
+# as IncrementalCurveFunctionData) -- this rejected AverageRateCurve{PiecewiseStepData},
+# constructible and present in real systems (c_pwl_average_cost_test,
+# c_pwl_average_fuel_test). The MBC schema regen fixed this: `AverageRateCurve.function_data`
+# is now typed `IncrementalCurveFunctionData` directly, no separate union file. Verified by
+# round-tripping both systems through PCOM.read_document. No entries remain here as of this
+# writing; a new one must still name the schema defect.
 #
 # MarketBidCost.shut_down / no_load_cost being a bare scalar in PSY5 is no longer a gap:
 # the converter promotes the scalar into a constant InputOutputCurve (see
-# src/translate/fields.jl). c_sys5_hybrid, c_sys5_hybrid_ed, c_sys5_hybrid_uc also carry an
-# embedded time-series pointer on a different MarketBidCost field and so now fail
-# conversion outright instead — see KNOWN_CONVERSION_GAPS below.
-const KNOWN_ROUNDTRIP_GAPS = Dict(
-    "c_pwl_average_cost_test" => "SiennaSchemas: AverageRateCurveFunctionData omits PIECEWISE_STEP",
-    "c_pwl_average_fuel_test" => "SiennaSchemas: AverageRateCurveFunctionData omits PIECEWISE_STEP",
-)
+# src/translate/fields.jl), which the schema now documents as the sanctioned promotion for
+# an absent value (SiennaSchemas decision D-D). c_sys5_hybrid, c_sys5_hybrid_ed,
+# c_sys5_hybrid_uc also carry an embedded time-series pointer on a different MarketBidCost
+# field and so now fail conversion outright instead — see KNOWN_CONVERSION_GAPS below.
+const KNOWN_ROUNDTRIP_GAPS = Dict{String, String}()
 
 # Systems that fail conversion outright because a PSY5 value field holds an embedded
 # time-series pointer (`__metadata__.type` of `ForecastKey` or `StaticTimeSeriesKey`)

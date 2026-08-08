@@ -56,26 +56,24 @@ end
 
 """
 Systems that fail Python validation today for a reason unrelated to the translator or to
-either confirmed SiennaSchemas defect in test_corpus.jl's `KNOWN_ROUNDTRIP_GAPS`: the two
-generated bindings, and SiennaSchemas itself, are three distinct schema states, none
-matching the other two:
+either confirmed SiennaSchemas defect in test_corpus.jl's `KNOWN_ROUNDTRIP_GAPS`.
 
-    PowerOpenAPIModels (Julia)    .schema-version = 89f078c-dirty
-    power-openapi-models (Python) .schema-version = none
-    SiennaSchemas HEAD             db4b48b  (branch jd/ptdp_pffp_integration_changes)
+As of task-13, this table tracked a three-way schema-version skew: the Julia bindings
+(PowerOpenAPIModels), the Python bindings (power-openapi-models), and SiennaSchemas itself
+were each regenerated from a different commit, so most Python rejections were drift, not
+translator defects (`Arc.from`/`.to` vs. `from_id`/`to_id`, missing `base_power`, the missing
+`OnlineReserve` type, `VoltageUnitBasis`'s `SYSTEM_BASE` vs. `DEVICE_BASE` rename -- see
+task-13-report.md for the full account).
 
-Confirmed root causes as of this writing, all present in the Julia-side schema state and
-absent from the Python-side one: Arc's `from`/`to` not yet renamed to `from_id`/`to_id`;
-`base_power` not yet added to `Area`/`LoadZone`/`AreaInterchange` and the HVDC line types;
-the `*_units` suffix convention not yet extended to
-`EnergyReservoirStorage`/`TwoWindingTransformer`/`TransformerCircuit`/`ThreeWindingTransformer`;
-the `OnlineReserve` type not yet present; and `VoltageUnitBasis` not yet renamed from
-`SYSTEM_BASE` to `DEVICE_BASE`. None of this is fixable in this repo -- see
-task-13-report.md. Re-check the three stamps above before assuming a regeneration fixed it.
+That skew is resolved: both bindings now stamp `.schema-version = de25e27` (verified in each
+package's checkout), the same SiennaSchemas commit. Re-running the drift's own canary
+(`c_sys5`, the one entry this table carried) against the regenerated `power-openapi-models`
+checkout (`ca348e7` on `jd/openapi_regen_sync`, installed into `test/python/.venv` from the
+local path since that commit is not yet pushed) confirms it now passes -- table is empty.
+Re-check each package's `.schema-version` before assuming a future regeneration reintroduces
+this: a fresh entry must still name its own schema defect, not skew.
 """
-const KNOWN_PYTHON_SCHEMA_DRIFT = Dict(
-    "c_sys5" => "Arc.from/Arc.to not yet renamed to from_id/to_id in power-openapi-models@main",
-)
+const KNOWN_PYTHON_SCHEMA_DRIFT = Dict{String, String}()
 
 function _python_corpus_systems()
     root = joinpath(@__DIR__, "..", "data")
@@ -209,11 +207,11 @@ end
         # these three, so conversion now throws before reaching the python checker.
         # test_RTS_GMLC_sys_with_hybrid carried only the scalar shut_down/no_load_cost
         # defect, which the converter now promotes to a curve, so it is no longer a gap.
+        # c_pwl_average_cost_test/c_pwl_average_fuel_test were here for the
+        # AverageRateCurveFunctionData PIECEWISE_STEP gap; the schema regen fixed it (see
+        # KNOWN_ROUNDTRIP_GAPS in test_corpus.jl), so both now pass Python validation too.
         julia_gaps = union(
-            Set([
-                "c_pwl_average_cost_test", "c_pwl_average_fuel_test", "c_sys5_hybrid",
-                "c_sys5_hybrid_ed", "c_sys5_hybrid_uc",
-            ]),
+            Set(["c_sys5_hybrid", "c_sys5_hybrid_ed", "c_sys5_hybrid_uc"]),
             Set(keys(KNOWN_CONVERSION_GAPS)),
         )
         # Only check gap systems this run actually swept: a partial corpus (the 7-system

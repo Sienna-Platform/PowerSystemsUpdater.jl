@@ -33,6 +33,7 @@ include("time_series.jl")
 include("convert.jl")
 
 export convert_system
+export ConversionResult
 export ConversionReport
 export has_findings
 

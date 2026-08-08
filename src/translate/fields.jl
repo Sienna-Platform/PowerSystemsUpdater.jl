@@ -30,6 +30,8 @@ const ONEOF_DISCRIMINATORS = Dict{String, Tuple{Symbol, String}}(
     "ThermalGenerationCost" => (:cost_type, "THERMAL"),
     "HydroGenerationCost" => (:cost_type, "HYDRO_GEN"),
     "StorageCost" => (:cost_type, "STORAGE"),
+    "LoadCost" => (:cost_type, "LOAD"),
+    "MarketBidCost" => (:cost_type, "MARKET_BID"),
 )
 
 function _psy5_type_name(dict::AbstractDict)
@@ -95,7 +97,10 @@ end
 
 """
 PSY5 permits `MarketBidCost.shut_down` / `no_load_cost` to be a bare scalar; PSY6 types both
-as a concrete `InputOutputCurve`. Promotes the scalar `s` into a constant function
+as a concrete `InputOutputCurve`. The schema sanctions this promotion (SiennaSchemas decision
+D-D): both fields' `description` documents the "legacy scalar promotion", and their `default`
+gives exactly the `InputOutputCurve`/`LinearFunctionData` shape built here
+(`Core/common.json`). Promotes the scalar `s` into a constant function
 (`proportional_term = 0.0`, i.e. the multiplier, so the curve's value is just `s`) rather
 than dropping it — PSY5's use of 0.0 here is a real "no extra cost" curve, not a missing
 value. Built as a raw PSY5-shaped nested dict so the promoted curve goes through the ordinary

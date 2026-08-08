@@ -3,10 +3,13 @@
     path = joinpath(dir, "c_sys5")
     if require_corpus_file(path)
         mktempdir() do tmp
-            report = PSU.convert_system(path, tmp)
+            result = PSU.convert_system(path, tmp)
+            @test result isa PSU.ConversionResult
+            report = result.report
 
             system_json = joinpath(tmp, "system.json")
             @test isfile(system_json)
+            @test PSU.PCOM.get_base_power(result.document) == 100.0
 
             doc = PSU.PCOM.read_document(system_json)
             @test PSU.PCOM.get_unit_system(doc) == "DEVICE_BASE"
@@ -43,17 +46,32 @@ end
     end
 end
 
-@testset "convert_system: a nested FuelCurve field with no PSY6 counterpart is recorded" begin
-    # 5_bus_hydro_ed_sys's HydroDispatch carries operation_cost.variable.startup_fuel_offtake,
-    # a real PSY5 field inside a nested FuelCurve that no PSY6 schema declares. Before the
-    # fix, translate_value forwarded nested dict keys with no filtering at all, so this was
-    # emitted into output silently instead of being recorded like an unmapped top-level field.
+@testset "convert_system: FuelCurve.startup_fuel_offtake round-trips" begin
+    # 5_bus_hydro_ed_sys's HydroDispatch carries operation_cost.variable.startup_fuel_offtake.
+    # The schema regen added the field to FuelCurve, so it is no longer an unmapped-field
+    # finding (it was, before that fix) -- it must come through as a real InputOutputCurve.
     dir = joinpath(@__DIR__, "..", "data", "PSISystems")
     path = joinpath(dir, "5_bus_hydro_ed_sys")
     if require_corpus_file(path)
         mktempdir() do tmp
-            report = PSU.convert_system(path, tmp)
-            @test report.unmapped_fields[("FuelCurve", "startup_fuel_offtake")] > 0
+            report = PSU.convert_system(path, tmp).report
+            @test !haskey(report.unmapped_fields, ("FuelCurve", "startup_fuel_offtake"))
+
+            system_json = joinpath(tmp, "system.json")
+            raw = PSU.JSON.parsefile(system_json; dicttype = Dict{String, Any})
+            offtakes = [
+                hydro["operation_cost"]["variable"]["startup_fuel_offtake"] for
+                hydro in raw["components"]["HydroDispatch"] if
+                haskey(hydro["operation_cost"]["variable"], "startup_fuel_offtake")
+            ]
+            @test !isempty(offtakes)
+            @test all(value -> value["curve_type"] == "INPUT_OUTPUT", offtakes)
+
+            doc = PSU.PCOM.read_document(system_json)
+            for type_name in PSU.PCOM.component_type_names(doc)
+                @test length(PSU.PCOM.get_components(doc, type_name)) ==
+                      length(raw["components"][type_name])
+            end
         end
     end
 end
@@ -63,7 +81,7 @@ end
     path = joinpath(dir, "c_sys5_hy_uc")
     if require_corpus_file(path)
         mktempdir() do tmp
-            report = PSU.convert_system(path, tmp)
+            report = PSU.convert_system(path, tmp).report
             system_json = joinpath(tmp, "system.json")
             raw = PSU.JSON.parsefile(system_json; dicttype = Dict{String, Any})
             @test !isempty(raw["components"]["HydroReservoir"])
@@ -80,11 +98,13 @@ end
 
 @testset "convert_system: MarketBidCost scalar cost fields are promoted and round-trip" begin
     # PSY6's MarketBidCost.no_load_cost/shut_down are typed as the concrete InputOutputCurve
-    # struct (SiennaSchemas/Core/common.json), with no oneOf/anyOf admitting a bare number.
-    # PSY5's HybridSystem-level MarketBidCost writes shut_down as a bare Float64
+    # struct (SiennaSchemas/Core/common.json); PSY5's HybridSystem-level MarketBidCost writes
+    # shut_down as a bare Float64. The schema's description documents this exact "legacy
+    # scalar promotion" and its default gives the same InputOutputCurve shape the translator
+    # builds -- the schema sanctions the promotion, decision D-D.
     # (test_RTS_GMLC_sys_with_hybrid does not also carry the embedded-time-series-pointer
     # defect the other three hybrid systems do, so it is the one real system that isolates
-    # this fix). The translator now promotes the scalar into a constant InputOutputCurve.
+    # this fix.)
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     path = joinpath(dir, "test_RTS_GMLC_sys_with_hybrid")
     if require_corpus_file(path)
@@ -101,19 +121,25 @@ end
             @test all(value -> typeof(value) === Dict{String, Any}, shut_downs)
             @test all(value -> value["curve_type"] == "INPUT_OUTPUT", shut_downs)
 
-            # PCOM.read_document parses the whole document, and every ThermalStandard's
-            # cost curve on this system currently hits an unrelated, pre-existing codegen
-            # defect in the dev-linked PowerOpenAPIModels checkout (ERRORUNKNOWN in
-            # ThermalStandardOperationCost's oneOf discriminator) that has nothing to do
-            # with this fix. OpenAPI.from_json on just the promoted MarketBidCost isolates
-            # the assertion from that unrelated defect while still proving, on real corpus
-            # data, that the promoted curve is a valid InputOutputCurve.
+            # OpenAPI.from_json on just the promoted MarketBidCost proves, on real corpus
+            # data, that the promoted curve is a valid InputOutputCurve independent of the
+            # rest of the document.
             cost_json = Dict{String, Any}("cost_type" => "MARKET_BID")
             for (key, value) in first(raw["components"]["HybridSystem"])["operation_cost"]
                 cost_json[key] = value
             end
             model = PSU.OpenAPI.from_json(PSU.POM.MarketBidCost, cost_json)
             @test typeof(model.shut_down) === PSU.PCOM.InputOutputCurve
+
+            # The schema regen's discriminator fix (ONEOF_DISCRIMINATORS' new "MarketBidCost"
+            # and "LoadCost" entries) means the whole document -- every ThermalStandard's
+            # THERMAL-costed curve alongside this system's MARKET_BID-costed one -- now reads
+            # back cleanly too, not just the isolated MarketBidCost above.
+            doc = PSU.PCOM.read_document(system_json)
+            for type_name in PSU.PCOM.component_type_names(doc)
+                @test length(PSU.PCOM.get_components(doc, type_name)) ==
+                      length(raw["components"][type_name])
+            end
         end
     end
 end
@@ -138,7 +164,7 @@ end
         joinpath(@__DIR__, "..", "data", "PSITestSystems", "test_RTS_GMLC_sys_with_hybrid")
     if require_corpus_file(path)
         mktempdir() do tmp
-            report = PSU.convert_system(path, tmp)
+            report = PSU.convert_system(path, tmp).report
             @test isfile(joinpath(tmp, "system.json"))
             @test isempty(report.unmapped_types)
         end
@@ -150,8 +176,9 @@ end
     path = joinpath(dir, "c_sys5")
     if require_corpus_file(path)
         mktempdir() do tmp
-            PSU.convert_system(path, tmp)
+            result = PSU.convert_system(path, tmp)
             @test isfile(joinpath(tmp, "time_series.h5"))
+            @test result.time_series_file == joinpath(tmp, "time_series.h5")
             raw = PSU.JSON.parsefile(
                 joinpath(tmp, "system.json");
                 dicttype = Dict{String, Any},
@@ -167,8 +194,9 @@ end
     path = joinpath(dir, "case10_radial_series_reductions")
     if require_corpus_file(path)
         mktempdir() do tmp
-            PSU.convert_system(path, tmp)
+            result = PSU.convert_system(path, tmp)
             @test !isfile(joinpath(tmp, "time_series.h5"))
+            @test isnothing(result.time_series_file)
             raw = PSU.JSON.parsefile(
                 joinpath(tmp, "system.json");
                 dicttype = Dict{String, Any},
@@ -185,9 +213,9 @@ end
         mktempdir() do tmp
             PSU.convert_system(path, tmp)
             @test_throws PSU.PCOM.DocumentFormatError PSU.convert_system(path, tmp)
-            report = PSU.convert_system(path, tmp; force = true)
+            result = PSU.convert_system(path, tmp; force = true)
             @test isfile(joinpath(tmp, "system.json"))
-            @test !isempty(report.systems)
+            @test !isempty(result.report.systems)
         end
     end
 end

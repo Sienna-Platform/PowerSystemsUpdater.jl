@@ -17,11 +17,14 @@ time-series sidecar is carried across unchanged; only its metadata is translated
 ```julia
 using PowerSystemsUpdater
 
-report = convert_system("path/to/psy5_system", "path/to/output")
+result = convert_system("path/to/psy5_system", "path/to/output")
 ```
 
-The output directory receives `system.json` and, when the source has time series,
-`time_series.h5`.
+`result` is a `ConversionResult`: the assembled `PowerCoreOpenAPIModels.SystemDocument`
+(`result.document`), the `ConversionReport` of what could not be carried across
+(`result.report`), and the path to the copied time-series sidecar, or `nothing`
+(`result.time_series_file`). The output directory receives `system.json` and, when the source
+has time series, `time_series.h5`.
 
 The upgrade is not a rename. Component identity moves from UUIDs to document-wide integer
 ids, `SYSTEM_BASE` disappears, transformers split into a container plus per-arc circuits,

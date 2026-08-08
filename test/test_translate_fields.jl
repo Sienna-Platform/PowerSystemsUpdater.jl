@@ -202,9 +202,12 @@
     end
 
     @testset "nested composite fields with no PSY6 counterpart are recorded, not dropped" begin
-        # FuelCurve has no `startup_fuel_offtake` field in any PSY6 schema; a nested
-        # FuelCurve carrying that key must be caught the same way build_kwargs catches an
-        # unmapped top-level field, not forwarded into the output silently.
+        # `not_a_psy6_field` is synthetic (FuelCurve declares no such field in any PSY6
+        # schema; unlike its real `startup_fuel_offtake`, added by the schema regen this
+        # test suite now runs against -- see "FuelCurve.startup_fuel_offtake round-trips" in
+        # test_convert.jl). A nested FuelCurve carrying an unmapped key must be caught the
+        # same way build_kwargs catches an unmapped top-level field, not forwarded into the
+        # output silently.
         fuel_curve_rep = PSU.ConversionReport()
         fuel_curve = Dict{String, Any}(
             "__metadata__" =>
@@ -219,7 +222,7 @@
                     "proportional_term" => 0.0,
                 ),
             ),
-            "startup_fuel_offtake" => Dict{String, Any}(
+            "not_a_psy6_field" => Dict{String, Any}(
                 "__metadata__" => Dict("type" => "InputOutputCurve"),
                 "function_data" => Dict{String, Any}(
                     "__metadata__" => Dict("type" => "LinearFunctionData"),
@@ -229,8 +232,8 @@
             ),
         )
         translated_fuel = PSU.translate_value(fuel_curve, led, fuel_curve_rep)
-        @test haskey(translated_fuel, "startup_fuel_offtake")
-        @test fuel_curve_rep.unmapped_fields[("FuelCurve", "startup_fuel_offtake")] == 1
+        @test haskey(translated_fuel, "not_a_psy6_field")
+        @test fuel_curve_rep.unmapped_fields[("FuelCurve", "not_a_psy6_field")] == 1
 
         # a buried reference to an already-skipped uuid is caught however deep it is
         # nested, since the fast path (references_skipped) does not recurse into a
