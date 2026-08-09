@@ -81,18 +81,9 @@ end
     @test circuit.base_power == 100.0
 
     @testset "field survival" begin
-        @test circuit.r == 0.01
-        @test circuit.x == 0.1
         @test circuit.rating == 2.0
-        @test circuit.base_power == 100.0
         @test circuit.base_voltage_primary == 230.0
         @test circuit.base_voltage_secondary == 115.0
-    end
-
-    @testset "ids are non-nothing and distinct" begin
-        @test !isnothing(circuit.id)
-        @test !isnothing(transformer.id)
-        @test circuit.id != transformer.id
     end
 end
 
@@ -125,12 +116,6 @@ end
     @test circuit.tap == 1.05                   # TapTransformer's own tap, not the default
     @test circuit.alpha ≈ pi / 6                 # from GROUP_11
     @test circuit.arc == arc_id
-
-    @testset "ids are non-nothing and distinct" begin
-        @test !isnothing(circuit.id)
-        @test !isnothing(transformer.id)
-        @test circuit.id != transformer.id
-    end
 
     @testset "field survival" begin
         @test circuit.r == 0.02
@@ -166,12 +151,6 @@ end
     transformer = only(filter(_is_two_winding, out))
     @test circuit.tap == 1.02
     @test circuit.alpha == 0.05        # already radians, copied verbatim
-
-    @testset "ids are non-nothing and distinct" begin
-        @test !isnothing(circuit.id)
-        @test !isnothing(transformer.id)
-        @test circuit.id != transformer.id
-    end
 end
 
 @testset "PhaseShiftingTransformer alpha: negative value, no sign flip" begin

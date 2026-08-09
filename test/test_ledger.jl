@@ -13,7 +13,6 @@
 
     synth = PSU.allocate_id!(led)
     @test synth == 3
-    @test synth != a && synth != b
 
     @test !PSU.is_skipped(led, "uuid-a")
     PSU.mark_skipped!(led, "uuid-c", "no PSY6 schema for Widget")

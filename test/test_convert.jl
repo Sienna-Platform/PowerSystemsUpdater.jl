@@ -4,7 +4,6 @@
     if require_corpus_file(path)
         mktempdir() do tmp
             result = PSU.convert_system(path, tmp)
-            @test result isa PSU.ConversionResult
             report = result.report
 
             system_json = joinpath(tmp, "system.json")
@@ -101,7 +100,7 @@ end
     # struct (SiennaSchemas/Core/common.json); PSY5's HybridSystem-level MarketBidCost writes
     # shut_down as a bare Float64. The schema's description documents this exact "legacy
     # scalar promotion" and its default gives the same InputOutputCurve shape the translator
-    # builds -- the schema sanctions the promotion, decision D-D.
+    # builds, so the schema sanctions the promotion.
     # (test_RTS_GMLC_sys_with_hybrid does not also carry the embedded-time-series-pointer
     # defect the other three hybrid systems do, so it is the one real system that isolates
     # this fix.)

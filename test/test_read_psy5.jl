@@ -10,7 +10,6 @@
 
         first_bus = first(c for c in PSU.components(case)
               if PSU.component_type(c) == "ACBus")
-        @test PSU.component_type(first_bus) == "ACBus"
         @test isempty(PSU.component_parameters(first_bus))
     end
 

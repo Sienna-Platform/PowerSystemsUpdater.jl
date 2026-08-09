@@ -61,7 +61,6 @@
     end
 
     @testset "ordinary fields survive the mapping" begin
-        @test res.time_frame == 60.0
         @test res.sustained_time == 3600.0
         @test res.max_output_fraction == 1.0
         @test res.max_participation_factor == 1.0

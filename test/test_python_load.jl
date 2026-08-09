@@ -58,20 +58,10 @@ end
 Systems that fail Python validation today for a reason unrelated to the translator or to
 either confirmed SiennaSchemas defect in test_corpus.jl's `KNOWN_ROUNDTRIP_GAPS`.
 
-As of task-13, this table tracked a three-way schema-version skew: the Julia bindings
-(PowerOpenAPIModels), the Python bindings (power-openapi-models), and SiennaSchemas itself
-were each regenerated from a different commit, so most Python rejections were drift, not
-translator defects (`Arc.from`/`.to` vs. `from_id`/`to_id`, missing `base_power`, the missing
-`OnlineReserve` type, `VoltageUnitBasis`'s `SYSTEM_BASE` vs. `DEVICE_BASE` rename -- see
-task-13-report.md for the full account).
-
-That skew is resolved: both bindings now stamp `.schema-version = de25e27` (verified in each
-package's checkout), the same SiennaSchemas commit. Re-running the drift's own canary
-(`c_sys5`, the one entry this table carried) against the regenerated `power-openapi-models`
-checkout (`ca348e7` on `jd/openapi_regen_sync`, installed into `test/python/.venv` from the
-local path since that commit is not yet pushed) confirms it now passes -- table is empty.
-Re-check each package's `.schema-version` before assuming a future regeneration reintroduces
-this: a fresh entry must still name its own schema defect, not skew.
+Empty: the entries this table used to carry were all three-way schema-version skew between
+PowerOpenAPIModels, power-openapi-models and SiennaSchemas, and both bindings now stamp the
+same `.schema-version`. Compare those stamps before assuming a future regeneration
+reintroduces it; a fresh entry must name its own schema defect, not skew.
 """
 const KNOWN_PYTHON_SCHEMA_DRIFT = Dict{String, String}()
 

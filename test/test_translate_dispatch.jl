@@ -27,9 +27,6 @@
     @test rep.unmapped_types["Widget"] == 1
     @test PSU.is_skipped(led, "uuid-widget")
 
-    @test PSU.has_translator("Line")
-    @test !PSU.has_translator("Widget")
-
     @testset "cascaded skip" begin
         led2 = PSU.Ledger()
         rep2 = PSU.ConversionReport()
@@ -110,6 +107,7 @@
     end
 
     @testset "has_translator" begin
+        @test PSU.has_translator("Line")
         @test PSU.has_translator("ThermalStandard")
         for name in
             ("Arc", "ConstantReserve", "VariableReserve", "Transformer2W", "TapTransformer",
