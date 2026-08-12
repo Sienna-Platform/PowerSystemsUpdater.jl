@@ -48,6 +48,7 @@ function build_document(case::Psy5Case, report::ConversionReport)
     PCOM.reserve_ids!(doc, ledger.counter[])
 
     _add_supplemental_attributes!(doc, case, ctx)
+    _add_service_associations!(doc, case, ctx)
     _add_time_series!(doc, case, ledger, report)
     return doc, ledger
 end
@@ -71,6 +72,60 @@ function _add_supplemental_association!(
             attribute_type = String(type_name),
         ),
     )
+    return nothing
+end
+
+"""
+`raw`'s `services` list (PSY5's `Device.services`, also carried by branches and by
+`GroupReserve` for nested membership) names, per entry, a service this entity contributes
+to. PSY6 has no such field on the entity itself: the membership becomes one
+`ServiceAssociation` row per (service, entity) pair, mirroring how
+`_add_supplemental_attributes!` turns PSY5's attribute manager into association rows.
+
+Silently returns when either side was skipped, recording a cascaded skip for the dropped
+membership, since the entity or the service not making it into the document is already
+recorded once at its own root.
+"""
+function _add_service_associations_for!(
+    doc::PCOM.SystemDocument,
+    raw::AbstractDict,
+    ctx::TranslationContext,
+)
+    services = get(raw, "services", nothing)
+    if isnothing(services) || isempty(services)
+        return nothing
+    end
+    entity_uuid = component_uuid(raw)
+    if is_skipped(ctx.ledger, entity_uuid)
+        return nothing
+    end
+    entity_id = lookup_id(ctx.ledger, entity_uuid)
+    for reference in services
+        service_uuid = reference_uuid(reference)
+        if is_skipped(ctx.ledger, service_uuid)
+            record_cascaded_skip!(ctx.report, "ServiceAssociation")
+            continue
+        end
+        service_id = lookup_id(ctx.ledger, service_uuid)
+        PCOM.add_service_association!(
+            doc,
+            POM.ServiceAssociation(; service_id = service_id, entity_id = entity_id),
+        )
+    end
+    return nothing
+end
+
+function _add_service_associations!(
+    doc::PCOM.SystemDocument,
+    case::Psy5Case,
+    ctx::TranslationContext,
+)
+    for raw in masked_components(case)
+        _add_service_associations_for!(doc, raw, ctx)
+    end
+    for raw in components(case)
+        _add_service_associations_for!(doc, raw, ctx)
+    end
     return nothing
 end
 

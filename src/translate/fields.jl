@@ -1,7 +1,8 @@
 """
-PSY5 keys that never become PSY6 properties. `services` is absent from the schemas by
-convention; `ext` is routed through `set_ext!` rather than a field; `internal` and
-`__metadata__` are serialization scaffolding.
+PSY5 keys that never become PSY6 properties on the entity itself. `services` is carried
+separately as `ServiceAssociation` rows (`_add_service_associations!` in convert.jl), not as
+a field on the component; `ext` is routed through `set_ext!` rather than a field; `internal`
+and `__metadata__` are serialization scaffolding.
 """
 const PSY5_INTERNAL_FIELDS = Set(["__metadata__", "internal", "services", "ext"])
 

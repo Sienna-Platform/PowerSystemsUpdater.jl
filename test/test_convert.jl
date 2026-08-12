@@ -250,6 +250,84 @@ end
     end
 end
 
+@testset "build_document: Device.services becomes a ServiceAssociation" begin
+    raw_data = Dict{String, Any}(
+        "components" => Any[
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "ACBus"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-bus")),
+                "name" => "bus1", "number" => 1, "available" => true,
+                "bustype" => "REF",
+            ),
+            Dict{String, Any}(
+                "__metadata__" =>
+                    Dict("type" => "VariableReserve", "parameters" => ["ReserveUp"]),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-reserve")),
+                "name" => "Reg_Up", "services" => Any[],
+            ),
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "ACBus"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-member")),
+                "name" => "bus2", "number" => 2, "available" => true,
+                "bustype" => "REF",
+                "services" => Any[Dict("value" => "uuid-reserve")],
+            ),
+        ],
+    )
+    raw = Dict{String, Any}(
+        "data" => raw_data,
+        "units_settings" => Dict("base_value" => 100.0),
+        "frequency" => 60.0,
+        "metadata" => Dict{String, Any}("name" => nothing, "description" => nothing),
+        "data_format_version" => "5.0.0",
+    )
+    case = PSU.Psy5Case(raw, "test-service-association", nothing)
+    report = PSU.ConversionReport()
+    doc, ledger = PSU.build_document(case, report)
+
+    @test length(doc.service_associations) == 1
+    assoc = only(doc.service_associations)
+    @test assoc.service_id == PSU.lookup_id(ledger, "uuid-reserve")
+    @test assoc.entity_id == PSU.lookup_id(ledger, "uuid-member")
+    PSU.PCOM.validate_document(doc)
+
+    # `services` never leaks into build_kwargs as an unmapped field.
+    @test !haskey(report.unmapped_fields, ("VariableReserve", "services"))
+    @test !haskey(report.unmapped_fields, ("ACBus", "services"))
+end
+
+@testset "build_document: a service association to a skipped entity is dropped" begin
+    raw_data = Dict{String, Any}(
+        "components" => Any[
+            Dict{String, Any}(
+                "__metadata__" =>
+                    Dict("type" => "VariableReserve", "parameters" => ["ReserveUp"]),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-reserve")),
+                "name" => "Reg_Up",
+            ),
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "SomeUnmappedType"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-gone")),
+                "name" => "gone",
+                "services" => Any[Dict("value" => "uuid-reserve")],
+            ),
+        ],
+    )
+    raw = Dict{String, Any}(
+        "data" => raw_data,
+        "units_settings" => Dict("base_value" => 100.0),
+        "frequency" => 60.0,
+        "metadata" => Dict{String, Any}("name" => nothing, "description" => nothing),
+        "data_format_version" => "5.0.0",
+    )
+    case = PSU.Psy5Case(raw, "test-service-association-skip", nothing)
+    report = PSU.ConversionReport()
+    doc, _ = PSU.build_document(case, report)
+
+    @test isempty(doc.service_associations)
+    @test report.unmapped_types["SomeUnmappedType"] == 1
+end
+
 @testset "build_document: HybridSystem cascades when a masked sub-unit is skipped" begin
     raw_data = Dict{String, Any}(
         "components" => Any[
