@@ -118,8 +118,9 @@
     end
 
     @testset "DIRECT_TYPES" begin
-        @test length(PSU.DIRECT_TYPES) == 27
+        @test length(PSU.DIRECT_TYPES) == 28
         @test !(:Arc in PSU.DIRECT_TYPES)
+        @test !(:ExponentialLoad in PSU.DIRECT_TYPES)
         for name in PSU.DIRECT_TYPES
             @test isdefined(PSU.POM, name)
         end
@@ -146,5 +147,29 @@
         @test arc.from_id == PSU.lookup_id(led5, "uuid-arc-from")
         @test arc.to_id == PSU.lookup_id(led5, "uuid-arc-to")
         @test isempty(rep5.unmapped_fields)
+    end
+
+    @testset "ExponentialLoad: α/β renamed to alpha/beta" begin
+        led6 = PSU.Ledger()
+        rep6 = PSU.ConversionReport()
+        ctx6 = PSU.TranslationContext(led6, rep6, 100.0)
+
+        PSU.assign_id!(led6, "uuid-expload")
+        raw_expload = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "ExponentialLoad"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-expload")),
+            "name" => "load1", "available" => true,
+            "active_power" => 1.0, "reactive_power" => 0.5,
+            "α" => 1.5, "β" => 2.0,
+            "max_active_power" => 2.0, "max_reactive_power" => 1.0,
+            "conformity" => "CONFORMING",
+        )
+        out_expload = PSU.translate_component(raw_expload, ctx6)
+        @test length(out_expload) == 1
+        load = out_expload[1]
+        @test typeof(load) === PSU.POM.ExponentialLoad
+        @test load.alpha == 1.5
+        @test load.beta == 2.0
+        @test isempty(rep6.unmapped_fields)
     end
 end

@@ -12,8 +12,8 @@ const DIRECT_TYPES = (
     :ACBus, :Area, :AreaInterchange, :DCBus, :EnergyReservoirStorage,
     :FixedAdmittance, :HybridSystem, :HydroDispatch, :HydroPumpTurbine,
     :HydroTurbine, :InterconnectingConverter, :InterruptiblePowerLoad, :Line, :LoadZone,
-    :MonitoredLine, :PowerLoad, :RenewableDispatch, :RenewableNonDispatch, :Source,
-    :StandardLoad, :SynchronousCondenser, :ThermalMultiStart, :ThermalStandard,
+    :MonitoredLine, :MotorLoad, :PowerLoad, :RenewableDispatch, :RenewableNonDispatch,
+    :Source, :StandardLoad, :SynchronousCondenser, :ThermalMultiStart, :ThermalStandard,
     :TModelHVDCLine, :TwoTerminalGenericHVDCLine, :TwoTerminalLCCLine,
     :TwoTerminalVSCLine,
 )
@@ -87,13 +87,24 @@ function translate(::Val{:Arc}, raw::AbstractDict, ctx::TranslationContext)
     return direct_translate(POM.Arc, renamed, ctx)
 end
 
+# PSY5 spells ExponentialLoad's voltage-dependency exponents with Greek letters `α`/`β`;
+# PSY6 spells them ASCII `alpha`/`beta`. Renaming before `direct_translate`'s generic field
+# copy routes them through the ordinary field-copy path instead of recording two unmapped
+# fields and leaving the required alpha/beta absent.
+function translate(::Val{:ExponentialLoad}, raw::AbstractDict, ctx::TranslationContext)
+    renamed = copy(raw)
+    renamed["alpha"] = pop!(renamed, "α")
+    renamed["beta"] = pop!(renamed, "β")
+    return direct_translate(POM.ExponentialLoad, renamed, ctx)
+end
+
 const TRANSLATED_TYPES = Set(
     vcat(
         String.(collect(DIRECT_TYPES)),
         [
             "Arc", "ConstantReserve", "VariableReserve",
             "Transformer2W", "TapTransformer", "PhaseShiftingTransformer",
-            "Transformer3W", "HydroReservoir",
+            "Transformer3W", "HydroReservoir", "ExponentialLoad",
         ],
     ),
 )
