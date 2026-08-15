@@ -23,9 +23,13 @@ PSY5 offers `SYSTEM_BASE`, `DEVICE_BASE`, `NATURAL_UNITS`. **PSY6 drops `SYSTEM_
 Stored PSY5 values are already device base — `_get_multiplier(…, ::Val{DEVICE_BASE}, ::Any) = 1.0`,
 with the other two derived at access time. So no rescaling is needed to emit `DEVICE_BASE`.
 
-The one gap: components that declare no `base_power` (`Line`, `ACBus`, `Arc`, `Area`,
-`LoadZone`, `AGC`, `FixedAdmittance`, `DCBus`, …) leave their base implicit on the system
-base. PSY6 requires it recorded per component — *"in lieu of a system-level table"*.
+PSY6 now records `base_power` on `Line`, `MonitoredLine`, and ten other components whose base
+is the *system* base (`Area`, `LoadZone`, `FixedAdmittance`, `AreaInterchange`,
+`DiscreteControlledACBranch`, `GenericArcImpedance`, `TransmissionInterface`, and the three
+`TwoTerminal*Line` HVDC types — see the `BasePowerKind` trait in PowerSystems'
+`src/models/components.jl`),
+recorded per component *"in lieu of a system-level table"*. `ACBus`, `Arc`, `AGC`, and `DCBus`
+still declare none; their base remains implicit on the system base.
 
 ## Type parameters become fields
 
