@@ -1,0 +1,2 @@
+pydantic>=2.0
+power-openapi-models @ git+https://github.com/Sienna-Platform/power-openapi-models.git@main

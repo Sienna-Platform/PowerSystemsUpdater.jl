@@ -2,6 +2,7 @@ using Test
 using Logging
 import InfrastructureSystems as IS
 using PowerSystemsUpdater
+const PSU = PowerSystemsUpdater
 
 import Aqua
 Aqua.test_unbound_args(PowerSystemsUpdater)
@@ -9,6 +10,57 @@ Aqua.test_undefined_exports(PowerSystemsUpdater)
 Aqua.test_ambiguities(PowerSystemsUpdater)
 Aqua.test_stale_deps(PowerSystemsUpdater)
 Aqua.test_deps_compat(PowerSystemsUpdater)
+
+"""
+Whether the corpus tier is required to run.
+
+Unset (the default, including every CI workflow today): a missing corpus file or directory
+warns and the dependent testset quietly contributes no assertions, exactly as before this
+tier split existed. Set `PSU_CORPUS` (to any non-empty value) to make that same absence a
+hard test failure instead — for a developer who has `data/` checked out locally and wants to
+know if a corpus-dependent test silently stopped running.
+
+Building the corpus itself is slow and network-bound (`scripts/psy5_case_generator/` or
+`test/fixtures/generate_fixtures.jl`), so no CI workflow sets this: CI proves the
+corpus-free unit tier only, honestly, rather than proving nothing while claiming otherwise.
+"""
+const PSU_CORPUS_REQUIRED = !isempty(get(ENV, "PSU_CORPUS", ""))
+
+"""
+Corpus-tier file gate. Returns `true` when `path` exists, so the caller's testset body
+should run. When `path` is missing: records a `@test false` (loud, specific) if
+`PSU_CORPUS_REQUIRED`; otherwise warns and stays quiet, matching the tier's default of
+contributing zero assertions rather than a false failure on a fresh checkout.
+"""
+function require_corpus_file(path::AbstractString)
+    if isfile(path)
+        return true
+    end
+    if PSU_CORPUS_REQUIRED
+        @error "PSU_CORPUS is set but a required corpus file is missing" path
+        @test false
+    else
+        @warn "corpus absent; skipping" path
+    end
+    return false
+end
+
+"""
+Corpus-tier directory gate, for testsets that sweep every system under `data/` rather than
+naming one file. Returns `true` when `systems` is non-empty.
+"""
+function require_corpus_systems(systems::AbstractVector, message::AbstractString)
+    if !isempty(systems)
+        return true
+    end
+    if PSU_CORPUS_REQUIRED
+        @error "PSU_CORPUS is set but $message"
+        @test false
+    else
+        @warn "corpus absent under data/; skipping — $message"
+    end
+    return false
+end
 
 LOG_FILE = "power-systems.log"
 LOG_LEVELS = Dict(
