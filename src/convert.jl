@@ -193,21 +193,24 @@ function _add_time_series!(
         return nothing
     end
     for row in read_associations(case.time_series_path)
-        owner_uuid = row["owner_uuid"]
-        if is_skipped(ledger, owner_uuid) || !has_id(ledger, owner_uuid)
+        if !owner_translated(ledger, row)
             record_cascaded_skip!(report, string(row["owner_type"]))
             continue
         end
-        PCOM.add_time_series_association!(doc, to_time_series_association(row, ledger))
+        PCOM.add_time_series_association!(
+            doc,
+            to_time_series_association(row, ledger, report),
+        )
     end
     return nothing
 end
 
 """
 The result of one conversion: the assembled `PCOM.SystemDocument`, the `ConversionReport`
-of what could not be carried across, and the path to the copied time-series sidecar
-(`nothing` when the source had none). The sidecar is copied, never read: only its
-association metadata is translated.
+of what could not be carried across, and the path to the rewritten time-series sidecar
+(`nothing` when the source had none). The sidecar named here is the `.h5` half of the
+InfraStore pair [`convert_time_series`](@ref) writes; its `.sqlite` catalog sits beside it
+and the two only mean anything together.
 """
 struct ConversionResult
     document::PCOM.SystemDocument
@@ -216,8 +219,8 @@ struct ConversionResult
 end
 
 """
-Convert one PSY5 case into `out_dir/system.json` plus, when the source has time series,
-`out_dir/time_series.h5`.
+Convert one PSY5 case into `out_dir/system.json` plus, when the source has time series, the
+`out_dir/time_series.h5` + `out_dir/time_series.h5.sqlite` InfraStore pair.
 
 Passing the same `report` into repeated calls accumulates findings across systems; the
 returned `ConversionResult` wraps that same report.
@@ -230,11 +233,11 @@ function convert_system(
 )
     case = read_psy5(src)
     push!(report.systems, basename(src))
-    doc, _ = build_document(case, report)
+    doc, ledger = build_document(case, report)
     mkpath(out_dir)
     time_series_file = nothing
     if has_time_series(case)
-        time_series_file = copy_time_series(case, out_dir)
+        time_series_file = convert_time_series(case, ledger, out_dir)
     end
     PCOM.write_document(doc, joinpath(out_dir, "system.json"); force = force)
     return ConversionResult(doc, report, time_series_file)

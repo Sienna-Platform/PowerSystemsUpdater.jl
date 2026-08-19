@@ -134,6 +134,10 @@ end
     end
 end
 
+# The document *and* its sidecar must both come back. The sidecar half is what makes this a
+# real round trip now that it is rewritten rather than copied: PSY6 addresses arrays by
+# content hash through a catalog PSU writes, so a mistake there produces a bundle that reads
+# as a System with no time series rather than an error.
 @testset "corpus round trip" begin
     systems = _corpus_systems()
     if !require_corpus_systems(systems, "data/ contains no systems for round-trip testing")
@@ -147,15 +151,26 @@ end
                 try
                     PSU.convert_system(path, out; force = true)
                     PSU.PCOM.read_document(joinpath(out, "system.json"))
+                    # The document is only half the bundle. The sidecar is opened with the
+                    # very call `from_openapi` makes to adopt it as the System's time series
+                    # store, so a sidecar that opens here is one PSY6 can read. A
+                    # byte-copied PSY5 sidecar fails this outright: it has no catalog.
+                    sidecar = joinpath(out, PSU.TIME_SERIES_FILENAME)
+                    if isfile(sidecar)
+                        store =
+                            IS.open_deserialized_infrastore_store(sidecar, nothing, true)
+                        IS.close!(store)
+                    end
                 catch e
                     push!(broke, (name, first(split(sprint(showerror, e), "\n"))))
                 end
             end
         end
 
-        # A system in KNOWN_CONVERSION_GAPS never reaches read_document — convert_system
-        # itself throws — so it shows up here too and must be exempted the same way, or
-        # every one of those systems would double as an "unexpected" round-trip failure.
+        # A system in KNOWN_CONVERSION_GAPS never reaches read_document or the sidecar
+        # open — convert_system itself throws — so it shows up here too and must be exempted
+        # the same way, or every one of those systems would double as an "unexpected"
+        # round-trip failure.
         unexpected = [
             p for p in broke if
             !haskey(KNOWN_ROUNDTRIP_GAPS, p[1]) && !haskey(KNOWN_CONVERSION_GAPS, p[1])

@@ -1,6 +1,15 @@
 const TIME_SERIES_FILENAME = "time_series.h5"
 
 """
+The HDF5 dataset PSY5 embeds its metadata SQLite database in.
+
+Named here rather than read from `IS.HDF5_TS_METADATA_ROOT_PATH` because that constant no
+longer exists: IS moved its storage to `InfraStore` and dropped HDF5 entirely. The path
+describes the legacy on-disk format this package reads, so it belongs to the reader.
+"""
+const PSY5_TS_METADATA_ROOT_PATH = "time_series_metadata"
+
+"""
 Read PSY5's `time_series_associations` table.
 
 `IS.from_h5_file` cannot be used: it reconstructs a `TimeSeriesMetadataStore`, which
@@ -10,8 +19,8 @@ extraction is replicated and the SQLite file queried directly.
 """
 function read_associations(h5_path::AbstractString)
     return mktempdir() do scratch
-        data = IS.HDF5.h5open(h5_path, "r") do file
-            return file[IS.HDF5_TS_METADATA_ROOT_PATH][:]
+        data = HDF5.h5open(h5_path, "r") do file
+            return file[PSY5_TS_METADATA_ROOT_PATH][:]
         end
         filename, io = mktemp(scratch)
         write(io, data)
@@ -41,9 +50,10 @@ end
 
 """
 PSY5's `scaling_factor_multiplier` column holds either `NULL` or `InfrastructureSystems`'s
-serialized-`Function` marker (`{"__metadata__":{"module":...,"function":...}}`). PSY6's
-schema wants the dot-encoded name instead (`PowerSystems.get_max_active_power`), so the
-marker is decoded rather than passed through as raw JSON text.
+serialized-`Function` marker (`{"__metadata__":{"module":...,"function":...}}`). The marker is
+decoded to the bare accessor name (`get_max_active_power`); the `PowerSystems.` module prefix
+it carries is dropped because the name is read as a label here, never resolved to a function —
+this package deliberately does not depend on `PowerSystems`.
 """
 function _scaling_factor_multiplier(row::AbstractDict)
     value = _association_value(get(row, "scaling_factor_multiplier", nothing))
@@ -54,9 +64,85 @@ function _scaling_factor_multiplier(row::AbstractDict)
     if !haskey(parsed, "__metadata__")
         throw(Psy5FormatError("unrecognized scaling_factor_multiplier payload: $value"))
     end
-    metadata = parsed["__metadata__"]
-    return string(metadata["module"], ".", metadata["function"])
+    return string(parsed["__metadata__"]["function"])
 end
+
+"""
+The basis PSY6 records for values a PSY5 multiplier normalized.
+
+PSY5 stored such a series as a fraction and named an accessor to scale it by at read time.
+PSY6 removed `scaling_factor_multiplier` and rescales nothing, so what carries the meaning
+across is the declaration that the values are per-unit on the owner's own base — which is
+what `DEVICE_BASE` says. Mirrors `PowerTableDataParser`'s handling of the same removal.
+"""
+const DEVICE_BASE_UNIT_SYSTEM = "DEVICE_BASE"
+
+"""
+The physical quantity a normalized series scales back to, keyed by the PSY5 accessor that
+named the base.
+
+Values are `quantity_types` names from `SiennaSchemas`' `Core/units.json`, the vocabulary
+PSY6's `quantity_kind` column draws on. With `unit_system` set to `DEVICE_BASE` the values
+are dimensionless, so this is the only remaining record of what they measure.
+
+The reservoir accessors (`get_storage_capacity`, `get_storage_target`, `get_inflow`) are
+deliberately absent: their quantity depends on the owning reservoir's `level_data_type`
+(a level is an energy, a volume, or a head), which is not resolvable from an association row.
+[`_quantity_kind`](@ref) reports those rather than guessing one.
+"""
+const MULTIPLIER_QUANTITY_KINDS = Dict(
+    "get_max_active_power" => "ActivePower",
+    "get_peak_active_power" => "ActivePower",
+    "get_requirement" => "ActivePower",
+    "get_max_reactive_power" => "ReactivePower",
+)
+
+"""
+The `quantity_kind` a multiplier names, or `nothing` when this translator cannot determine
+one. Shared by the document row and the InfraStore catalog row, which must agree.
+"""
+_multiplier_quantity_kind(::Nothing) = nothing
+_multiplier_quantity_kind(multiplier::AbstractString) =
+    get(MULTIPLIER_QUANTITY_KINDS, multiplier, nothing)
+
+# An undeterminable quantity is recorded as an unmapped field rather than dropped silently
+# or guessed at: a wrong quantity label is worse than an absent one, and the report is where
+# this package puts everything it could not carry across.
+_record_absent_quantity_kind(kind::AbstractString, ::AbstractDict, ::ConversionReport) =
+    kind
+
+function _record_absent_quantity_kind(
+    ::Nothing,
+    row::AbstractDict,
+    report::ConversionReport,
+)
+    record_unmapped_field!(report, string(row["owner_type"]), "quantity_kind")
+    return nothing
+end
+
+"""
+`quantity_kind` for a row's multiplier. A row with no multiplier declares no quantity and
+reports nothing; one whose accessor names no determinable quantity is reported.
+"""
+_quantity_kind(::Nothing, ::AbstractDict, ::ConversionReport) = nothing
+
+_quantity_kind(multiplier::AbstractString, row::AbstractDict, report::ConversionReport) =
+    _record_absent_quantity_kind(
+        _multiplier_quantity_kind(multiplier),
+        row,
+        report,
+    )
+
+_unit_system(::Nothing) = nothing
+_unit_system(::AbstractString) = DEVICE_BASE_UNIT_SYSTEM
+
+"""
+Whether a row's owner survived translation, and so whether the row can be carried across at
+all. Both the document's association rows and the InfraStore catalog's are filtered through
+this, so the two always describe the same set of series.
+"""
+owner_translated(ledger::Ledger, row::AbstractDict) =
+    has_id(ledger, row["owner_uuid"]) && !is_skipped(ledger, row["owner_uuid"])
 
 """
 PSY5's `features` column is a JSON-encoded list. This translator has no destination for a
@@ -80,18 +166,31 @@ function _features(row::AbstractDict)
 end
 
 """
-PSY5's association columns match PSY6's `TimeSeriesAssociation` field-for-field except that
-the owner is a UUID rather than an integer id.
+Translate one PSY5 association row into PSY6's `TimeSeriesAssociation`.
+
+Three PSY5 columns have no PSY6 column to land in. `time_series_uuid` and `metadata_uuid` are
+gone with UUID identity itself — the sidecar is addressed by `time_series_storage_file` and
+the row's own `id`. `scaling_factor_multiplier` is gone because PSY6 rescales nothing on
+retrieval; its meaning is re-expressed as `unit_system` plus `quantity_kind`.
+
+`element_type` and `application_data` are left unset. Both describe the stored array, and
+PSY6 reads an array's description from the sidecar catalog rather than from the document —
+[`convert_time_series`](@ref) writes `element_type` there — so filling them in here would add
+a second copy with no reader.
 
 The caller must exclude rows whose owner was skipped (`is_skipped(ledger, owner_uuid)`) —
 this function resolves `owner_id` unconditionally via `lookup_id` and raises
 `DanglingReferenceError` if the owner has no assigned id.
 """
-function to_time_series_association(row::AbstractDict, ledger::Ledger)
+function to_time_series_association(
+    row::AbstractDict,
+    ledger::Ledger,
+    report::ConversionReport,
+)
     owner_uuid = row["owner_uuid"]
+    multiplier = _scaling_factor_multiplier(row)
     return PCOM.TimeSeriesAssociation(;
         id = _association_value(get(row, "id", nothing)),
-        time_series_uuid = string(row["time_series_uuid"]),
         time_series_type = string(row["time_series_type"]),
         initial_timestamp = TimeZones.ZonedDateTime(
             TimeZones.DateTime(string(row["initial_timestamp"])),
@@ -107,18 +206,11 @@ function to_time_series_association(row::AbstractDict, ledger::Ledger)
         owner_type = string(row["owner_type"]),
         owner_category = string(row["owner_category"]),
         features = _features(row),
-        scaling_factor_multiplier = _scaling_factor_multiplier(row),
-        metadata_uuid = _optional_string_field(row, "metadata_uuid"),
         units = _optional_string_field(row, "units"),
+        # PENDING RENAME: the generated `TimeSeriesAssociation` field is `quantity_type` at
+        # the `[sources]` rev; `quantity_kind` is the decided spelling and its regeneration
+        # is in flight. This line needs that rev, not a change here.
+        quantity_kind = _quantity_kind(multiplier, row, report),
+        unit_system = _unit_system(multiplier),
     )
-end
-
-"""
-Copy the HDF5 sidecar verbatim. IS3 and IS4 storage formats are identical, so no rewrite is
-needed and none is attempted.
-"""
-function copy_time_series(case::Psy5Case, out_dir::AbstractString)
-    destination = joinpath(out_dir, TIME_SERIES_FILENAME)
-    cp(case.time_series_path, destination; force = true)
-    return destination
 end
