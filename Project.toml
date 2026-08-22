@@ -24,7 +24,7 @@ PowerOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIMode
 Dates = "1"
 DocStringExtensions = "~0.8, ~0.9"
 HDF5 = "0.17"
-InfraStore = "0.7"
+InfraStore = "0.8"
 InfrastructureSystems = "3.6"
 JSON = "1"
 OpenAPI = "0.2"
