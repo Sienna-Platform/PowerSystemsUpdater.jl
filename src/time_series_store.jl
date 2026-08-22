@@ -263,8 +263,8 @@ end
 
 """
 The basis InfraStore records for values a PSY5 multiplier normalized — the store's own
-spelling of the `DEVICE_BASE` the document's association row declares. See
-[`DEVICE_BASE_UNIT_SYSTEM`](@ref) for why a multiplier means per-unit on the owner's base.
+spelling of the `COMPONENT_BASE` the document's association row declares: a multiplier means
+the values are per-unit on the owner's own base.
 """
 _store_unit_system(::Nothing) = nothing
 _store_unit_system(::AbstractString) = InfraStore.ComponentBase
@@ -277,10 +277,7 @@ dropping it. Called here as well as on the document side so a conversion driven 
 through [`convert_time_series`](@ref) keeps the same guarantee — features are part of a
 series' identity in InfraStore, so a dropped one would silently rename the series.
 """
-function _store_features(row::AbstractDict)
-    _features(row)
-    return Dict{String, Any}()
-end
+_store_features(row::AbstractDict) = _features(row)
 
 # ── Staging one association ─────────────────────────────────────────────────────
 

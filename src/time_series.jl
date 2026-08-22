@@ -137,11 +137,7 @@ populated one, so a non-empty value fails loudly rather than being dropped.
 """
 function _features(row::AbstractDict)
     value = _association_value(get(row, "features", nothing))
-    if isnothing(value)
-        return Dict{String, Any}()
-    end
-    parsed = JSON.parse(String(value))
-    if !isempty(parsed)
+    if !isnothing(value) && !isempty(JSON.parse(String(value)))
         throw(
             Psy5FormatError(
                 "non-empty time series features are not supported: " *

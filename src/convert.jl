@@ -122,10 +122,7 @@ function _add_service_associations!(
     case::Psy5Case,
     ctx::TranslationContext,
 )
-    for raw in masked_components(case)
-        _add_service_associations_for!(doc, raw, ctx)
-    end
-    for raw in components(case)
+    for raw in all_components(case)
         _add_service_associations_for!(doc, raw, ctx)
     end
     return nothing
@@ -140,13 +137,9 @@ function _add_supplemental_attributes!(
     for attribute in supplemental_attributes(case)
         by_uuid[attribute["internal"]["uuid"]["value"]] = attribute
     end
-    owners_by_uuid = Dict{String, Any}()
-    for raw in masked_components(case)
-        owners_by_uuid[component_uuid(raw)] = raw
-    end
-    for raw in components(case)
-        owners_by_uuid[component_uuid(raw)] = raw
-    end
+    owners_by_uuid = Dict{String, Any}(
+        component_uuid(raw) => raw for raw in all_components(case)
+    )
     added = Set{String}()
     for association in supplemental_associations(case)
         attribute_uuid = association["attribute_uuid"]
