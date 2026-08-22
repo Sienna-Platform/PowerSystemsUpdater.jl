@@ -308,6 +308,11 @@ const PSY5_TIME_SERIES_KINDS = Dict{String, Psy5TimeSeriesKind}(
 count live on the PSY5 metadata object, not in the association table this package reads, so
 neither can be reconstructed from a row and neither appears in the PSY5 corpus. Erroring
 names what is missing instead of writing a forecast with invented parameters.
+
+`NonSequentialTimeSeries` is absent for a different reason, and its absence is correct rather
+than pending: it exists only in the psy6 line, so no PSY5 system can contain one and there is
+nothing to convert into one. Do not add a kind for it — a row naming it would mean the input
+is not a PSY5 system, which this error should report.
 """
 function _time_series_kind(row::AbstractDict)
     name = string(row["time_series_type"])
@@ -337,6 +342,7 @@ function _stage_time_series!(
     file::HDF5.File,
     row::AbstractDict,
     owner_id::Int,
+    report::ConversionReport,
 )
     data, layout = _legacy_array(file, row)
     array, element_type = _static_values(layout, data)
@@ -348,7 +354,7 @@ function _stage_time_series!(
         string(row["name"]);
         element_type = element_type,
         units = _optional_string_field(row, "units"),
-        quantity_kind = _multiplier_quantity_kind(multiplier),
+        quantity_kind = _quantity_kind(multiplier, row, report),
         unit_system = _store_unit_system(multiplier),
     )
     InfraStore.add_time_series!(
@@ -368,6 +374,7 @@ function _stage_time_series!(
     file::HDF5.File,
     row::AbstractDict,
     owner_id::Int,
+    report::ConversionReport,
 )
     data, layout = _legacy_array(file, row)
     array, element_type = _window_values(layout, data)
@@ -383,7 +390,7 @@ function _stage_time_series!(
         string(row["name"]);
         element_type = element_type,
         units = _optional_string_field(row, "units"),
-        quantity_kind = _multiplier_quantity_kind(multiplier),
+        quantity_kind = _quantity_kind(multiplier, row, report),
         unit_system = _store_unit_system(multiplier),
     )
     InfraStore.add_time_series!(
@@ -405,6 +412,7 @@ function _stage_time_series!(
     ::HDF5.File,
     ::AbstractDict,
     ::Int,
+    ::ConversionReport,
 )
     return nothing
 end
@@ -528,26 +536,33 @@ end
 """
 Rewrite `case`'s PSY5 sidecar as the InfraStore pair PSY6 reads: `out_dir/time_series.h5`
 holding the content-addressed arrays and `out_dir/time_series.h5.sqlite` holding the
-catalog. Returns the `.h5` path, which is what the document names.
+catalog. Returns the `.h5` path (what the document names) together with the
+`PowerTimeSeriesOpenAPIModels.TimeSeriesAssociation` rows read back from the freshly
+written catalog.
 
 The two files are one artifact — the arrays are addressed by content hash and the catalog is
 the only thing that says which association each hash belongs to — so they must travel
 together.
 
-Rows whose owner was skipped are left out. Their loss is already recorded once by
-`_add_time_series!`, which walks the same rows to build the document.
+The returned rows, not a document-side re-derivation of the PSY5 rows, are what the caller
+must add to the document: they carry the `uri`/`data_hash`/`element_type`/`element_shape`
+the store itself computed, so they are guaranteed to match what PSY6's importer will find in
+the catalog. Rows whose owner was skipped are left out; their loss is recorded by
+`_record_time_series_skips!`, which walks the same PSY5 rows to build the document.
 """
 function convert_time_series(
     case::Psy5Case,
     ledger::Ledger,
     out_dir::AbstractString,
+    report::ConversionReport,
 )
     destination = joinpath(out_dir, TIME_SERIES_FILENAME)
     rows = [
         row for row in read_associations(case.time_series_path) if
         owner_translated(ledger, row)
     ]
-    store = InfraStore.Store(; path = destination, in_memory = false, overwrite = true)
+    raw_store = InfraStore.Store(; path = destination, in_memory = false, overwrite = true)
+    associations = POM.TimeSeriesAssociation[]
     try
         batch = InfraStore.AddBatch()
         HDF5.h5open(case.time_series_path, "r") do file
@@ -558,14 +573,16 @@ function convert_time_series(
                     file,
                     row,
                     lookup_id(ledger, row["owner_uuid"]),
+                    report,
                 )
             end
         end
-        iszero(length(batch)) || InfraStore.add_time_series_bulk!(store, batch)
-        _derive_forecasts!(store, rows)
-        InfraStore.flush!(store)
+        iszero(length(batch)) || InfraStore.add_time_series_bulk!(raw_store, batch)
+        _derive_forecasts!(raw_store, rows)
+        InfraStore.flush!(raw_store)
+        associations = IS.openapi_time_series_association_rows(IS.Store(raw_store))
     finally
-        InfraStore.close!(store)
+        InfraStore.close!(raw_store)
     end
-    return destination
+    return destination, associations
 end

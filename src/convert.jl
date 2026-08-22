@@ -21,35 +21,35 @@ function build_document(case::Psy5Case, report::ConversionReport)
     end
 
     metadata = get(case.raw, "metadata", Dict{String, Any}())
-    doc = PCOM.SystemDocument(
+    doc = POM.SystemDocument(
         system_base_power(case);
-        unit_system = "DEVICE_BASE",
+        unit_system = "COMPONENT_BASE",
         name = get(metadata, "name", nothing),
         description = get(metadata, "description", nothing),
         frequency = get(case.raw, "frequency", nothing),
         time_series_storage_file = storage_file,
     )
-    PCOM.reserve_ids!(doc, ledger.counter[])
+    POM.reserve_ids!(doc, ledger.counter[])
 
     ctx = TranslationContext(ledger, report, system_base_power(case))
     # Masked sub-units translate before the HybridSystem that references them, so a
     # sub-unit's skip is known to references_skipped by the time its owner is checked.
     for raw in masked
         for model in translate_component(raw, ctx)
-            PCOM.add_component!(doc, model)
+            POM.add_component!(doc, model)
         end
     end
     for raw in own_components
         for model in translate_component(raw, ctx)
-            PCOM.add_component!(doc, model)
+            POM.add_component!(doc, model)
         end
     end
     # allocate_id! may have advanced past the ids reserved above
-    PCOM.reserve_ids!(doc, ledger.counter[])
+    POM.reserve_ids!(doc, ledger.counter[])
 
     _add_supplemental_attributes!(doc, case, ctx)
     _add_service_associations!(doc, case, ctx)
-    _add_time_series!(doc, case, ledger, report)
+    _record_time_series_skips!(case, ledger, report)
     return doc, ledger
 end
 
@@ -59,17 +59,19 @@ supports one attribute shared by many components, and `assign_id!` is idempotent
 repeat would push the same model twice under one id and `validate_document` would reject it.
 """
 function _add_supplemental_association!(
-    doc::PCOM.SystemDocument,
+    doc::POM.SystemDocument,
     attribute_id::Int,
     owner_id::Int,
-    type_name::AbstractString,
+    owner_type_name::AbstractString,
+    attribute_type_name::AbstractString,
 )
     push!(
         doc.supplemental_attribute_associations,
         PCOM.SupplementalAttributeAssociation(;
+            component_id = owner_id,
+            component_type = String(owner_type_name),
             attribute_id = attribute_id,
-            entity_id = owner_id,
-            attribute_type = String(type_name),
+            attribute_type = String(attribute_type_name),
         ),
     )
     return nothing
@@ -87,7 +89,7 @@ membership, since the entity or the service not making it into the document is a
 recorded once at its own root.
 """
 function _add_service_associations_for!(
-    doc::PCOM.SystemDocument,
+    doc::POM.SystemDocument,
     raw::AbstractDict,
     ctx::TranslationContext,
 )
@@ -107,7 +109,7 @@ function _add_service_associations_for!(
             continue
         end
         service_id = lookup_id(ctx.ledger, service_uuid)
-        PCOM.add_service_association!(
+        POM.add_service_association!(
             doc,
             POM.ServiceAssociation(; service_id = service_id, entity_id = entity_id),
         )
@@ -116,7 +118,7 @@ function _add_service_associations_for!(
 end
 
 function _add_service_associations!(
-    doc::PCOM.SystemDocument,
+    doc::POM.SystemDocument,
     case::Psy5Case,
     ctx::TranslationContext,
 )
@@ -130,13 +132,20 @@ function _add_service_associations!(
 end
 
 function _add_supplemental_attributes!(
-    doc::PCOM.SystemDocument,
+    doc::POM.SystemDocument,
     case::Psy5Case,
     ctx::TranslationContext,
 )
     by_uuid = Dict{String, Any}()
     for attribute in supplemental_attributes(case)
         by_uuid[attribute["internal"]["uuid"]["value"]] = attribute
+    end
+    owners_by_uuid = Dict{String, Any}()
+    for raw in masked_components(case)
+        owners_by_uuid[component_uuid(raw)] = raw
+    end
+    for raw in components(case)
+        owners_by_uuid[component_uuid(raw)] = raw
     end
     added = Set{String}()
     for association in supplemental_associations(case)
@@ -157,9 +166,12 @@ function _add_supplemental_attributes!(
             continue
         end
         owner_id = lookup_id(ctx.ledger, owner_uuid)
+        owner_type_name = component_type(owners_by_uuid[owner_uuid])
         attribute_id = assign_id!(ctx.ledger, attribute_uuid)
         if attribute_uuid in added
-            _add_supplemental_association!(doc, attribute_id, owner_id, type_name)
+            _add_supplemental_association!(
+                doc, attribute_id, owner_id, owner_type_name, type_name,
+            )
             continue
         end
         push!(added, attribute_uuid)
@@ -171,20 +183,20 @@ function _add_supplemental_attributes!(
             ctx.report;
             extra = Dict{Symbol, Any}(:id => attribute_id),
         )
-        PCOM.add_supplemental_attribute!(doc, model_type(; kwargs...), owner_id)
+        POM.add_supplemental_attribute!(doc, model_type(; kwargs...), owner_id)
     end
-    PCOM.reserve_ids!(doc, ctx.ledger.counter[])
+    POM.reserve_ids!(doc, ctx.ledger.counter[])
     return nothing
 end
 
 """
-Owners that were skipped take their time series with them. `to_time_series_association`
-resolves the owner unconditionally, so this filter is what keeps a dropped owner from
-raising `DanglingReferenceError` and aborting the whole system — and every association it
-drops is recorded rather than silently discarded.
+Owners that were skipped take their time series with them. This records that loss in
+`report` without touching the document: the association rows themselves come from
+[`convert_time_series`](@ref) reading back what it actually wrote to the InfraStore
+sidecar, not from a document-side re-derivation of the PSY5 rows, so a mismatch between
+what the document claims and what the sidecar holds cannot arise.
 """
-function _add_time_series!(
-    doc::PCOM.SystemDocument,
+function _record_time_series_skips!(
     case::Psy5Case,
     ledger::Ledger,
     report::ConversionReport,
@@ -195,25 +207,20 @@ function _add_time_series!(
     for row in read_associations(case.time_series_path)
         if !owner_translated(ledger, row)
             record_cascaded_skip!(report, string(row["owner_type"]))
-            continue
         end
-        PCOM.add_time_series_association!(
-            doc,
-            to_time_series_association(row, ledger, report),
-        )
     end
     return nothing
 end
 
 """
-The result of one conversion: the assembled `PCOM.SystemDocument`, the `ConversionReport`
+The result of one conversion: the assembled `POM.SystemDocument`, the `ConversionReport`
 of what could not be carried across, and the path to the rewritten time-series sidecar
 (`nothing` when the source had none). The sidecar named here is the `.h5` half of the
 InfraStore pair [`convert_time_series`](@ref) writes; its `.sqlite` catalog sits beside it
 and the two only mean anything together.
 """
 struct ConversionResult
-    document::PCOM.SystemDocument
+    document::POM.SystemDocument
     report::ConversionReport
     time_series_file::Union{Nothing, String}
 end
@@ -221,6 +228,12 @@ end
 """
 Convert one PSY5 case into `out_dir/system.json` plus, when the source has time series, the
 `out_dir/time_series.h5` + `out_dir/time_series.h5.sqlite` InfraStore pair.
+
+The document's time series association rows are the ones [`convert_time_series`](@ref)
+reads back from the sidecar it just wrote, not a re-derivation from the PSY5 rows: the
+sidecar's catalog is the only source for `uri`/`data_hash`/`element_type`/`element_shape`,
+which a document-side guess could not reproduce, and PSY6's importer validates document
+rows against that same catalog.
 
 Passing the same `report` into repeated calls accumulates findings across systems; the
 returned `ConversionResult` wraps that same report.
@@ -237,8 +250,11 @@ function convert_system(
     mkpath(out_dir)
     time_series_file = nothing
     if has_time_series(case)
-        time_series_file = convert_time_series(case, ledger, out_dir)
+        time_series_file, associations = convert_time_series(case, ledger, out_dir, report)
+        for assoc in associations
+            POM.add_time_series_association!(doc, assoc)
+        end
     end
-    PCOM.write_document(doc, joinpath(out_dir, "system.json"); force = force)
+    POM.write_document(doc, joinpath(out_dir, "system.json"); force = force)
     return ConversionResult(doc, report, time_series_file)
 end

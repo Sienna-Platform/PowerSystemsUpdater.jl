@@ -150,7 +150,7 @@ end
                 out = joinpath(tmp, name)
                 try
                     PSU.convert_system(path, out; force = true)
-                    PSU.PCOM.read_document(joinpath(out, "system.json"))
+                    PSU.POM.read_document(joinpath(out, "system.json"))
                     # The document is only half the bundle. The sidecar is opened with the
                     # very call `from_openapi` makes to adopt it as the System's time series
                     # store, so a sidecar that opens here is one PSY6 can read. A

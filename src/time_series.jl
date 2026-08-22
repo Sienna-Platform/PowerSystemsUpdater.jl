@@ -68,21 +68,11 @@ function _scaling_factor_multiplier(row::AbstractDict)
 end
 
 """
-The basis PSY6 records for values a PSY5 multiplier normalized.
-
-PSY5 stored such a series as a fraction and named an accessor to scale it by at read time.
-PSY6 removed `scaling_factor_multiplier` and rescales nothing, so what carries the meaning
-across is the declaration that the values are per-unit on the owner's own base — which is
-what `DEVICE_BASE` says. Mirrors `PowerTableDataParser`'s handling of the same removal.
-"""
-const DEVICE_BASE_UNIT_SYSTEM = "DEVICE_BASE"
-
-"""
 The physical quantity a normalized series scales back to, keyed by the PSY5 accessor that
 named the base.
 
 Values are `quantity_types` names from `SiennaSchemas`' `Core/units.json`, the vocabulary
-PSY6's `quantity_kind` column draws on. With `unit_system` set to `DEVICE_BASE` the values
+PSY6's `quantity_kind` column draws on. With `unit_system` set to `COMPONENT_BASE` the values
 are dimensionless, so this is the only remaining record of what they measure.
 
 The reservoir accessors (`get_storage_capacity`, `get_storage_target`, `get_inflow`) are
@@ -133,9 +123,6 @@ _quantity_kind(multiplier::AbstractString, row::AbstractDict, report::Conversion
         report,
     )
 
-_unit_system(::Nothing) = nothing
-_unit_system(::AbstractString) = DEVICE_BASE_UNIT_SYSTEM
-
 """
 Whether a row's owner survived translation, and so whether the row can be carried across at
 all. Both the document's association rows and the InfraStore catalog's are filtered through
@@ -151,7 +138,7 @@ populated one, so a non-empty value fails loudly rather than being dropped.
 function _features(row::AbstractDict)
     value = _association_value(get(row, "features", nothing))
     if isnothing(value)
-        return Dict{String, PCOM.FeatureValue}[]
+        return Dict{String, Any}()
     end
     parsed = JSON.parse(String(value))
     if !isempty(parsed)
@@ -162,55 +149,5 @@ function _features(row::AbstractDict)
             ),
         )
     end
-    return Dict{String, PCOM.FeatureValue}[]
-end
-
-"""
-Translate one PSY5 association row into PSY6's `TimeSeriesAssociation`.
-
-Three PSY5 columns have no PSY6 column to land in. `time_series_uuid` and `metadata_uuid` are
-gone with UUID identity itself — the sidecar is addressed by `time_series_storage_file` and
-the row's own `id`. `scaling_factor_multiplier` is gone because PSY6 rescales nothing on
-retrieval; its meaning is re-expressed as `unit_system` plus `quantity_kind`.
-
-`element_type` and `application_data` are left unset. Both describe the stored array, and
-PSY6 reads an array's description from the sidecar catalog rather than from the document —
-[`convert_time_series`](@ref) writes `element_type` there — so filling them in here would add
-a second copy with no reader.
-
-The caller must exclude rows whose owner was skipped (`is_skipped(ledger, owner_uuid)`) —
-this function resolves `owner_id` unconditionally via `lookup_id` and raises
-`DanglingReferenceError` if the owner has no assigned id.
-"""
-function to_time_series_association(
-    row::AbstractDict,
-    ledger::Ledger,
-    report::ConversionReport,
-)
-    owner_uuid = row["owner_uuid"]
-    multiplier = _scaling_factor_multiplier(row)
-    return PCOM.TimeSeriesAssociation(;
-        id = _association_value(get(row, "id", nothing)),
-        time_series_type = string(row["time_series_type"]),
-        initial_timestamp = TimeZones.ZonedDateTime(
-            TimeZones.DateTime(string(row["initial_timestamp"])),
-            TimeZones.tz"UTC",
-        ),
-        resolution = string(row["resolution"]),
-        horizon = _optional_string_field(row, "horizon"),
-        interval = _optional_string_field(row, "interval"),
-        window_count = _association_value(get(row, "window_count", nothing)),
-        length = _association_value(get(row, "length", nothing)),
-        name = string(row["name"]),
-        owner_id = lookup_id(ledger, owner_uuid),
-        owner_type = string(row["owner_type"]),
-        owner_category = string(row["owner_category"]),
-        features = _features(row),
-        units = _optional_string_field(row, "units"),
-        # PENDING RENAME: the generated `TimeSeriesAssociation` field is `quantity_type` at
-        # the `[sources]` rev; `quantity_kind` is the decided spelling and its regeneration
-        # is in flight. This line needs that rev, not a change here.
-        quantity_kind = _quantity_kind(multiplier, row, report),
-        unit_system = _unit_system(multiplier),
-    )
+    return Dict{String, Any}()
 end

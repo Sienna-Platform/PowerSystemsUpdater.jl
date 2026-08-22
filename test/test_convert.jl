@@ -8,12 +8,12 @@
 
             system_json = joinpath(tmp, "system.json")
             @test isfile(system_json)
-            @test PSU.PCOM.get_base_power(result.document) == 100.0
+            @test PSU.POM.get_base_power(result.document) == 100.0
 
-            doc = PSU.PCOM.read_document(system_json)
-            @test PSU.PCOM.get_unit_system(doc) == "DEVICE_BASE"
-            @test PSU.PCOM.get_base_power(doc) == 100.0
-            @test !isempty(PSU.PCOM.get_components(doc, "ACBus"))
+            doc = PSU.POM.read_document(system_json)
+            @test PSU.POM.get_unit_system(doc) == "COMPONENT_BASE"
+            @test PSU.POM.get_base_power(doc) == 100.0
+            @test !isempty(PSU.POM.get_components(doc, "ACBus"))
 
             @test isempty(report.unmapped_types)
             @test isempty(report.cascaded_skips)
@@ -36,9 +36,9 @@ end
             ]
             @test !isempty(fuel_curves)
 
-            doc = PSU.PCOM.read_document(system_json)
-            for type_name in PSU.PCOM.component_type_names(doc)
-                @test length(PSU.PCOM.get_components(doc, type_name)) ==
+            doc = PSU.POM.read_document(system_json)
+            for type_name in PSU.POM.component_type_names(doc)
+                @test length(PSU.POM.get_components(doc, type_name)) ==
                       length(raw["components"][type_name])
             end
         end
@@ -66,9 +66,9 @@ end
             @test !isempty(offtakes)
             @test all(value -> value["curve_type"] == "INPUT_OUTPUT", offtakes)
 
-            doc = PSU.PCOM.read_document(system_json)
-            for type_name in PSU.PCOM.component_type_names(doc)
-                @test length(PSU.PCOM.get_components(doc, type_name)) ==
+            doc = PSU.POM.read_document(system_json)
+            for type_name in PSU.POM.component_type_names(doc)
+                @test length(PSU.POM.get_components(doc, type_name)) ==
                       length(raw["components"][type_name])
             end
         end
@@ -85,9 +85,9 @@ end
             raw = PSU.JSON.parsefile(system_json; dicttype = Dict{String, Any})
             @test !isempty(raw["components"]["HydroReservoir"])
 
-            doc = PSU.PCOM.read_document(system_json)
-            for type_name in PSU.PCOM.component_type_names(doc)
-                @test length(PSU.PCOM.get_components(doc, type_name)) ==
+            doc = PSU.POM.read_document(system_json)
+            for type_name in PSU.POM.component_type_names(doc)
+                @test length(PSU.POM.get_components(doc, type_name)) ==
                       length(raw["components"][type_name])
             end
             @test isempty(report.unmapped_types)
@@ -132,9 +132,9 @@ end
 
             # With ONEOF_DISCRIMINATORS' MarketBidCost/LoadCost entries the whole document
             # reads back, not just the isolated cost above.
-            doc = PSU.PCOM.read_document(system_json)
-            for type_name in PSU.PCOM.component_type_names(doc)
-                @test length(PSU.PCOM.get_components(doc, type_name)) ==
+            doc = PSU.POM.read_document(system_json)
+            for type_name in PSU.POM.component_type_names(doc)
+                @test length(PSU.POM.get_components(doc, type_name)) ==
                       length(raw["components"][type_name])
             end
         end
@@ -225,8 +225,8 @@ end
         doc, _ = PSU.build_document(case, report)
 
         component_ids = Int[]
-        for type_name in PSU.PCOM.component_type_names(doc)
-            for component in PSU.PCOM.get_components(doc, type_name)
+        for type_name in PSU.POM.component_type_names(doc)
+            for component in PSU.POM.get_components(doc, type_name)
                 push!(component_ids, component.id)
             end
         end
@@ -243,10 +243,10 @@ end
         @test !isempty(geo_associations)
         geo_ids = Set(a.id for a in doc.supplemental_attributes)
         @test all(a -> a.attribute_id in geo_ids, geo_associations)
-        @test all(a -> a.entity_id in Set(component_ids), geo_associations)
+        @test all(a -> a.component_id in Set(component_ids), geo_associations)
 
-        @test PSU.PCOM.get_unit_system(doc) == "DEVICE_BASE"
-        @test PSU.PCOM.get_base_power(doc) == PSU.system_base_power(case)
+        @test PSU.POM.get_unit_system(doc) == "COMPONENT_BASE"
+        @test PSU.POM.get_base_power(doc) == PSU.system_base_power(case)
     end
 end
 
@@ -289,7 +289,7 @@ end
     assoc = only(doc.service_associations)
     @test assoc.service_id == PSU.lookup_id(ledger, "uuid-reserve")
     @test assoc.entity_id == PSU.lookup_id(ledger, "uuid-member")
-    PSU.PCOM.validate_document(doc)
+    PSU.POM.validate_document(doc)
 
     # `services` never leaks into build_kwargs as an unmapped field.
     @test !haskey(report.unmapped_fields, ("VariableReserve", "services"))
@@ -374,7 +374,7 @@ end
     @test report.unmapped_types["SomeUnmappedGeneratorType"] == 1
     @test report.cascaded_skips["HybridSystem"] == 1
     @test PSU.is_skipped(ledger, "uuid-hybrid")
-    @test isempty(PSU.PCOM.get_components(doc, "HybridSystem"))
+    @test isempty(PSU.POM.get_components(doc, "HybridSystem"))
 end
 
 @testset "build_document: one supplemental attribute shared by two owners" begin
@@ -436,8 +436,8 @@ end
         doc.supplemental_attribute_associations,
     )
     @test length(geo_associations) == 2
-    @test length(Set(a.entity_id for a in geo_associations)) == 2
+    @test length(Set(a.component_id for a in geo_associations)) == 2
     @test length(Set(a.attribute_id for a in geo_associations)) == 1
 
-    PSU.PCOM.validate_document(doc)
+    PSU.POM.validate_document(doc)
 end

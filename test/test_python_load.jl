@@ -134,7 +134,7 @@ end
     else
         corrupted = Dict(
             "base_power" => 100.0,
-            "unit_system" => "DEVICE_BASE",
+            "unit_system" => "COMPONENT_BASE",
             "components" => Dict("NotARealComponentType" => [Dict("id" => 1)]),
             "supplemental_attributes" => Dict(),
             "supplemental_attribute_associations" => [],
