@@ -292,7 +292,7 @@
         @test translated["no_load_cost"]["function_data"]["proportional_term"] == 0.0
         @test isempty(scalar_rep.unmapped_fields)
 
-        # actually constructs: OpenAPI.from_json is what PCOM.read_document uses to turn
+        # actually constructs: OpenAPI.from_json is what POM.read_document uses to turn
         # a JSON dict into a typed model, and this is the exact call that raised
         # "MethodError: Cannot convert an object of type Float64 to ... InputOutputCurve"
         # before this fix.

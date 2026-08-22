@@ -1,5 +1,8 @@
 module PowerSystemsUpdater
 
+import Dates
+import HDF5
+import InfraStore
 import InfrastructureSystems
 import JSON
 import OpenAPI
@@ -30,6 +33,7 @@ include("translate/reserves.jl")
 include("translate/transformers.jl")
 include("translate/hydro_reservoir.jl")
 include("time_series.jl")
+include("time_series_store.jl")
 include("convert.jl")
 
 export convert_system

@@ -56,6 +56,14 @@ function masked_components(case::Psy5Case)
     return get(case.raw["data"], "masked_components", Any[])
 end
 
+"""
+Every raw component `case` carries, masked ones first. `assign_id!` order matters and is not
+this order — `build_document` walks `components`/`masked_components` separately for that — but
+callers that only look a component up by uuid can use this.
+"""
+all_components(case::Psy5Case) =
+    Iterators.flatten((masked_components(case), components(case)))
+
 function supplemental_attributes(case::Psy5Case)
     manager = get(case.raw["data"], "supplemental_attribute_manager", nothing)
     if isnothing(manager)

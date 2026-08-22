@@ -96,16 +96,68 @@ only `{LINEAR, PIECEWISE_STEP}`, while `InputOutputCurve` accepts `{LINEAR, PIEC
 
 ## Time series
 
-The HDF5 sidecar is **unchanged** — IS3 and IS4 use identical storage formats
-(`TIME_SERIES_DATA_FORMAT_VERSION` 2.0.0, `TS_METADATA_FORMAT_VERSION` 1.1.0), so it copies
-byte-for-byte.
+The sidecar is rewritten, not copied. PSY5 keys one HDF5 group per time series UUID under
+`/time_series` and embeds its association table as a SQLite blob in a second dataset. PSY6
+uses InfraStore, which addresses every array by its SHA-256 content hash and keeps the
+associations in a sibling catalog file:
 
-What moves is the metadata. PSY5 embeds a whole SQLite database inside the HDF5; PSY6 puts the
-rows in the document as `time_series_associations`, with `time_series_storage_file` naming the
-sidecar by basename. The columns map 1:1 with one change: **`owner_uuid` → `owner_id`**.
+|                | PSY5                          | PSY6 (InfraStore)                        |
+|:-------------- |:----------------------------- |:---------------------------------------- |
+| Array identity | the time series UUID          | the array's SHA-256 content hash         |
+| Array location | `/time_series/<uuid>/data`    | one packed HDF5 dataset per array group  |
+| Associations   | a SQLite blob inside the HDF5 | `time_series.h5.sqlite`, beside the HDF5 |
+| Duplicate data | one group per series          | de-duplicated by content hash            |
 
-`scaling_factor_multiplier` is a serialized-`Function` marker in PSY5 and a dot-encoded name
-(`PowerSystems.get_max_active_power`) in PSY6.
+A byte copy would therefore produce a bundle whose arrays no reader can resolve: the UUID
+that keyed them no longer exists anywhere in the stack, and there is no catalog to say which
+association owns which array. So `convert_time_series` decodes each array and re-adds it
+through `InfraStore.jl`, which writes both halves. **The `.h5` and its `.sqlite` are one
+artifact and must travel together.**
+
+PSY6's importer adopts that catalog as the System's own time series store rather than
+replaying the document's `time_series_associations`, so the catalog is the copy that is
+actually read. Both are written, and both carry the same declarations.
+
+Three element layouts and one time series type make the crossing:
+
+| PSY5                                              | PSY6                                       |
+|:------------------------------------------------- |:------------------------------------------ |
+| `CONSTANT` scalars                                | unchanged; InfraStore derives the dtype    |
+| `PiecewiseStepData`, NaN-padded `(n, 2)` matrices | one self-describing `piecewise_step` row   |
+| `SingleTimeSeries`, `Deterministic`               | the same types, same array shapes          |
+| `DeterministicSingleTimeSeries`                   | derived by `transform_single_time_series!` |
+
+A derived forecast stores no array of its own in PSY6 — it re-describes the
+`SingleTimeSeries` it came from. InfraStore derives from every series at a resolution or from
+none, so a sidecar whose derived rows cover only some of them aborts rather than gaining or
+losing forecasts. Every other layout and type (`PiecewiseLinearData`, `Probabilistic`,
+`Scenarios`) errors: the two stores agree on nothing but plain scalars, and a `Probabilistic`
+association row carries no percentiles to rebuild one from.
+
+The association metadata moves too. PSY5 embeds a whole SQLite database inside the HDF5; PSY6
+puts the rows in the document as `time_series_associations`, with `time_series_storage_file`
+naming the sidecar by basename. Four columns do not map straight across:
+
+| PSY5                        | PSY6                            |
+|:--------------------------- |:------------------------------- |
+| `owner_uuid`                | `owner_id`, an integer          |
+| `time_series_uuid`          | dropped with UUID identity      |
+| `metadata_uuid`             | dropped with UUID identity      |
+| `scaling_factor_multiplier` | `unit_system` + `quantity_kind` |
+
+PSY5 stored a scaled series as a fraction and named an accessor to multiply it by on
+retrieval. PSY6 rescales nothing, so the multiplier's meaning is re-expressed: the values are
+per-unit on the owner's own base, which is `unit_system = DEVICE_BASE`, and the accessor's
+physical quantity becomes `quantity_kind` (a `Core/units.json` vocabulary name).
+
+The reservoir accessors — `get_storage_capacity`, `get_storage_target`, `get_inflow` — get a
+basis but no `quantity_kind`: a reservoir level is an energy, a volume, or a head depending on
+the owner's `level_data_type`, which an association row does not carry. Those are counted in
+the conversion report as unmapped `quantity_kind` rather than guessed at.
+
+The document's `element_type` and `application_data` are left unset. Both describe the stored
+array, and PSY6 reads an array's description from the catalog — where `element_type` *is*
+written — so filling them into the document too would add a second copy with no reader.
 
 ## Document structure
 
