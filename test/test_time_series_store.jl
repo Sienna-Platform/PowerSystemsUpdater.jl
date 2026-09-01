@@ -154,15 +154,19 @@ end
                             store, 1, "ThermalStandard", InfraStore.Component, series,
                         )
                         InfraStore.flush!(store)
-                        stored = InfraStore.get_time_series(
-                            InfraStore.SingleTimeSeries, store, 1,
-                            InfraStore.Component, "market_bid_cost",
-                        )
+                        metadata = only(InfraStore.list_metadata(store))
+                        stored = InfraStore.read_by_id(store, metadata.id)
                         @test stored.element_type == "piecewise_step"
-                        @test size(stored.data) == size(encoded)
+                        # read_by_id decodes piecewise_step natively into one
+                        # InfraStore.PiecewiseStep(x, y) per timestep, not the raw
+                        # (steps, padded_width) matrix `encoded` holds — so the expected
+                        # coordinates come straight from the legacy array, not through
+                        # `decode_piecewise_step_row`'s matrix-row decoder.
+                        @test length(stored.data) == size(legacy_data, 1)
                         for i in 1:size(legacy_data, 1)
-                            @test decode_piecewise_step_row(stored.data, i) ==
-                                  decode_legacy_piecewise_step(legacy_data, i)
+                            x, y = decode_legacy_piecewise_step(legacy_data, i)
+                            @test stored.data[i].x == x
+                            @test stored.data[i].y == y
                         end
                     finally
                         InfraStore.close!(store)
@@ -212,7 +216,7 @@ end
             # its owner, and carries the basis and quantity the association row declares.
             catalog = InfraStore.open_store(sidecar; read_only = true)
             try
-                metadata = InfraStore.list_time_series(catalog)
+                metadata = InfraStore.list_metadata(catalog)
                 @test length(metadata) == length(rows)
                 scaled = filter(m -> !isnothing(m.unit_system), metadata)
                 @test !isempty(scaled)

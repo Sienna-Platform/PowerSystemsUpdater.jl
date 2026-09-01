@@ -33,6 +33,7 @@ const ONEOF_DISCRIMINATORS = Dict{String, Tuple{Symbol, String}}(
     "StorageCost" => (:cost_type, "STORAGE"),
     "LoadCost" => (:cost_type, "LOAD"),
     "MarketBidCost" => (:cost_type, "MARKET_BID"),
+    "HydroReservoirCost" => (:cost_type, "HYDRO_RES"),
 )
 
 function _psy5_type_name(dict::AbstractDict)
@@ -97,17 +98,24 @@ function _check_no_time_series_pointers!(
 end
 
 """
-PSY5 permits `MarketBidCost.shut_down` / `no_load_cost` to be a bare scalar; PSY6 types both
-as a concrete `InputOutputCurve`. The schema sanctions this promotion: both fields'
-`description` documents the "legacy scalar promotion", and their `default` gives exactly the
-`InputOutputCurve`/`LinearFunctionData` shape built here (`Core/common.json`). Promotes the scalar `s` into a constant function
-(`proportional_term = 0.0`, i.e. the multiplier, so the curve's value is just `s`) rather
-than dropping it — PSY5's use of 0.0 here is a real "no extra cost" curve, not a missing
-value. Built as a raw PSY5-shaped nested dict so the promoted curve goes through the ordinary
-`ONEOF_DISCRIMINATORS` injection on the recursive pass right after, instead of a second,
-hand-rolled discriminator mechanism.
+PSY5 permits `MarketBidCost.shut_down` to be a bare scalar; PSY6 types it as a concrete
+`InputOutputCurve`. The schema sanctions this promotion: the field's `description`
+documents the "legacy scalar promotion", and its `default` gives exactly the
+`InputOutputCurve`/`LinearFunctionData` shape built here (`Core/common.json`). Promotes the
+scalar `s` into a constant function (`proportional_term = 0.0`, i.e. the multiplier, so the
+curve's value is just `s`) rather than dropping it — PSY5's use of 0.0 here is a real "no
+extra cost" curve, not a missing value. Built as a raw PSY5-shaped nested dict so the
+promoted curve goes through the ordinary `ONEOF_DISCRIMINATORS` injection on the recursive
+pass right after, instead of a second, hand-rolled discriminator mechanism.
+
+PSY5's `no_load_cost` is NOT included here: PSY6's counterpart field is
+`minimum_energy_offer` (a \$/MWh curve, not the same physical quantity), and the schema
+documents the conversion as `minimum_energy_offer = no_load_cost / P_min` — P_min lives on
+the owning generator, not on this cost object, so the division cannot be done from here.
+Promoting the bare scalar into a curve without that division would silently mislabel a \$/h
+value as \$/MWh. Left unmapped and recorded on the report instead of forced.
 """
-const MARKET_BID_COST_SCALAR_FIELDS = Set(["shut_down", "no_load_cost"])
+const MARKET_BID_COST_SCALAR_FIELDS = Set(["shut_down"])
 
 _is_scalar_cost(::Real) = true
 _is_scalar_cost(::Any) = false
@@ -151,7 +159,8 @@ the ordinary field-copy path instead of recording an unmapped field and leaving 
 required `variable_operation_cost` absent.
 """
 const VARIABLE_OPERATION_COST_TYPES = Set([
-    "ThermalGenerationCost", "HydroGenerationCost", "RenewableGenerationCost", "LoadCost",
+    "ThermalGenerationCost", "HydroGenerationCost", "RenewableGenerationCost",
+    "LoadCost",
 ])
 
 function _rename_variable_operation_cost(

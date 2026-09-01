@@ -58,7 +58,8 @@ end
             system_json = joinpath(tmp, "system.json")
             raw = PSU.JSON.parsefile(system_json; dicttype = Dict{String, Any})
             offtakes = [
-                hydro["operation_cost"]["variable_operation_cost"]["startup_fuel_offtake"] for
+                hydro["operation_cost"]["variable_operation_cost"]["startup_fuel_offtake"]
+                for
                 hydro in raw["components"]["HydroDispatch"] if
                 haskey(
                     hydro["operation_cost"]["variable_operation_cost"],

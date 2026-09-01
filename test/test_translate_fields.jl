@@ -269,9 +269,12 @@
         @test counting_rep.unmapped_fields[("ACBus", "not_a_psy6_field")] == 2
     end
 
-    @testset "MarketBidCost scalar shut_down/no_load_cost promoted to a curve" begin
-        # PSY5 legally writes a bare Float64; PSY6 types both fields as a concrete
+    @testset "MarketBidCost scalar shut_down promoted to a curve; no_load_cost reported" begin
+        # PSY5 legally writes a bare Float64 shut_down; PSY6 types it as a concrete
         # InputOutputCurve. Real corpus systems (c_sys5_hybrid and siblings) hit this.
+        # no_load_cost is NOT promoted: PSY6's minimum_energy_offer is a different physical
+        # quantity (MEO = no_load_cost / P_min, and P_min is not on this object), so it is
+        # left as-is and recorded as an unmapped field rather than silently mislabeled.
         scalar_rep = PSU.ConversionReport()
         raw = Dict{String, Any}(
             "__metadata__" => Dict("type" => "MarketBidCost"),
@@ -288,9 +291,11 @@
         @test translated["shut_down"]["function_data"]["function_type"] == "LINEAR"
         @test translated["shut_down"]["function_data"]["constant_term"] == 0.0
         @test translated["shut_down"]["function_data"]["proportional_term"] == 0.0
-        @test translated["no_load_cost"]["function_data"]["constant_term"] == 12.5
-        @test translated["no_load_cost"]["function_data"]["proportional_term"] == 0.0
-        @test isempty(scalar_rep.unmapped_fields)
+        @test translated["no_load_cost"] == 12.5
+        # translate_value's own unmapped-nested-field guard already caught it: no_load_cost
+        # is not a MarketBidCost fieldname (that field is minimum_energy_offer), so nothing
+        # downstream needs to record it again.
+        @test scalar_rep.unmapped_fields[("MarketBidCost", "no_load_cost")] == 1
 
         # actually constructs: OpenAPI.from_json is what POM.read_document uses to turn
         # a JSON dict into a typed model, and this is the exact call that raised
@@ -298,7 +303,7 @@
         # before this fix.
         json_ready = Dict{String, Any}("cost_type" => "MARKET_BID")
         for (key, value) in translated
-            if key == "__metadata__"
+            if key == "__metadata__" || key == "no_load_cost"
                 continue
             end
             json_ready[key] = value
@@ -308,7 +313,6 @@
         # function_data is itself a discriminated oneOf; .value holds the resolved type.
         @test model.shut_down.function_data.value.constant_term == 0.0
         @test model.shut_down.function_data.value.proportional_term == 0.0
-        @test model.no_load_cost.function_data.value.constant_term == 12.5
 
         # scoped narrowly: a scalar named "shut_down" on any other type is left alone
         other_rep = PSU.ConversionReport()
