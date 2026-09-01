@@ -78,7 +78,7 @@ function _magnetizing_shunt(raw::AbstractDict)
     if isnothing(shunt)
         return nothing
     end
-    return PCOM.ComplexNumber(;
+    return ICOM.ComplexNumber(;
         real = Float64(shunt["real"]),
         imag = Float64(shunt["imag"]),
     )
@@ -288,7 +288,7 @@ function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationCon
         base_power_31 = raw["base_power_13"],
         # PSY5 stores the star-to-ground magnetizing shunt as two floats (g, b); PSY6
         # stores it as one ComplexNumber.
-        magnetizing_shunt = PCOM.ComplexNumber(;
+        magnetizing_shunt = ICOM.ComplexNumber(;
             real = Float64(raw["g"]),
             imag = Float64(raw["b"]),
         ),

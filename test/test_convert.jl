@@ -212,7 +212,7 @@ end
     if require_corpus_file(path)
         mktempdir() do tmp
             PSU.convert_system(path, tmp)
-            @test_throws PSU.PCOM.DocumentFormatError PSU.convert_system(path, tmp)
+            @test_throws PSU.ICOM.DocumentFormatError PSU.convert_system(path, tmp)
             result = PSU.convert_system(path, tmp; force = true)
             @test isfile(joinpath(tmp, "system.json"))
             @test !isempty(result.report.systems)

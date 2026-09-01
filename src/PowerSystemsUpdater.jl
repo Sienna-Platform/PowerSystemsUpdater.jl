@@ -8,6 +8,7 @@ import JSON
 import OpenAPI
 import PowerOpenAPIModels
 import PowerOpenAPIModels.PowerCoreOpenAPIModels
+import PowerOpenAPIModels.InfrastructureCoreOpenAPIModels
 import SQLite
 import Tables
 import TimeZones
@@ -15,6 +16,7 @@ import TimeZones
 const IS = InfrastructureSystems
 const POM = PowerOpenAPIModels
 const PCOM = PowerOpenAPIModels.PowerCoreOpenAPIModels
+const ICOM = PowerOpenAPIModels.InfrastructureCoreOpenAPIModels
 
 using DocStringExtensions
 

@@ -65,7 +65,7 @@ function _add_supplemental_association!(
 )
     push!(
         doc.supplemental_attribute_associations,
-        PCOM.SupplementalAttributeAssociation(;
+        ICOM.SupplementalAttributeAssociation(;
             component_id = owner_id,
             component_type = String(owner_type_name),
             attribute_id = attribute_id,
@@ -152,7 +152,7 @@ function _add_supplemental_attributes!(
         end
         raw_attribute = by_uuid[attribute_uuid]
         type_name = component_type(raw_attribute)
-        if !PCOM.has_model_type(type_name)
+        if !ICOM.has_model_type(type_name)
             record_unmapped_type!(ctx.report, type_name)
             continue
         end
@@ -166,7 +166,7 @@ function _add_supplemental_attributes!(
             continue
         end
         push!(added, attribute_uuid)
-        model_type = PCOM.model_type(type_name)
+        model_type = ICOM.model_type(type_name)
         kwargs = build_kwargs(
             model_type,
             raw_attribute,

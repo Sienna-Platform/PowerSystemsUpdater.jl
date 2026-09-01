@@ -180,7 +180,7 @@ translate_value(value, ::Ledger, ::ConversionReport) = value
 
 """
 Record every key on a resolved nested composite (`type_name` from `__metadata__.type`, or
-`"StartUpStages"` for the untagged shape) that is not one of `PCOM.model_type(type_name)`'s
+`"StartUpStages"` for the untagged shape) that is not one of `ICOM.model_type(type_name)`'s
 fieldnames — the nested analogue of `build_kwargs`'s unmapped-field guard.
 
 Only fires when `type_name` resolves to a registered PSY6 model; an unresolved nested dict
@@ -193,10 +193,10 @@ function _record_unmapped_nested_fields!(
     type_name::Union{Nothing, AbstractString},
     report::ConversionReport,
 )
-    if isnothing(type_name) || !PCOM.has_model_type(type_name)
+    if isnothing(type_name) || !ICOM.has_model_type(type_name)
         return nothing
     end
-    targets = Set(fieldnames(PCOM.model_type(type_name)))
+    targets = Set(fieldnames(ICOM.model_type(type_name)))
     for key in keys(translated)
         if key == "__metadata__"
             continue
