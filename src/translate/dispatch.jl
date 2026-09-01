@@ -60,6 +60,9 @@ function direct_translate(
     if :base_power in fieldnames(T)
         extra[:base_power] = base_power_for(raw, ctx.system_base)
     end
+    if :power_units in fieldnames(T)
+        extra[:power_units] = "COMPONENT_BASE"
+    end
     kwargs = build_kwargs(T, raw, ctx.ledger, ctx.report; extra = extra)
     return OpenAPI.APIModel[T(; kwargs...)]
 end

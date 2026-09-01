@@ -144,6 +144,29 @@ function _promote_market_bid_cost_scalars(
     return promoted
 end
 
+"""
+PSY5 spells the variable cost field `variable` on these four cost types; PSY6 spells it
+`variable_operation_cost`. Renamed before the generic recursive copy so it routes through
+the ordinary field-copy path instead of recording an unmapped field and leaving the
+required `variable_operation_cost` absent.
+"""
+const VARIABLE_OPERATION_COST_TYPES = Set([
+    "ThermalGenerationCost", "HydroGenerationCost", "RenewableGenerationCost", "LoadCost",
+])
+
+function _rename_variable_operation_cost(
+    value::AbstractDict,
+    owner_type::Union{Nothing, AbstractString},
+)
+    if isnothing(owner_type) || !(owner_type in VARIABLE_OPERATION_COST_TYPES) ||
+       !haskey(value, "variable")
+        return value
+    end
+    renamed = copy(value)
+    renamed["variable_operation_cost"] = pop!(renamed, "variable")
+    return renamed
+end
+
 translate_value(value, ::Ledger, ::ConversionReport) = value
 
 """
@@ -194,6 +217,7 @@ function translate_value(value::AbstractDict, ledger::Ledger, report::Conversion
     owner_type = _psy5_type_name(value)
     _check_no_time_series_pointers!(value, owner_type)
     promoted = _promote_market_bid_cost_scalars(value, owner_type)
+    promoted = _rename_variable_operation_cost(promoted, owner_type)
     translated = Dict{String, Any}(
         key => translate_value(v, ledger, report) for (key, v) in promoted
     )

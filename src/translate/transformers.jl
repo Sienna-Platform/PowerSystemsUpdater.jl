@@ -97,6 +97,7 @@ function _build_circuit(raw::AbstractDict, ctx::TranslationContext, alpha::Float
         :id => circuit_id,
         :alpha => alpha,
         :base_power => base_power_for(raw, ctx.system_base),
+        :power_units => "COMPONENT_BASE",
     )
     if !haskey(raw, "tap")
         extra[:tap] = 1.0
@@ -217,6 +218,7 @@ function _winding_circuit(
         active_power_flow = get(raw, "active_power_flow_$suffix", nothing),
         reactive_power_flow = get(raw, "reactive_power_flow_$suffix", nothing),
         base_power = base_power_for(raw, ctx.system_base),
+        power_units = "COMPONENT_BASE",
         base_voltage_primary = get(raw, "base_voltage_$suffix", nothing),
         control_objective = get(raw, "control_objective_$suffix", nothing),
     )

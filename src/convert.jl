@@ -21,9 +21,7 @@ function build_document(case::Psy5Case, report::ConversionReport)
     end
 
     metadata = get(case.raw, "metadata", Dict{String, Any}())
-    doc = POM.SystemDocument(
-        system_base_power(case);
-        unit_system = "COMPONENT_BASE",
+    doc = POM.SystemDocument(;
         name = get(metadata, "name", nothing),
         description = get(metadata, "description", nothing),
         frequency = get(case.raw, "frequency", nothing),
