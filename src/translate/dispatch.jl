@@ -33,7 +33,7 @@ function translate_component(raw::AbstractDict, ctx::TranslationContext)
     if references_skipped(raw, ctx.ledger)
         mark_skipped!(ctx.ledger, uuid, "references a skipped component")
         record_cascaded_skip!(ctx.report, type_name)
-        return OpenAPI.APIModel[]
+        return ICOM.APIModel[]
     end
     return translate(Val(Symbol(type_name)), raw, ctx)
 end
@@ -44,7 +44,7 @@ Fallback for a PSY5 type with no PSY6 counterpart: skip, record, continue.
 function translate(::Val{S}, raw::AbstractDict, ctx::TranslationContext) where {S}
     record_unmapped_type!(ctx.report, string(S))
     mark_skipped!(ctx.ledger, component_uuid(raw), "no PSY6 model for $(S)")
-    return OpenAPI.APIModel[]
+    return ICOM.APIModel[]
 end
 
 """
@@ -54,7 +54,7 @@ function direct_translate(
     ::Type{T},
     raw::AbstractDict,
     ctx::TranslationContext,
-) where {T <: OpenAPI.APIModel}
+) where {T <: ICOM.APIModel}
     id = lookup_id(ctx.ledger, component_uuid(raw))
     extra = Dict{Symbol, Any}(:id => id)
     if :base_power in fieldnames(T)
@@ -64,7 +64,7 @@ function direct_translate(
         extra[:power_units] = "COMPONENT_BASE"
     end
     kwargs = build_kwargs(T, raw, ctx.ledger, ctx.report; extra = extra)
-    return OpenAPI.APIModel[T(; kwargs...)]
+    return ICOM.APIModel[T(; kwargs...)]
 end
 
 for name in DIRECT_TYPES

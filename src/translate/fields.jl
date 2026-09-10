@@ -277,6 +277,25 @@ function _points_at_skipped(value::AbstractVector, ledger::Ledger)
 end
 
 """
+Decode every value in `kwargs` against `T`'s own declared field type.
+
+The PSY5->PSY6 translation pipeline stages plain Julia values — JSON-shaped nested `Dict`s
+built by [`translate_value`](@ref), bare enum spellings as `String` (`"COMPONENT_BASE"`,
+`"UP"`, ...), resolved reference ids as `Int` — that the OpenAPI 1.1 generator's strictly
+typed, immutable structs do not accept as-is: the old 0.2 generator's untyped fields
+tolerated them, but a field like `power_units::UnitSystem` or `shut_down::InputOutputCurve`
+now rejects a bare `String`/`Dict` with a `MethodError`. `ICOM.decode` is the generated
+packages' public entry point for this (the runtime's `_decode`, under the name every consumer
+is meant to call), so this routes every hand-built kwarg through the one path that already
+knows how to turn a raw value into `T`'s declared type, whatever shape that type is.
+"""
+function _decode_kwargs(::Type{T}, kwargs::AbstractDict{Symbol}) where {T <: ICOM.APIModel}
+    return Dict{Symbol, Any}(
+        key => ICOM.decode(fieldtype(T, key), value) for (key, value) in kwargs
+    )
+end
+
+"""
 Build the keyword arguments for `T` from a PSY5 component dict.
 
 Copies by name for every field `T` declares, resolving UUID references to integer ids.
@@ -289,7 +308,7 @@ function build_kwargs(
     ledger::Ledger,
     report::ConversionReport;
     extra::AbstractDict = Dict{Symbol, Any}(),
-) where {T <: OpenAPI.APIModel}
+) where {T <: ICOM.APIModel}
     targets = Set(fieldnames(T))
     kwargs = Dict{Symbol, Any}()
     type_name = component_type(raw)
@@ -310,5 +329,5 @@ function build_kwargs(
     for (key, value) in extra
         kwargs[key] = value
     end
-    return kwargs
+    return _decode_kwargs(T, kwargs)
 end

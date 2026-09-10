@@ -23,5 +23,5 @@ function translate(::Val{:HydroReservoir}, raw::AbstractDict, ctx::TranslationCo
         :head_to_volume_factor => _head_to_volume_factor(raw, ctx),
     )
     kwargs = build_kwargs(POM.HydroReservoir, raw, ctx.ledger, ctx.report; extra = extra)
-    return OpenAPI.APIModel[POM.HydroReservoir(; kwargs...)]
+    return ICOM.APIModel[POM.HydroReservoir(; kwargs...)]
 end

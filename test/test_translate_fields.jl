@@ -28,7 +28,10 @@
     @test kwargs[:id] == bus_id
     @test kwargs[:name] == "nodeA"
     @test kwargs[:number] == 1
-    @test kwargs[:bustype] == "REF"
+    # bustype is a strictly-typed enum wrapper (ACBusType) under the OpenAPI 1.1 generator;
+    # build_kwargs now decodes it from the raw "REF" spelling rather than leaving it a bare
+    # String, so it round-trips into ACBus(; kwargs...) without a MethodError.
+    @test kwargs[:bustype] == PSU.POM.ACBusType("REF")
     @test kwargs[:area] == area_id          # reference resolved to Int
     @test kwargs[:base_voltage] == 230.0
     @test !haskey(kwargs, :not_a_psy6_field)
@@ -297,10 +300,10 @@
         # downstream needs to record it again.
         @test scalar_rep.unmapped_fields[("MarketBidCost", "no_load_cost")] == 1
 
-        # actually constructs: OpenAPI.from_json is what POM.read_document uses to turn
-        # a JSON dict into a typed model, and this is the exact call that raised
-        # "MethodError: Cannot convert an object of type Float64 to ... InputOutputCurve"
-        # before this fix.
+        # actually constructs: ICOM.decode (from_json's OpenAPI 1.1 replacement) is what
+        # POM.read_document uses to turn a JSON dict into a typed model, and this is the
+        # exact call that raised "MethodError: Cannot convert an object of type Float64 to
+        # ... InputOutputCurve" before this fix.
         json_ready = Dict{String, Any}("cost_type" => "MARKET_BID")
         for (key, value) in translated
             if key == "__metadata__" || key == "no_load_cost"
@@ -308,7 +311,7 @@
             end
             json_ready[key] = value
         end
-        model = PSU.OpenAPI.from_json(PSU.POM.MarketBidCost, json_ready)
+        model = PSU.ICOM.decode(PSU.POM.MarketBidCost, json_ready)
         @test typeof(model.shut_down) === PSU.PCOM.InputOutputCurve
         # function_data is itself a discriminated oneOf; .value holds the resolved type.
         @test model.shut_down.function_data.value.constant_term == 0.0

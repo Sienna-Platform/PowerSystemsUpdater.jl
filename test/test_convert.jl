@@ -123,14 +123,14 @@ end
             @test all(value -> typeof(value) === Dict{String, Any}, shut_downs)
             @test all(value -> value["curve_type"] == "INPUT_OUTPUT", shut_downs)
 
-            # OpenAPI.from_json on just the promoted MarketBidCost proves, on real corpus
-            # data, that the promoted curve is a valid InputOutputCurve independent of the
-            # rest of the document.
+            # ICOM.decode (from_json's OpenAPI 1.1 replacement) on just the promoted
+            # MarketBidCost proves, on real corpus data, that the promoted curve is a valid
+            # InputOutputCurve independent of the rest of the document.
             cost_json = Dict{String, Any}("cost_type" => "MARKET_BID")
             for (key, value) in first(raw["components"]["HybridSystem"])["operation_cost"]
                 cost_json[key] = value
             end
-            model = PSU.OpenAPI.from_json(PSU.POM.MarketBidCost, cost_json)
+            model = PSU.ICOM.decode(PSU.POM.MarketBidCost, cost_json)
             @test typeof(model.shut_down) === PSU.PCOM.InputOutputCurve
 
             # With ONEOF_DISCRIMINATORS' MarketBidCost/LoadCost entries the whole document

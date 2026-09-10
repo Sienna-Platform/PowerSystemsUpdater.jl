@@ -34,7 +34,7 @@ function _translate_reserve(raw::AbstractDict, ctx::TranslationContext)
         :reserve_direction => reserve_direction(raw),
     )
     kwargs = build_kwargs(POM.OnlineReserve, raw, ctx.ledger, ctx.report; extra = extra)
-    return OpenAPI.APIModel[POM.OnlineReserve(; kwargs...)]
+    return ICOM.APIModel[POM.OnlineReserve(; kwargs...)]
 end
 
 function translate(::Val{:ConstantReserve}, raw::AbstractDict, ctx::TranslationContext)

@@ -23,7 +23,9 @@
     res = out[1]
     @test typeof(res) === OnlineReserve
     @test res.name == "Reg_Up"
-    @test res.reserve_direction == "UP"
+    # reserve_direction is a strictly-typed enum wrapper (ReserveDirection)
+    # under the OpenAPI 1.1 generator, not a bare String.
+    @test res.reserve_direction == PSU.POM.ReserveDirection("UP")
     @test res.requirement == 0.4
     @test res.time_frame == 60.0
     @test isnothing(res.variable)
@@ -56,8 +58,9 @@
         out_var = PSU.translate_component(raw_var, ctx2)
         @test typeof(out_const[1]) === OnlineReserve
         @test typeof(out_var[1]) === OnlineReserve
-        @test out_const[1].reserve_direction == "DOWN"
-        @test out_var[1].reserve_direction == "UP"
+        @test out_const[1].reserve_direction ==
+              PSU.POM.ReserveDirection("DOWN")
+        @test out_var[1].reserve_direction == PSU.POM.ReserveDirection("UP")
     end
 
     @testset "ordinary fields survive the mapping" begin

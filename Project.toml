@@ -29,21 +29,20 @@ Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
 TimeZones = "f269a46b-ccf7-5d73-abea-4c690281aa53"
 
 [sources]
-# LOCAL PATH CO-DEV PINS (temporary): the power_units/cost-rename regen of PowerOpenAPIModels
-# exists only on local disk, not on `main` yet, and it also carries the PowerOpenAPIModels
-# split (PowerCore -> InfrastructureCore + PowerCore, PowerTimeSeries ->
-# InfrastructureTimeSeries). Revert to the git pin (with subdirs matching the new package
-# names) once pushed/merged. InfrastructureSystems must also point at the local IS4 checkout
-# (not the remote branch) because that checkout already carries this same split
-# (uncommitted) and the remote IS4 branch does not yet.
-InfrastructureSystems = {url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git", rev = "jd/openapi-package-split"}
-InfrastructureCoreOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/schemas-0.1.0", subdir = "InfrastructureCoreOpenAPIModels.jl"}
-InfrastructureTimeSeriesOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/schemas-0.1.0", subdir = "InfrastructureTimeSeriesOpenAPIModels.jl"}
-PowerCoreOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/schemas-0.1.0", subdir = "PowerCoreOpenAPIModels.jl"}
-PowerDynamicsOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/schemas-0.1.0", subdir = "PowerDynamicsOpenAPIModels.jl"}
-PowerInvestmentsOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/schemas-0.1.0", subdir = "PowerInvestmentsOpenAPIModels.jl"}
-PowerOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/schemas-0.1.0", subdir = "PowerOpenAPIModels.jl"}
-PowerOperationsOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/schemas-0.1.0", subdir = "PowerOperationsOpenAPIModels.jl"}
+# LOCAL PATH CO-DEV PINS (temporary): the OpenAPI packages are consumed straight from the
+# local PowerOpenAPIModels checkout (regenerated from SiennaSchemas main against the native
+# OpenAPI.jl 1.1 generator), not from a pushed git rev. Revert to git-url pins once that
+# checkout is pushed/merged. InfrastructureSystems points at the IS4 branch (the same rev
+# PowerSystems psy6 pins), not the local checkout, since the local IS checkout sits on
+# jd/arrays_only_sidecar, ahead of IS4.
+InfrastructureSystems = {path = "../InfrastructureSystems.jl"}
+InfrastructureCoreOpenAPIModels = {path = "../PowerOpenAPIModels/InfrastructureCoreOpenAPIModels.jl"}
+InfrastructureTimeSeriesOpenAPIModels = {path = "../PowerOpenAPIModels/InfrastructureTimeSeriesOpenAPIModels.jl"}
+PowerCoreOpenAPIModels = {path = "../PowerOpenAPIModels/PowerCoreOpenAPIModels.jl"}
+PowerDynamicsOpenAPIModels = {path = "../PowerOpenAPIModels/PowerDynamicsOpenAPIModels.jl"}
+PowerInvestmentsOpenAPIModels = {path = "../PowerOpenAPIModels/PowerInvestmentsOpenAPIModels.jl"}
+PowerOpenAPIModels = {path = "../PowerOpenAPIModels/PowerOpenAPIModels.jl"}
+PowerOperationsOpenAPIModels = {path = "../PowerOpenAPIModels/PowerOperationsOpenAPIModels.jl"}
 
 [compat]
 # For the [sources] co-dev pin above.
@@ -56,10 +55,15 @@ PowerOperationsOpenAPIModels = "0.1"
 Dates = "1"
 DocStringExtensions = "~0.8, ~0.9"
 HDF5 = "0.17"
-InfraStore = "0.11"
+# Bumped from 0.11: IS4 (the InfrastructureSystems rev this file now pins) itself requires
+# InfraStore 0.12; 0.11 makes resolution unsatisfiable. Not a version bump ahead of release —
+# it is the floor IS4 already imposes.
+InfraStore = "0.12"
 InfrastructureSystems = "3.6"
 JSON = "1"
-OpenAPI = "0.2"
+# Bumped from 0.2: the generated OpenAPI packages now require OpenAPI.jl 1.1's native
+# generator runtime; 0.2 makes resolution unsatisfiable.
+OpenAPI = "1.1"
 PowerOpenAPIModels = "0.1"
 SQLite = "1"
 Tables = "1"
