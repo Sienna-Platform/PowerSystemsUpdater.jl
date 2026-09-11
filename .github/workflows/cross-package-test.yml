@@ -17,7 +17,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        julia-version: [1]
+        julia-version: ['1.12']
         os: [ubuntu-latest]
         # Template values: replace these with the downstream packages that should
         # be tested against this repository, and set Julia versions as needed.
