@@ -19,25 +19,21 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 PowerSystemsUpdater = {path = ".."}
 # Test-only dep: PSU must never gain a package dependency on PSY, but the test suite and
 # fixture generation exercise translated output against real PSY types.
-PowerSystems = {path = "../../PowerSystems.jl"}
-# LOCAL PATH CO-DEV PINS (temporary): the OpenAPI packages are consumed straight from the
-# local PowerOpenAPIModels checkout (regenerated from SiennaSchemas main against the native
-# OpenAPI.jl 1.1 generator), not from a pushed git rev. Revert to git-url pins once that
-# checkout is pushed/merged. PowerOpenAPIModels' own transitive deps (PowerCore-/
-# PowerDynamics-/PowerInvestments-/PowerOperationsOpenAPIModels and both
-# Infrastructure*OpenAPIModels packages) are not imported directly here — they are deps of
-# the PowerOpenAPIModels umbrella, and [sources] are not inherited transitively, so this env
-# must pin them itself or a fresh resolve fails on "has no known versions". InfrastructureSystems
-# points at the IS4 branch (the same rev PowerSystems psy6 pins), not the local checkout,
-# since the local IS checkout sits on jd/arrays_only_sidecar, ahead of IS4.
-InfrastructureSystems = {path = "../../InfrastructureSystems.jl"}
-InfrastructureCoreOpenAPIModels = {path = "../../PowerOpenAPIModels/InfrastructureCoreOpenAPIModels.jl"}
-InfrastructureTimeSeriesOpenAPIModels = {path = "../../PowerOpenAPIModels/InfrastructureTimeSeriesOpenAPIModels.jl"}
-PowerCoreOpenAPIModels = {path = "../../PowerOpenAPIModels/PowerCoreOpenAPIModels.jl"}
-PowerDynamicsOpenAPIModels = {path = "../../PowerOpenAPIModels/PowerDynamicsOpenAPIModels.jl"}
-PowerInvestmentsOpenAPIModels = {path = "../../PowerOpenAPIModels/PowerInvestmentsOpenAPIModels.jl"}
-PowerOpenAPIModels = {path = "../../PowerOpenAPIModels/PowerOpenAPIModels.jl"}
-PowerOperationsOpenAPIModels = {path = "../../PowerOpenAPIModels/PowerOperationsOpenAPIModels.jl"}
+PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "jd/openapi-1x"}
+# Branch pins until the OpenAPI packages are registered and the psy6-line branches merge.
+# PowerOpenAPIModels' own transitive deps (PowerCore-/PowerDynamics-/PowerInvestments-/
+# PowerOperationsOpenAPIModels and both Infrastructure*OpenAPIModels packages) are not
+# imported directly here — they are deps of the PowerOpenAPIModels umbrella, and [sources]
+# are not inherited transitively, so this env must pin them itself or a fresh resolve fails
+# on "has no known versions".
+InfrastructureSystems = {url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git", rev = "jd/openapi-1x-suite"}
+InfrastructureCoreOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/openapi_deps_update", subdir = "InfrastructureCoreOpenAPIModels.jl"}
+InfrastructureTimeSeriesOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/openapi_deps_update", subdir = "InfrastructureTimeSeriesOpenAPIModels.jl"}
+PowerCoreOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/openapi_deps_update", subdir = "PowerCoreOpenAPIModels.jl"}
+PowerDynamicsOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/openapi_deps_update", subdir = "PowerDynamicsOpenAPIModels.jl"}
+PowerInvestmentsOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/openapi_deps_update", subdir = "PowerInvestmentsOpenAPIModels.jl"}
+PowerOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/openapi_deps_update", subdir = "PowerOpenAPIModels.jl"}
+PowerOperationsOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "jd/openapi_deps_update", subdir = "PowerOperationsOpenAPIModels.jl"}
 
 [compat]
 julia = "^1.6"
