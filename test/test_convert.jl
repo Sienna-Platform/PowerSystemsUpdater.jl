@@ -264,6 +264,7 @@ end
                     Dict("type" => "VariableReserve", "parameters" => ["ReserveUp"]),
                 "internal" => Dict("uuid" => Dict("value" => "uuid-reserve")),
                 "name" => "Reg_Up", "services" => Any[],
+                "available" => true, "time_frame" => 60.0,
             ),
             Dict{String, Any}(
                 "__metadata__" => Dict("type" => "ACBus"),
@@ -303,7 +304,7 @@ end
                 "__metadata__" =>
                     Dict("type" => "VariableReserve", "parameters" => ["ReserveUp"]),
                 "internal" => Dict("uuid" => Dict("value" => "uuid-reserve")),
-                "name" => "Reg_Up",
+                "name" => "Reg_Up", "available" => true, "time_frame" => 60.0,
             ),
             Dict{String, Any}(
                 "__metadata__" => Dict("type" => "SomeUnmappedType"),

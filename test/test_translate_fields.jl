@@ -109,6 +109,8 @@
         # build_kwargs forwards non-reference nested dicts verbatim, so PSY5's key
         # shape must stay identical to the PSY6 model's fieldnames. Drift here would
         # be silent: these fields carry no type annotation in the generated models.
+        # Every OpenAPI.jl 1.x model also carries `additional_properties` — generator
+        # scaffolding, not a PSY5/PSY6 field — so it is excluded from the comparison.
         expected = Dict(
             :MinMax => Set([:min, :max]),
             :FromTo => Set([:from, :to]),
@@ -116,7 +118,11 @@
             :InOut => Set([:in, :out]),
         )
         for (name, keys) in expected
-            @test Set(fieldnames(getfield(PSU.POM, name))) == keys
+            actual = setdiff(
+                Set(fieldnames(getfield(PSU.POM, name))),
+                (:additional_properties,),
+            )
+            @test actual == keys
         end
     end
 
@@ -279,16 +285,44 @@
         # quantity (MEO = no_load_cost / P_min, and P_min is not on this object), so it is
         # left as-is and recorded as an unmapped field rather than silently mislabeled.
         scalar_rep = PSU.ConversionReport()
+        zero_cost_curve() = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "CostCurve"),
+            "power_units" => "NATURAL_UNITS",
+            "value_curve" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "InputOutputCurve"),
+                "function_data" => Dict{String, Any}(
+                    "__metadata__" => Dict("type" => "LinearFunctionData"),
+                    "constant_term" => 0.0,
+                    "proportional_term" => 0.0,
+                ),
+            ),
+            "vom_cost" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "InputOutputCurve"),
+                "function_data" => Dict{String, Any}(
+                    "__metadata__" => Dict("type" => "LinearFunctionData"),
+                    "constant_term" => 0.0,
+                    "proportional_term" => 0.0,
+                ),
+            ),
+        )
         raw = Dict{String, Any}(
             "__metadata__" => Dict("type" => "MarketBidCost"),
             "cost_type" => "MARKET_BID",
             "shut_down" => 0.0,
             "no_load_cost" => 12.5,
+            "ancillary_service_offers" => Any[],
+            "start_up" => Dict{String, Any}("hot" => 0.0, "warm" => 0.0, "cold" => 0.0),
+            "decremental_offer_curves" => zero_cost_curve(),
+            "incremental_offer_curves" => zero_cost_curve(),
         )
         translated = PSU.translate_value(raw, led, scalar_rep)
         @test translated["shut_down"]["__metadata__"]["type"] == "InputOutputCurve"
         @test translated["shut_down"]["curve_type"] == "INPUT_OUTPUT"
-        @test translated["shut_down"]["input_at_zero"] === nothing
+        # Under OpenAPI.jl 1.x a nested `nothing` value is dropped, not forwarded as JSON
+        # `null` (`translate_value`'s own doc explains why: `input_at_zero` is typed without
+        # `null`, so a present-but-null key now fails schema validation where an absent key
+        # decodes to `ABSENT`).
+        @test !haskey(translated["shut_down"], "input_at_zero")
         @test translated["shut_down"]["function_data"]["__metadata__"]["type"] ==
               "LinearFunctionData"
         @test translated["shut_down"]["function_data"]["function_type"] == "LINEAR"

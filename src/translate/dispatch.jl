@@ -10,12 +10,11 @@ bespoke `translate` method.
 """
 const DIRECT_TYPES = (
     :ACBus, :Area, :AreaInterchange, :DCBus, :EnergyReservoirStorage,
-    :FixedAdmittance, :HybridSystem, :HydroDispatch, :HydroPumpTurbine,
-    :HydroTurbine, :InterconnectingConverter, :InterruptiblePowerLoad, :Line, :LoadZone,
+    :HybridSystem, :HydroDispatch,
+    :HydroTurbine, :InterruptiblePowerLoad, :Line, :LoadZone,
     :MonitoredLine, :MotorLoad, :PowerLoad, :RenewableDispatch, :RenewableNonDispatch,
     :Source, :StandardLoad, :SynchronousCondenser, :ThermalMultiStart, :ThermalStandard,
-    :TModelHVDCLine, :TwoTerminalGenericHVDCLine, :TwoTerminalLCCLine,
-    :TwoTerminalVSCLine,
+    :TModelHVDCLine,
 )
 
 """
@@ -90,6 +89,70 @@ function translate(::Val{:Arc}, raw::AbstractDict, ctx::TranslationContext)
     return direct_translate(POM.Arc, renamed, ctx)
 end
 
+# PSY5 spells FixedAdmittance's admittance field `Y`; the PSY6 schema property is also `Y`,
+# but the generated Julia struct field is the lowercased `y` (the generator lowercases an
+# all-uppercase property name). `build_kwargs` matches PSY5 keys against `fieldnames(T)`, so
+# the raw `Y` key never matches `:y` and is recorded as unmapped instead of filling the
+# required field. Renaming before `direct_translate`'s generic field copy fixes that.
+function translate(::Val{:FixedAdmittance}, raw::AbstractDict, ctx::TranslationContext)
+    renamed = copy(raw)
+    renamed["y"] = pop!(renamed, "Y")
+    return direct_translate(POM.FixedAdmittance, renamed, ctx)
+end
+
+# PSY5 stores a device's loss coefficients as a bare curve (`InputOutputCurve` or
+# `IncrementalCurve`); PSY6 wraps it in a `LossCurve` (`power_units` + `value_curve`). PSY5
+# has no field for `power_units` here — the natural-units default the schema documents. The
+# field carrying it is spelled differently per type (`loss` on the two-terminal HVDC lines,
+# `loss_function` on `InterconnectingConverter`, `converter_loss_from`/`converter_loss_to` on
+# `TwoTerminalVSCLine`), so every known name is checked; no type declares more than one of
+# them. Wrapping before `direct_translate`'s generic field copy leaves the curve itself
+# untranslated so `build_kwargs`'s own call to `translate_value` on the wrapped dict gives it
+# its discriminator exactly once, the same reasoning `_promote_market_bid_cost_scalar` follows.
+const LOSS_CURVE_FIELDS =
+    Set(["loss", "loss_function", "converter_loss_from", "converter_loss_to"])
+
+function _wrap_loss_curves(raw::AbstractDict)
+    renamed = raw
+    for field in LOSS_CURVE_FIELDS
+        value = get(raw, field, nothing)
+        if !isnothing(value)
+            if renamed === raw
+                renamed = copy(raw)
+            end
+            renamed[field] =
+                Dict{String, Any}("power_units" => "NATURAL_UNITS", "value_curve" => value)
+        end
+    end
+    return renamed
+end
+
+for name in
+    (:TwoTerminalGenericHVDCLine, :TwoTerminalLCCLine, :TwoTerminalVSCLine,
+    :InterconnectingConverter)
+    @eval function translate(
+        ::Val{$(QuoteNode(name))},
+        raw::AbstractDict,
+        ctx::TranslationContext,
+    )
+        return direct_translate(POM.$(name), _wrap_loss_curves(raw), ctx)
+    end
+end
+
+# PSY5 spells the pumped-storage unit's pump/generate/idle mode `status`
+# (`"PUMP"`/`"GEN"`/`"OFF"`); PSY6 calls that field `operating_mode` and reserves `status` for
+# the ordinary on/off `OperationalStates` every other committable device uses. Renaming
+# before `direct_translate`'s generic field copy routes the PSY5 value onto its real PSY6
+# field instead of failing `OperationalStates`' enum validation; PSY6 `status` is left unset
+# and takes the schema's own `"OFFLINE"` default, since PSY5 has no separate on/off flag here.
+function translate(::Val{:HydroPumpTurbine}, raw::AbstractDict, ctx::TranslationContext)
+    renamed = copy(raw)
+    if haskey(renamed, "status")
+        renamed["operating_mode"] = pop!(renamed, "status")
+    end
+    return direct_translate(POM.HydroPumpTurbine, renamed, ctx)
+end
+
 # PSY5 spells ExponentialLoad's voltage-dependency exponents with Greek letters `α`/`β`;
 # PSY6 spells them ASCII `alpha`/`beta`. Renaming before `direct_translate`'s generic field
 # copy routes them through the ordinary field-copy path instead of recording two unmapped
@@ -107,7 +170,9 @@ const TRANSLATED_TYPES = Set(
         [
             "Arc", "ConstantReserve", "VariableReserve",
             "Transformer2W", "TapTransformer", "PhaseShiftingTransformer",
-            "Transformer3W", "HydroReservoir", "ExponentialLoad",
+            "Transformer3W", "HydroReservoir", "ExponentialLoad", "FixedAdmittance",
+            "TwoTerminalGenericHVDCLine", "TwoTerminalLCCLine", "TwoTerminalVSCLine",
+            "InterconnectingConverter", "HydroPumpTurbine",
         ],
     ),
 )

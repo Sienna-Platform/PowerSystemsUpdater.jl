@@ -34,6 +34,7 @@ const ONEOF_DISCRIMINATORS = Dict{String, Tuple{Symbol, String}}(
     "LoadCost" => (:cost_type, "LOAD"),
     "MarketBidCost" => (:cost_type, "MARKET_BID"),
     "HydroReservoirCost" => (:cost_type, "HYDRO_RES"),
+    "ImportExportCost" => (:cost_type, "IMPORTEXPORT"),
 )
 
 function _psy5_type_name(dict::AbstractDict)
@@ -114,11 +115,36 @@ documents the conversion as `minimum_energy_offer = no_load_cost / P_min` — P_
 the owning generator, not on this cost object, so the division cannot be done from here.
 Promoting the bare scalar into a curve without that division would silently mislabel a \$/h
 value as \$/MWh. Left unmapped and recorded on the report instead of forced.
+
+`minimum_energy_offer` is separately defaulted below (`MARKET_BID_COST_DEFAULTED_FIELDS`)
+whenever PSY5 supplies no value at all: the field is required on the PSY6 struct, and
+`Core/common.json` documents this exact zero-cost shape as its schema `default` — the same
+default a codegen consumer without vendor extensions would fall back to.
 """
 const MARKET_BID_COST_SCALAR_FIELDS = Set(["shut_down"])
 
+"""
+PSY6 required fields with no PSY5 counterpart that the schema nonetheless documents a
+zero-cost `default` for. Unlike `MARKET_BID_COST_SCALAR_FIELDS`, this is not a promotion of
+PSY5 data — PSY5 has no field here at all — so it only applies when the key is missing
+outright, never overwriting a value PSY5 did supply.
+"""
+const MARKET_BID_COST_DEFAULTED_FIELDS = Set(["minimum_energy_offer"])
+
 _is_scalar_cost(::Real) = true
 _is_scalar_cost(::Any) = false
+
+function _zero_cost_curve()
+    return Dict{String, Any}(
+        "__metadata__" => Dict("type" => "InputOutputCurve"),
+        "input_at_zero" => nothing,
+        "function_data" => Dict{String, Any}(
+            "__metadata__" => Dict("type" => "LinearFunctionData"),
+            "constant_term" => 0.0,
+            "proportional_term" => 0.0,
+        ),
+    )
+end
 
 function _promote_market_bid_cost_scalar(scalar::Real)
     return Dict{String, Any}(
@@ -147,6 +173,14 @@ function _promote_market_bid_cost_scalars(
                 promoted = copy(value)
             end
             promoted[field] = _promote_market_bid_cost_scalar(scalar)
+        end
+    end
+    for field in MARKET_BID_COST_DEFAULTED_FIELDS
+        if !haskey(promoted, field) || isnothing(promoted[field])
+            if promoted === value
+                promoted = copy(value)
+            end
+            promoted[field] = _zero_cost_curve()
         end
     end
     return promoted
@@ -209,9 +243,30 @@ function _record_unmapped_nested_fields!(
 end
 
 """
+PSY5 spells the per-unit basis `DEVICE_BASE`; PSY6's `UnitSystem` enum only has
+`COMPONENT_BASE`/`NATURAL_UNITS`. Normalizes a nested `power_units` key (`CostCurve`,
+`LossCurve`, …) wherever one is found on a translated dict — the top-level component
+`power_units` bypasses this entirely, since `direct_translate` always sets it directly to
+`"COMPONENT_BASE"`.
+"""
+function _normalize_power_units(value::AbstractString)
+    if value == "DEVICE_BASE"
+        return "COMPONENT_BASE"
+    end
+    return value
+end
+
+_normalize_power_units(value) = value
+
+"""
 Non-reference dicts are forwarded recursively rather than verbatim, so a nested `oneOf`
 (a `CostCurve` containing a `ValueCurve` containing `FunctionData`) gets its discriminator
 at every level in one pass. `__metadata__` is left in place: the schemas allow the extra key.
+
+A key whose PSY5 value is `nothing` is dropped rather than forwarded as JSON `null`, matching
+`build_kwargs`'s top-level behavior: PSY6 optional fields (`input_at_zero`, and similar) are
+typed without `null`, so a present-but-null key fails schema validation where an absent key
+decodes to `ABSENT`.
 
 Every resolved nested composite is also checked against its PSY6 fieldnames
 (`_record_unmapped_nested_fields!`), the same guard `build_kwargs` applies at the top level —
@@ -228,8 +283,12 @@ function translate_value(value::AbstractDict, ledger::Ledger, report::Conversion
     promoted = _promote_market_bid_cost_scalars(value, owner_type)
     promoted = _rename_variable_operation_cost(promoted, owner_type)
     translated = Dict{String, Any}(
-        key => translate_value(v, ledger, report) for (key, v) in promoted
+        key => translate_value(v, ledger, report) for
+        (key, v) in promoted if !isnothing(v)
     )
+    if haskey(translated, "power_units")
+        translated["power_units"] = _normalize_power_units(translated["power_units"])
+    end
     type_name = _psy5_type_name(translated)
     if !isnothing(type_name) && haskey(ONEOF_DISCRIMINATORS, type_name)
         property, discriminator_value = ONEOF_DISCRIMINATORS[type_name]
@@ -296,6 +355,23 @@ function _decode_kwargs(::Type{T}, kwargs::AbstractDict{Symbol}) where {T <: ICO
 end
 
 """
+PSY5 spells the initial commitment state as a plain `Bool` on the device types that carry a
+`status` field of PSY6's `OperationalStates` enum (`ThermalStandard`, `ThermalMultiStart`,
+`HybridSystem`, `HydroDispatch`, `HydroTurbine`; `HydroPumpTurbine`'s `status` key means
+something else — see its own `translate` method). PSY5 has no STARTUP/SHUTDOWN concept, so
+`true`/`false` map onto the two states it can express.
+"""
+function _operational_state(status::Bool)
+    if status
+        return "ONLINE"
+    end
+    return "OFFLINE"
+end
+
+_is_bool(::Bool) = true
+_is_bool(::Any) = false
+
+"""
 Build the keyword arguments for `T` from a PSY5 component dict.
 
 Copies by name for every field `T` declares, resolving UUID references to integer ids.
@@ -322,6 +398,10 @@ function build_kwargs(
             continue
         end
         if isnothing(value)
+            continue
+        end
+        if symbol === :status && _is_bool(value)
+            kwargs[symbol] = _operational_state(value)
             continue
         end
         kwargs[symbol] = translate_value(value, ledger, report)

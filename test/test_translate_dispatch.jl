@@ -82,11 +82,58 @@
         rep3 = PSU.ConversionReport()
         ctx3 = PSU.TranslationContext(led3, rep3, 100.0)
 
+        PSU.assign_id!(led3, "uuid-bus3")
+        raw_bus3 = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "ACBus"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-bus3")),
+            "name" => "nodeD", "number" => 3, "available" => true,
+            "bustype" => "REF", "base_voltage" => 230.0,
+        )
+        PSU.translate_component(raw_bus3, ctx3)
+
+        # A minimal but schema-valid ThermalStandard: every PSY6-required field
+        # (active_power, active_power_limits, operation_cost, rating, reactive_power,
+        # status) needs a value, since OpenAPI.jl 1.x's immutable structs reject missing
+        # required keywords instead of defaulting them like the pre-migration model
+        # runtime did. `base_power` is deliberately absent — that is what this test checks.
         PSU.assign_id!(led3, "uuid-gen")
         raw_gen = Dict{String, Any}(
             "__metadata__" => Dict("type" => "ThermalStandard"),
             "internal" => Dict("uuid" => Dict("value" => "uuid-gen")),
             "name" => "gen1",
+            "available" => true,
+            "status" => true,
+            "bus" => Dict("value" => "uuid-bus3"),
+            "active_power" => 0.0,
+            "reactive_power" => 0.0,
+            "rating" => 0.0,
+            "active_power_limits" => Dict{String, Any}("min" => 0.0, "max" => 0.0),
+            "operation_cost" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "ThermalGenerationCost"),
+                "fixed" => 0.0,
+                "shut_down" => 0.0,
+                "start_up" => 0.0,
+                "variable" => Dict{String, Any}(
+                    "__metadata__" => Dict("type" => "CostCurve"),
+                    "power_units" => "NATURAL_UNITS",
+                    "value_curve" => Dict{String, Any}(
+                        "__metadata__" => Dict("type" => "InputOutputCurve"),
+                        "function_data" => Dict{String, Any}(
+                            "__metadata__" => Dict("type" => "LinearFunctionData"),
+                            "constant_term" => 0.0,
+                            "proportional_term" => 0.0,
+                        ),
+                    ),
+                    "vom_cost" => Dict{String, Any}(
+                        "__metadata__" => Dict("type" => "InputOutputCurve"),
+                        "function_data" => Dict{String, Any}(
+                            "__metadata__" => Dict("type" => "LinearFunctionData"),
+                            "constant_term" => 0.0,
+                            "proportional_term" => 0.0,
+                        ),
+                    ),
+                ),
+            ),
         )
         out_gen = PSU.translate_component(raw_gen, ctx3)
         @test length(out_gen) == 1
@@ -118,9 +165,15 @@
     end
 
     @testset "DIRECT_TYPES" begin
-        @test length(PSU.DIRECT_TYPES) == 28
+        @test length(PSU.DIRECT_TYPES) == 22
         @test !(:Arc in PSU.DIRECT_TYPES)
         @test !(:ExponentialLoad in PSU.DIRECT_TYPES)
+        @test !(:FixedAdmittance in PSU.DIRECT_TYPES)
+        @test !(:TwoTerminalGenericHVDCLine in PSU.DIRECT_TYPES)
+        @test !(:TwoTerminalLCCLine in PSU.DIRECT_TYPES)
+        @test !(:TwoTerminalVSCLine in PSU.DIRECT_TYPES)
+        @test !(:InterconnectingConverter in PSU.DIRECT_TYPES)
+        @test !(:HydroPumpTurbine in PSU.DIRECT_TYPES)
         for name in PSU.DIRECT_TYPES
             @test isdefined(PSU.POM, name)
         end
@@ -154,11 +207,21 @@
         rep6 = PSU.ConversionReport()
         ctx6 = PSU.TranslationContext(led6, rep6, 100.0)
 
+        PSU.assign_id!(led6, "uuid-bus6")
+        raw_bus6 = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "ACBus"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-bus6")),
+            "name" => "nodeE", "number" => 6, "available" => true,
+            "bustype" => "REF", "base_voltage" => 230.0,
+        )
+        PSU.translate_component(raw_bus6, ctx6)
+
         PSU.assign_id!(led6, "uuid-expload")
         raw_expload = Dict{String, Any}(
             "__metadata__" => Dict("type" => "ExponentialLoad"),
             "internal" => Dict("uuid" => Dict("value" => "uuid-expload")),
             "name" => "load1", "available" => true,
+            "bus" => Dict("value" => "uuid-bus6"),
             "active_power" => 1.0, "reactive_power" => 0.5,
             "α" => 1.5, "β" => 2.0,
             "max_active_power" => 2.0, "max_reactive_power" => 1.0,
