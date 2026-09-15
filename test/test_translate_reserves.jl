@@ -23,10 +23,14 @@
     res = out[1]
     @test typeof(res) === OnlineReserve
     @test res.name == "Reg_Up"
-    @test res.reserve_direction == "UP"
+    # reserve_direction is a strictly-typed enum wrapper (ReserveDirection)
+    # under the OpenAPI 1.1 generator, not a bare String.
+    @test res.reserve_direction == PSU.POM.ReserveDirection("UP")
     @test res.requirement == 0.4
     @test res.time_frame == 60.0
-    @test isnothing(res.variable)
+    # Under OpenAPI.jl 1.x an absent optional field decodes to the `ABSENT` sentinel, not
+    # `nothing` — the pre-migration model runtime's absence value.
+    @test res.variable isa PSU.OpenAPI.Runtime.Absent
 
     @test PSU.reserve_direction(
         Dict("__metadata__" => Dict("parameters" => ["ReserveDown"])),
@@ -43,21 +47,22 @@
             "__metadata__" =>
                 Dict("type" => "ConstantReserve", "parameters" => ["ReserveDown"]),
             "internal" => Dict("uuid" => Dict("value" => "uuid-const")),
-            "name" => "Reg_Down",
+            "name" => "Reg_Down", "available" => true, "time_frame" => 60.0,
         )
         raw_var = Dict{String, Any}(
             "__metadata__" =>
                 Dict("type" => "VariableReserve", "parameters" => ["ReserveUp"]),
             "internal" => Dict("uuid" => Dict("value" => "uuid-var")),
-            "name" => "Reg_Up_Var",
+            "name" => "Reg_Up_Var", "available" => true, "time_frame" => 60.0,
         )
 
         out_const = PSU.translate_component(raw_const, ctx2)
         out_var = PSU.translate_component(raw_var, ctx2)
         @test typeof(out_const[1]) === OnlineReserve
         @test typeof(out_var[1]) === OnlineReserve
-        @test out_const[1].reserve_direction == "DOWN"
-        @test out_var[1].reserve_direction == "UP"
+        @test out_const[1].reserve_direction ==
+              PSU.POM.ReserveDirection("DOWN")
+        @test out_var[1].reserve_direction == PSU.POM.ReserveDirection("UP")
     end
 
     @testset "ordinary fields survive the mapping" begin

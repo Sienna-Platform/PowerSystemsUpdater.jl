@@ -25,14 +25,19 @@
         models = PSU.translate(Val(:HydroReservoir), raw, ctx)
         reservoir = only(models)
 
-        # PSY6's shape: a bare FunctionData, discriminated at the top level.
+        # PSY6's shape: a bare FunctionData, discriminated at the top level. Under the
+        # OpenAPI 1.1 generator, `build_kwargs` decodes this into the real FunctionData/
+        # LinearFunctionData structs (not a raw Dict), so the field is reached via `.value`
+        # rather than string indexing; a `LinearFunctionData` instance structurally cannot
+        # carry `curve_type`/`input_at_zero` (those belong to the unwrapped InputOutputCurve
+        # level), which is what the old haskey checks were proving.
         translated = reservoir.head_to_volume_factor
-        @test translated["function_type"] == "LINEAR"
-        @test translated["constant_term"] == original["function_data"]["constant_term"]
-        @test translated["proportional_term"] ==
+        @test typeof(translated) === PSU.ICOM.FunctionData
+        @test typeof(translated.value) === PSU.ICOM.LinearFunctionData
+        @test translated.value.function_type == "LINEAR"
+        @test translated.value.constant_term == original["function_data"]["constant_term"]
+        @test translated.value.proportional_term ==
               original["function_data"]["proportional_term"]
-        @test !haskey(translated, "curve_type")
-        @test !haskey(translated, "input_at_zero")
 
         @test isempty(rep.unmapped_fields)
     end

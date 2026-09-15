@@ -33,6 +33,8 @@ const ONEOF_DISCRIMINATORS = Dict{String, Tuple{Symbol, String}}(
     "StorageCost" => (:cost_type, "STORAGE"),
     "LoadCost" => (:cost_type, "LOAD"),
     "MarketBidCost" => (:cost_type, "MARKET_BID"),
+    "HydroReservoirCost" => (:cost_type, "HYDRO_RES"),
+    "ImportExportCost" => (:cost_type, "IMPORTEXPORT"),
 )
 
 function _psy5_type_name(dict::AbstractDict)
@@ -97,20 +99,82 @@ function _check_no_time_series_pointers!(
 end
 
 """
-PSY5 permits `MarketBidCost.shut_down` / `no_load_cost` to be a bare scalar; PSY6 types both
-as a concrete `InputOutputCurve`. The schema sanctions this promotion: both fields'
-`description` documents the "legacy scalar promotion", and their `default` gives exactly the
-`InputOutputCurve`/`LinearFunctionData` shape built here (`Core/common.json`). Promotes the scalar `s` into a constant function
-(`proportional_term = 0.0`, i.e. the multiplier, so the curve's value is just `s`) rather
-than dropping it — PSY5's use of 0.0 here is a real "no extra cost" curve, not a missing
-value. Built as a raw PSY5-shaped nested dict so the promoted curve goes through the ordinary
-`ONEOF_DISCRIMINATORS` injection on the recursive pass right after, instead of a second,
-hand-rolled discriminator mechanism.
+PSY5 permits `MarketBidCost.shut_down` to be a bare scalar; PSY6 types it as a concrete
+`InputOutputCurve`. The schema sanctions this promotion: the field's `description`
+documents the "legacy scalar promotion", and its `default` gives exactly the
+`InputOutputCurve`/`LinearFunctionData` shape built here (`Core/common.json`). Promotes the
+scalar `s` into a constant function (`proportional_term = 0.0`, i.e. the multiplier, so the
+curve's value is just `s`) rather than dropping it — PSY5's use of 0.0 here is a real "no
+extra cost" curve, not a missing value. Built as a raw PSY5-shaped nested dict so the
+promoted curve goes through the ordinary `ONEOF_DISCRIMINATORS` injection on the recursive
+pass right after, instead of a second, hand-rolled discriminator mechanism.
+
+PSY5's `no_load_cost` is NOT included here: PSY6's counterpart field is
+`minimum_energy_offer` (a \$/MWh curve, not the same physical quantity), and the schema
+documents the conversion as `minimum_energy_offer = no_load_cost / P_min` — P_min lives on
+the owning generator, not on this cost object, so the division cannot be done from here.
+Promoting the bare scalar into a curve without that division would silently mislabel a \$/h
+value as \$/MWh. Left unmapped and recorded on the report instead of forced.
+
+`minimum_energy_offer` is separately defaulted below (`MARKET_BID_COST_DEFAULTED_FIELDS`)
+whenever PSY5 supplies no value at all: the field is required on the PSY6 struct, and
+`Core/common.json` documents this exact zero-cost shape as its schema `default` — the same
+default a codegen consumer without vendor extensions would fall back to.
 """
-const MARKET_BID_COST_SCALAR_FIELDS = Set(["shut_down", "no_load_cost"])
+const MARKET_BID_COST_SCALAR_FIELDS = Set(["shut_down"])
 
 _is_scalar_cost(::Real) = true
 _is_scalar_cost(::Any) = false
+
+function _zero_cost_curve()
+    return Dict{String, Any}(
+        "__metadata__" => Dict("type" => "InputOutputCurve"),
+        "input_at_zero" => nothing,
+        "function_data" => Dict{String, Any}(
+            "__metadata__" => Dict("type" => "LinearFunctionData"),
+            "constant_term" => 0.0,
+            "proportional_term" => 0.0,
+        ),
+    )
+end
+
+"""
+The empty offer curve, mirroring PSY6's own `ZERO_OFFER_CURVE`
+(`PowerSystems/src/models/cost_functions/MarketBidCost.jl`): a `CostCurve` over a
+`PiecewiseIncrementalCurve(0.0, [0.0, 0.0], [0.0])` in natural units with zero VOM. Unlike
+the fields above, `Core/common.json` documents no `default` here, so the sanction is PSY's
+constructor default rather than the schema's — the same value any PSY6 caller that omits the
+field already gets.
+"""
+function _zero_offer_curve()
+    return Dict{String, Any}(
+        "__metadata__" => Dict("type" => "CostCurve"),
+        "power_units" => "NATURAL_UNITS",
+        "vom_cost" => _zero_cost_curve(),
+        "value_curve" => Dict{String, Any}(
+            "__metadata__" => Dict("type" => "IncrementalCurve"),
+            "input_at_zero" => nothing,
+            "initial_input" => 0.0,
+            "function_data" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "PiecewiseStepData"),
+                "x_coords" => [0.0, 0.0],
+                "y_coords" => [0.0],
+            ),
+        ),
+    )
+end
+
+"""
+PSY6 required fields with no PSY5 counterpart, mapped to the builder for the zero-cost value
+that stands in. Unlike `MARKET_BID_COST_SCALAR_FIELDS` this is not a promotion of PSY5 data —
+PSY5 either has no field here at all or writes an explicit `null` — so it only applies when
+the value is missing, never overwriting one PSY5 did supply.
+"""
+const MARKET_BID_COST_DEFAULTED_FIELDS = Dict{String, Function}(
+    "minimum_energy_offer" => _zero_cost_curve,
+    "incremental_offer_curves" => _zero_offer_curve,
+    "decremental_offer_curves" => _zero_offer_curve,
+)
 
 function _promote_market_bid_cost_scalar(scalar::Real)
     return Dict{String, Any}(
@@ -141,14 +205,46 @@ function _promote_market_bid_cost_scalars(
             promoted[field] = _promote_market_bid_cost_scalar(scalar)
         end
     end
+    for (field, zero_value) in MARKET_BID_COST_DEFAULTED_FIELDS
+        if !haskey(promoted, field) || isnothing(promoted[field])
+            if promoted === value
+                promoted = copy(value)
+            end
+            promoted[field] = zero_value()
+        end
+    end
     return promoted
+end
+
+"""
+PSY5 spells the variable cost field `variable` on these four cost types; PSY6 spells it
+`variable_operation_cost`. Renamed before the generic recursive copy so it routes through
+the ordinary field-copy path instead of recording an unmapped field and leaving the
+required `variable_operation_cost` absent.
+"""
+const VARIABLE_OPERATION_COST_TYPES = Set([
+    "ThermalGenerationCost", "HydroGenerationCost", "RenewableGenerationCost",
+    "LoadCost",
+])
+
+function _rename_variable_operation_cost(
+    value::AbstractDict,
+    owner_type::Union{Nothing, AbstractString},
+)
+    if isnothing(owner_type) || !(owner_type in VARIABLE_OPERATION_COST_TYPES) ||
+       !haskey(value, "variable")
+        return value
+    end
+    renamed = copy(value)
+    renamed["variable_operation_cost"] = pop!(renamed, "variable")
+    return renamed
 end
 
 translate_value(value, ::Ledger, ::ConversionReport) = value
 
 """
 Record every key on a resolved nested composite (`type_name` from `__metadata__.type`, or
-`"StartUpStages"` for the untagged shape) that is not one of `PCOM.model_type(type_name)`'s
+`"StartUpStages"` for the untagged shape) that is not one of `ICOM.model_type(type_name)`'s
 fieldnames — the nested analogue of `build_kwargs`'s unmapped-field guard.
 
 Only fires when `type_name` resolves to a registered PSY6 model; an unresolved nested dict
@@ -161,10 +257,10 @@ function _record_unmapped_nested_fields!(
     type_name::Union{Nothing, AbstractString},
     report::ConversionReport,
 )
-    if isnothing(type_name) || !PCOM.has_model_type(type_name)
+    if isnothing(type_name) || !ICOM.has_model_type(type_name)
         return nothing
     end
-    targets = Set(fieldnames(PCOM.model_type(type_name)))
+    targets = Set(fieldnames(ICOM.model_type(type_name)))
     for key in keys(translated)
         if key == "__metadata__"
             continue
@@ -177,9 +273,30 @@ function _record_unmapped_nested_fields!(
 end
 
 """
+PSY5 spells the per-unit basis `DEVICE_BASE`; PSY6's `UnitSystem` enum only has
+`COMPONENT_BASE`/`NATURAL_UNITS`. Normalizes a nested `power_units` key (`CostCurve`,
+`LossCurve`, …) wherever one is found on a translated dict — the top-level component
+`power_units` bypasses this entirely, since `direct_translate` always sets it directly to
+`"COMPONENT_BASE"`.
+"""
+function _normalize_power_units(value::AbstractString)
+    if value == "DEVICE_BASE"
+        return "COMPONENT_BASE"
+    end
+    return value
+end
+
+_normalize_power_units(value) = value
+
+"""
 Non-reference dicts are forwarded recursively rather than verbatim, so a nested `oneOf`
 (a `CostCurve` containing a `ValueCurve` containing `FunctionData`) gets its discriminator
 at every level in one pass. `__metadata__` is left in place: the schemas allow the extra key.
+
+A key whose PSY5 value is `nothing` is dropped rather than forwarded as JSON `null`, matching
+`build_kwargs`'s top-level behavior: PSY6 optional fields (`input_at_zero`, and similar) are
+typed without `null`, so a present-but-null key fails schema validation where an absent key
+decodes to `ABSENT`.
 
 Every resolved nested composite is also checked against its PSY6 fieldnames
 (`_record_unmapped_nested_fields!`), the same guard `build_kwargs` applies at the top level —
@@ -194,9 +311,14 @@ function translate_value(value::AbstractDict, ledger::Ledger, report::Conversion
     owner_type = _psy5_type_name(value)
     _check_no_time_series_pointers!(value, owner_type)
     promoted = _promote_market_bid_cost_scalars(value, owner_type)
+    promoted = _rename_variable_operation_cost(promoted, owner_type)
     translated = Dict{String, Any}(
-        key => translate_value(v, ledger, report) for (key, v) in promoted
+        key => translate_value(v, ledger, report) for
+        (key, v) in promoted if !isnothing(v)
     )
+    if haskey(translated, "power_units")
+        translated["power_units"] = _normalize_power_units(translated["power_units"])
+    end
     type_name = _psy5_type_name(translated)
     if !isnothing(type_name) && haskey(ONEOF_DISCRIMINATORS, type_name)
         property, discriminator_value = ONEOF_DISCRIMINATORS[type_name]
@@ -244,6 +366,42 @@ function _points_at_skipped(value::AbstractVector, ledger::Ledger)
 end
 
 """
+Decode every value in `kwargs` against `T`'s own declared field type.
+
+The PSY5->PSY6 translation pipeline stages plain Julia values — JSON-shaped nested `Dict`s
+built by [`translate_value`](@ref), bare enum spellings as `String` (`"COMPONENT_BASE"`,
+`"UP"`, ...), resolved reference ids as `Int` — that the OpenAPI 1.1 generator's strictly
+typed, immutable structs do not accept as-is: the old 0.2 generator's untyped fields
+tolerated them, but a field like `power_units::UnitSystem` or `shut_down::InputOutputCurve`
+now rejects a bare `String`/`Dict` with a `MethodError`. `ICOM.decode` is the generated
+packages' public entry point for this (the runtime's `_decode`, under the name every consumer
+is meant to call), so this routes every hand-built kwarg through the one path that already
+knows how to turn a raw value into `T`'s declared type, whatever shape that type is.
+"""
+function _decode_kwargs(::Type{T}, kwargs::AbstractDict{Symbol}) where {T <: ICOM.APIModel}
+    return Dict{Symbol, Any}(
+        key => ICOM.decode(fieldtype(T, key), value) for (key, value) in kwargs
+    )
+end
+
+"""
+PSY5 spells the initial commitment state as a plain `Bool` on the device types that carry a
+`status` field of PSY6's `OperationalStates` enum (`ThermalStandard`, `ThermalMultiStart`,
+`HybridSystem`, `HydroDispatch`, `HydroTurbine`; `HydroPumpTurbine`'s `status` key means
+something else — see its own `translate` method). PSY5 has no STARTUP/SHUTDOWN concept, so
+`true`/`false` map onto the two states it can express.
+"""
+function _operational_state(status::Bool)
+    if status
+        return "ONLINE"
+    end
+    return "OFFLINE"
+end
+
+_is_bool(::Bool) = true
+_is_bool(::Any) = false
+
+"""
 Build the keyword arguments for `T` from a PSY5 component dict.
 
 Copies by name for every field `T` declares, resolving UUID references to integer ids.
@@ -256,7 +414,7 @@ function build_kwargs(
     ledger::Ledger,
     report::ConversionReport;
     extra::AbstractDict = Dict{Symbol, Any}(),
-) where {T <: OpenAPI.APIModel}
+) where {T <: ICOM.APIModel}
     targets = Set(fieldnames(T))
     kwargs = Dict{Symbol, Any}()
     type_name = component_type(raw)
@@ -272,10 +430,14 @@ function build_kwargs(
         if isnothing(value)
             continue
         end
+        if symbol === :status && _is_bool(value)
+            kwargs[symbol] = _operational_state(value)
+            continue
+        end
         kwargs[symbol] = translate_value(value, ledger, report)
     end
     for (key, value) in extra
         kwargs[key] = value
     end
-    return kwargs
+    return _decode_kwargs(T, kwargs)
 end

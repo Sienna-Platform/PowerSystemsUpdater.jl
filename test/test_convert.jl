@@ -8,11 +8,8 @@
 
             system_json = joinpath(tmp, "system.json")
             @test isfile(system_json)
-            @test PSU.POM.get_base_power(result.document) == 100.0
 
             doc = PSU.POM.read_document(system_json)
-            @test PSU.POM.get_unit_system(doc) == "COMPONENT_BASE"
-            @test PSU.POM.get_base_power(doc) == 100.0
             @test !isempty(PSU.POM.get_components(doc, "ACBus"))
 
             @test isempty(report.unmapped_types)
@@ -30,9 +27,10 @@ end
             system_json = joinpath(tmp, "system.json")
             raw = PSU.JSON.parsefile(system_json; dicttype = Dict{String, Any})
             fuel_curves = [
-                thermal["operation_cost"]["variable"] for
+                thermal["operation_cost"]["variable_operation_cost"] for
                 thermal in raw["components"]["ThermalStandard"] if
-                thermal["operation_cost"]["variable"]["variable_cost_type"] == "FUEL"
+                thermal["operation_cost"]["variable_operation_cost"]["variable_cost_type"] ==
+                "FUEL"
             ]
             @test !isempty(fuel_curves)
 
@@ -46,7 +44,8 @@ end
 end
 
 @testset "convert_system: FuelCurve.startup_fuel_offtake round-trips" begin
-    # 5_bus_hydro_ed_sys's HydroDispatch carries operation_cost.variable.startup_fuel_offtake.
+    # 5_bus_hydro_ed_sys's HydroDispatch carries
+    # operation_cost.variable_operation_cost.startup_fuel_offtake.
     # The schema regen added the field to FuelCurve, so it is no longer an unmapped-field
     # finding (it was, before that fix) -- it must come through as a real InputOutputCurve.
     dir = joinpath(@__DIR__, "..", "data", "PSISystems")
@@ -59,9 +58,13 @@ end
             system_json = joinpath(tmp, "system.json")
             raw = PSU.JSON.parsefile(system_json; dicttype = Dict{String, Any})
             offtakes = [
-                hydro["operation_cost"]["variable"]["startup_fuel_offtake"] for
+                hydro["operation_cost"]["variable_operation_cost"]["startup_fuel_offtake"]
+                for
                 hydro in raw["components"]["HydroDispatch"] if
-                haskey(hydro["operation_cost"]["variable"], "startup_fuel_offtake")
+                haskey(
+                    hydro["operation_cost"]["variable_operation_cost"],
+                    "startup_fuel_offtake",
+                )
             ]
             @test !isempty(offtakes)
             @test all(value -> value["curve_type"] == "INPUT_OUTPUT", offtakes)
@@ -120,14 +123,14 @@ end
             @test all(value -> typeof(value) === Dict{String, Any}, shut_downs)
             @test all(value -> value["curve_type"] == "INPUT_OUTPUT", shut_downs)
 
-            # OpenAPI.from_json on just the promoted MarketBidCost proves, on real corpus
-            # data, that the promoted curve is a valid InputOutputCurve independent of the
-            # rest of the document.
+            # ICOM.decode (from_json's OpenAPI 1.1 replacement) on just the promoted
+            # MarketBidCost proves, on real corpus data, that the promoted curve is a valid
+            # InputOutputCurve independent of the rest of the document.
             cost_json = Dict{String, Any}("cost_type" => "MARKET_BID")
             for (key, value) in first(raw["components"]["HybridSystem"])["operation_cost"]
                 cost_json[key] = value
             end
-            model = PSU.OpenAPI.from_json(PSU.POM.MarketBidCost, cost_json)
+            model = PSU.ICOM.decode(PSU.POM.MarketBidCost, cost_json)
             @test typeof(model.shut_down) === PSU.PCOM.InputOutputCurve
 
             # With ONEOF_DISCRIMINATORS' MarketBidCost/LoadCost entries the whole document
@@ -209,7 +212,7 @@ end
     if require_corpus_file(path)
         mktempdir() do tmp
             PSU.convert_system(path, tmp)
-            @test_throws PSU.PCOM.DocumentFormatError PSU.convert_system(path, tmp)
+            @test_throws PSU.ICOM.DocumentFormatError PSU.convert_system(path, tmp)
             result = PSU.convert_system(path, tmp; force = true)
             @test isfile(joinpath(tmp, "system.json"))
             @test !isempty(result.report.systems)
@@ -244,9 +247,6 @@ end
         geo_ids = Set(a.id for a in doc.supplemental_attributes)
         @test all(a -> a.attribute_id in geo_ids, geo_associations)
         @test all(a -> a.component_id in Set(component_ids), geo_associations)
-
-        @test PSU.POM.get_unit_system(doc) == "COMPONENT_BASE"
-        @test PSU.POM.get_base_power(doc) == PSU.system_base_power(case)
     end
 end
 
@@ -264,6 +264,7 @@ end
                     Dict("type" => "VariableReserve", "parameters" => ["ReserveUp"]),
                 "internal" => Dict("uuid" => Dict("value" => "uuid-reserve")),
                 "name" => "Reg_Up", "services" => Any[],
+                "available" => true, "time_frame" => 60.0,
             ),
             Dict{String, Any}(
                 "__metadata__" => Dict("type" => "ACBus"),
@@ -303,7 +304,7 @@ end
                 "__metadata__" =>
                     Dict("type" => "VariableReserve", "parameters" => ["ReserveUp"]),
                 "internal" => Dict("uuid" => Dict("value" => "uuid-reserve")),
-                "name" => "Reg_Up",
+                "name" => "Reg_Up", "available" => true, "time_frame" => 60.0,
             ),
             Dict{String, Any}(
                 "__metadata__" => Dict("type" => "SomeUnmappedType"),

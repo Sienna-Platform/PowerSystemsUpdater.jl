@@ -3,4 +3,5 @@
 ```@autodocs
 Modules = [PowerSystemsUpdater]
 Public = true
+Private = false
 ```

@@ -13,10 +13,10 @@ emitted as dangling integers.
 mutable struct Ledger
     ids::Dict{String, Int}
     skipped::Dict{String, String}
-    counter::Base.RefValue{Int}
+    counter::Int
 end
 
-Ledger() = Ledger(Dict{String, Int}(), Dict{String, String}(), Ref(0))
+Ledger() = Ledger(Dict{String, Int}(), Dict{String, String}(), 0)
 
 """
 Assign an id to `uuid`, or return the one already assigned. Idempotent.
@@ -26,9 +26,9 @@ function assign_id!(ledger::Ledger, uuid::AbstractString)
     if haskey(ledger.ids, key)
         return ledger.ids[key]
     end
-    ledger.counter[] += 1
-    ledger.ids[key] = ledger.counter[]
-    return ledger.counter[]
+    ledger.counter += 1
+    ledger.ids[key] = ledger.counter
+    return ledger.counter
 end
 
 """
@@ -36,8 +36,8 @@ Reserve an id for a component that translation synthesizes and that has no PSY5 
 transformer circuits, for instance.
 """
 function allocate_id!(ledger::Ledger)
-    ledger.counter[] += 1
-    return ledger.counter[]
+    ledger.counter += 1
+    return ledger.counter
 end
 
 has_id(ledger::Ledger, uuid::AbstractString) = haskey(ledger.ids, String(uuid))

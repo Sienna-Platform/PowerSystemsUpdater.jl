@@ -23,6 +23,7 @@ pages = OrderedDict(
     "Explanation" => Any[
         "PSY5 to PSY6 component changes" =>
             "explanation/psy5_to_psy6_component_changes.md",
+        "The units transformation" => "explanation/units_transformation.md",
         "stub" => "explanation/stub.md",
     ],
     "Reference" => Any[ 
