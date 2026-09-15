@@ -158,14 +158,14 @@
         @test PSU.has_translator("ThermalStandard")
         for name in
             ("Arc", "ConstantReserve", "VariableReserve", "Transformer2W", "TapTransformer",
-            "PhaseShiftingTransformer", "Transformer3W")
+            "PhaseShiftingTransformer", "Transformer3W", "TModelHVDCLine")
             @test PSU.has_translator(name)
         end
         @test !PSU.has_translator("NotARealType")
     end
 
     @testset "DIRECT_TYPES" begin
-        @test length(PSU.DIRECT_TYPES) == 22
+        @test length(PSU.DIRECT_TYPES) == 21
         @test !(:Arc in PSU.DIRECT_TYPES)
         @test !(:ExponentialLoad in PSU.DIRECT_TYPES)
         @test !(:FixedAdmittance in PSU.DIRECT_TYPES)
@@ -174,6 +174,8 @@
         @test !(:TwoTerminalVSCLine in PSU.DIRECT_TYPES)
         @test !(:InterconnectingConverter in PSU.DIRECT_TYPES)
         @test !(:HydroPumpTurbine in PSU.DIRECT_TYPES)
+        # Has a translator, but one that only throws: PSY5 records no base_current.
+        @test !(:TModelHVDCLine in PSU.DIRECT_TYPES)
         for name in PSU.DIRECT_TYPES
             @test isdefined(PSU.POM, name)
         end

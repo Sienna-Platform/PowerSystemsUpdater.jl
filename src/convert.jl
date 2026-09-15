@@ -27,7 +27,7 @@ function build_document(case::Psy5Case, report::ConversionReport)
         frequency = get(case.raw, "frequency", nothing),
         time_series_storage_file = storage_file,
     )
-    POM.reserve_ids!(doc, ledger.counter[])
+    POM.reserve_ids!(doc, ledger.counter)
 
     ctx = TranslationContext(ledger, report, system_base_power(case))
     # Masked sub-units translate before the HybridSystem that references them, so a
@@ -43,7 +43,7 @@ function build_document(case::Psy5Case, report::ConversionReport)
         end
     end
     # allocate_id! may have advanced past the ids reserved above
-    POM.reserve_ids!(doc, ledger.counter[])
+    POM.reserve_ids!(doc, ledger.counter)
 
     _add_supplemental_attributes!(doc, case, ctx)
     _add_service_associations!(doc, case, ctx)
@@ -176,7 +176,7 @@ function _add_supplemental_attributes!(
         )
         POM.add_supplemental_attribute!(doc, model_type(; kwargs...), owner_id)
     end
-    POM.reserve_ids!(doc, ctx.ledger.counter[])
+    POM.reserve_ids!(doc, ctx.ledger.counter)
     return nothing
 end
 

@@ -1,2 +1,7 @@
 pydantic>=2.0
-power-openapi-models @ git+https://github.com/Sienna-Platform/power-openapi-models.git@main
+# Branch pin until the multi-language restructure merges: `main` still generates from a
+# pre-release schema commit, so it stamps a `.schema-version` the Julia bindings no longer
+# carry. This branch is generated from the SiennaSchemas v0.1.0 release and lives under
+# `python/`, so both bindings stamp `v0.1.0` and the cross-language check compares like
+# with like.
+power-openapi-models @ git+https://github.com/Sienna-Platform/power-openapi-models.git@jd/multi-language-packaging#subdirectory=python

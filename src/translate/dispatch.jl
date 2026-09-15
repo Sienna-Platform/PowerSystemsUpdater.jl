@@ -14,7 +14,6 @@ const DIRECT_TYPES = (
     :HydroTurbine, :InterruptiblePowerLoad, :Line, :LoadZone,
     :MonitoredLine, :MotorLoad, :PowerLoad, :RenewableDispatch, :RenewableNonDispatch,
     :Source, :StandardLoad, :SynchronousCondenser, :ThermalMultiStart, :ThermalStandard,
-    :TModelHVDCLine,
 )
 
 """
@@ -74,6 +73,23 @@ for name in DIRECT_TYPES
     )
         return direct_translate(POM.$(name), raw, ctx)
     end
+end
+
+# The cable exception, and the one type this translator cannot convert. PSY6 anchors
+# TModelHVDCLine's per-unit `r`/`l`/`c` on a required `base_current` (A) and gives it no
+# `base_power` at all; PSY5 records no current base anywhere on the type, and
+# `Operations/Branch/TModelHVDCLine.json` documents no default to fall back on. Nothing here
+# can be derived from the owning system either — the system base is a power, not a current.
+# Stamping a placeholder would mis-scale every per-unit field on the cable with no error, so
+# this throws instead. `KNOWN_CONVERSION_GAPS` in test/test_corpus.jl records the corpus
+# systems this takes out.
+function translate(::Val{:TModelHVDCLine}, raw::AbstractDict, ::TranslationContext)
+    throw(
+        Psy5FormatError(
+            "TModelHVDCLine $(get(raw, "name", "<unnamed>")) has no base_current; PSY6 " *
+            "requires one (A) to per-unitize r/l/c and PSY5 records no current base",
+        ),
+    )
 end
 
 # PSY5 spells Arc's endpoints `from`/`to`; PSY6 names them `from_id`/`to_id`. Renaming
@@ -172,7 +188,7 @@ const TRANSLATED_TYPES = Set(
             "Transformer2W", "TapTransformer", "PhaseShiftingTransformer",
             "Transformer3W", "HydroReservoir", "ExponentialLoad", "FixedAdmittance",
             "TwoTerminalGenericHVDCLine", "TwoTerminalLCCLine", "TwoTerminalVSCLine",
-            "InterconnectingConverter", "HydroPumpTurbine",
+            "InterconnectingConverter", "HydroPumpTurbine", "TModelHVDCLine",
         ],
     ),
 )

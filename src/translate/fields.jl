@@ -123,14 +123,6 @@ default a codegen consumer without vendor extensions would fall back to.
 """
 const MARKET_BID_COST_SCALAR_FIELDS = Set(["shut_down"])
 
-"""
-PSY6 required fields with no PSY5 counterpart that the schema nonetheless documents a
-zero-cost `default` for. Unlike `MARKET_BID_COST_SCALAR_FIELDS`, this is not a promotion of
-PSY5 data — PSY5 has no field here at all — so it only applies when the key is missing
-outright, never overwriting a value PSY5 did supply.
-"""
-const MARKET_BID_COST_DEFAULTED_FIELDS = Set(["minimum_energy_offer"])
-
 _is_scalar_cost(::Real) = true
 _is_scalar_cost(::Any) = false
 
@@ -145,6 +137,44 @@ function _zero_cost_curve()
         ),
     )
 end
+
+"""
+The empty offer curve, mirroring PSY6's own `ZERO_OFFER_CURVE`
+(`PowerSystems/src/models/cost_functions/MarketBidCost.jl`): a `CostCurve` over a
+`PiecewiseIncrementalCurve(0.0, [0.0, 0.0], [0.0])` in natural units with zero VOM. Unlike
+the fields above, `Core/common.json` documents no `default` here, so the sanction is PSY's
+constructor default rather than the schema's — the same value any PSY6 caller that omits the
+field already gets.
+"""
+function _zero_offer_curve()
+    return Dict{String, Any}(
+        "__metadata__" => Dict("type" => "CostCurve"),
+        "power_units" => "NATURAL_UNITS",
+        "vom_cost" => _zero_cost_curve(),
+        "value_curve" => Dict{String, Any}(
+            "__metadata__" => Dict("type" => "IncrementalCurve"),
+            "input_at_zero" => nothing,
+            "initial_input" => 0.0,
+            "function_data" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "PiecewiseStepData"),
+                "x_coords" => [0.0, 0.0],
+                "y_coords" => [0.0],
+            ),
+        ),
+    )
+end
+
+"""
+PSY6 required fields with no PSY5 counterpart, mapped to the builder for the zero-cost value
+that stands in. Unlike `MARKET_BID_COST_SCALAR_FIELDS` this is not a promotion of PSY5 data —
+PSY5 either has no field here at all or writes an explicit `null` — so it only applies when
+the value is missing, never overwriting one PSY5 did supply.
+"""
+const MARKET_BID_COST_DEFAULTED_FIELDS = Dict{String, Function}(
+    "minimum_energy_offer" => _zero_cost_curve,
+    "incremental_offer_curves" => _zero_offer_curve,
+    "decremental_offer_curves" => _zero_offer_curve,
+)
 
 function _promote_market_bid_cost_scalar(scalar::Real)
     return Dict{String, Any}(
@@ -175,12 +205,12 @@ function _promote_market_bid_cost_scalars(
             promoted[field] = _promote_market_bid_cost_scalar(scalar)
         end
     end
-    for field in MARKET_BID_COST_DEFAULTED_FIELDS
+    for (field, zero_value) in MARKET_BID_COST_DEFAULTED_FIELDS
         if !haskey(promoted, field) || isnothing(promoted[field])
             if promoted === value
                 promoted = copy(value)
             end
-            promoted[field] = _zero_cost_curve()
+            promoted[field] = zero_value()
         end
     end
     return promoted
