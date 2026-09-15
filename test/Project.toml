@@ -19,7 +19,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 PowerSystemsUpdater = {path = ".."}
 # Test-only dep: PSU must never gain a package dependency on PSY, but the test suite and
 # fixture generation exercise translated output against real PSY types.
-PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "jd/openapi-1x"}
+PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "psy6"}
 # Branch pins until the OpenAPI packages are registered and the psy6-line branches merge.
 # PowerOpenAPIModels' own transitive deps (PowerCore-/PowerDynamics-/PowerInvestments-/
 # PowerOperationsOpenAPIModels and both Infrastructure*OpenAPIModels packages) are not
