@@ -133,8 +133,6 @@ end
         @warn PYTHON_TIER_SKIP_MESSAGE
     else
         corrupted = Dict(
-            "base_power" => 100.0,
-            "unit_system" => "COMPONENT_BASE",
             "components" => Dict("NotARealComponentType" => [Dict("id" => 1)]),
             "supplemental_attributes" => Dict(),
             "supplemental_attribute_associations" => [],

@@ -28,7 +28,10 @@
     @test kwargs[:id] == bus_id
     @test kwargs[:name] == "nodeA"
     @test kwargs[:number] == 1
-    @test kwargs[:bustype] == "REF"
+    # bustype is a strictly-typed enum wrapper (ACBusType) under the OpenAPI 1.1 generator;
+    # build_kwargs now decodes it from the raw "REF" spelling rather than leaving it a bare
+    # String, so it round-trips into ACBus(; kwargs...) without a MethodError.
+    @test kwargs[:bustype] == PSU.POM.ACBusType("REF")
     @test kwargs[:area] == area_id          # reference resolved to Int
     @test kwargs[:base_voltage] == 230.0
     @test !haskey(kwargs, :not_a_psy6_field)
@@ -106,6 +109,8 @@
         # build_kwargs forwards non-reference nested dicts verbatim, so PSY5's key
         # shape must stay identical to the PSY6 model's fieldnames. Drift here would
         # be silent: these fields carry no type annotation in the generated models.
+        # Every OpenAPI.jl 1.x model also carries `additional_properties` — generator
+        # scaffolding, not a PSY5/PSY6 field — so it is excluded from the comparison.
         expected = Dict(
             :MinMax => Set([:min, :max]),
             :FromTo => Set([:from, :to]),
@@ -113,7 +118,11 @@
             :InOut => Set([:in, :out]),
         )
         for (name, keys) in expected
-            @test Set(fieldnames(getfield(PSU.POM, name))) == keys
+            actual = setdiff(
+                Set(fieldnames(getfield(PSU.POM, name))),
+                (:additional_properties,),
+            )
+            @test actual == keys
         end
     end
 
@@ -269,46 +278,78 @@
         @test counting_rep.unmapped_fields[("ACBus", "not_a_psy6_field")] == 2
     end
 
-    @testset "MarketBidCost scalar shut_down/no_load_cost promoted to a curve" begin
-        # PSY5 legally writes a bare Float64; PSY6 types both fields as a concrete
+    @testset "MarketBidCost scalar shut_down promoted to a curve; no_load_cost reported" begin
+        # PSY5 legally writes a bare Float64 shut_down; PSY6 types it as a concrete
         # InputOutputCurve. Real corpus systems (c_sys5_hybrid and siblings) hit this.
+        # no_load_cost is NOT promoted: PSY6's minimum_energy_offer is a different physical
+        # quantity (MEO = no_load_cost / P_min, and P_min is not on this object), so it is
+        # left as-is and recorded as an unmapped field rather than silently mislabeled.
         scalar_rep = PSU.ConversionReport()
+        zero_cost_curve() = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "CostCurve"),
+            "power_units" => "NATURAL_UNITS",
+            "value_curve" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "InputOutputCurve"),
+                "function_data" => Dict{String, Any}(
+                    "__metadata__" => Dict("type" => "LinearFunctionData"),
+                    "constant_term" => 0.0,
+                    "proportional_term" => 0.0,
+                ),
+            ),
+            "vom_cost" => Dict{String, Any}(
+                "__metadata__" => Dict("type" => "InputOutputCurve"),
+                "function_data" => Dict{String, Any}(
+                    "__metadata__" => Dict("type" => "LinearFunctionData"),
+                    "constant_term" => 0.0,
+                    "proportional_term" => 0.0,
+                ),
+            ),
+        )
         raw = Dict{String, Any}(
             "__metadata__" => Dict("type" => "MarketBidCost"),
             "cost_type" => "MARKET_BID",
             "shut_down" => 0.0,
             "no_load_cost" => 12.5,
+            "ancillary_service_offers" => Any[],
+            "start_up" => Dict{String, Any}("hot" => 0.0, "warm" => 0.0, "cold" => 0.0),
+            "decremental_offer_curves" => zero_cost_curve(),
+            "incremental_offer_curves" => zero_cost_curve(),
         )
         translated = PSU.translate_value(raw, led, scalar_rep)
         @test translated["shut_down"]["__metadata__"]["type"] == "InputOutputCurve"
         @test translated["shut_down"]["curve_type"] == "INPUT_OUTPUT"
-        @test translated["shut_down"]["input_at_zero"] === nothing
+        # Under OpenAPI.jl 1.x a nested `nothing` value is dropped, not forwarded as JSON
+        # `null` (`translate_value`'s own doc explains why: `input_at_zero` is typed without
+        # `null`, so a present-but-null key now fails schema validation where an absent key
+        # decodes to `ABSENT`).
+        @test !haskey(translated["shut_down"], "input_at_zero")
         @test translated["shut_down"]["function_data"]["__metadata__"]["type"] ==
               "LinearFunctionData"
         @test translated["shut_down"]["function_data"]["function_type"] == "LINEAR"
         @test translated["shut_down"]["function_data"]["constant_term"] == 0.0
         @test translated["shut_down"]["function_data"]["proportional_term"] == 0.0
-        @test translated["no_load_cost"]["function_data"]["constant_term"] == 12.5
-        @test translated["no_load_cost"]["function_data"]["proportional_term"] == 0.0
-        @test isempty(scalar_rep.unmapped_fields)
+        @test translated["no_load_cost"] == 12.5
+        # translate_value's own unmapped-nested-field guard already caught it: no_load_cost
+        # is not a MarketBidCost fieldname (that field is minimum_energy_offer), so nothing
+        # downstream needs to record it again.
+        @test scalar_rep.unmapped_fields[("MarketBidCost", "no_load_cost")] == 1
 
-        # actually constructs: OpenAPI.from_json is what POM.read_document uses to turn
-        # a JSON dict into a typed model, and this is the exact call that raised
-        # "MethodError: Cannot convert an object of type Float64 to ... InputOutputCurve"
-        # before this fix.
+        # actually constructs: ICOM.decode (from_json's OpenAPI 1.1 replacement) is what
+        # POM.read_document uses to turn a JSON dict into a typed model, and this is the
+        # exact call that raised "MethodError: Cannot convert an object of type Float64 to
+        # ... InputOutputCurve" before this fix.
         json_ready = Dict{String, Any}("cost_type" => "MARKET_BID")
         for (key, value) in translated
-            if key == "__metadata__"
+            if key == "__metadata__" || key == "no_load_cost"
                 continue
             end
             json_ready[key] = value
         end
-        model = PSU.OpenAPI.from_json(PSU.POM.MarketBidCost, json_ready)
+        model = PSU.ICOM.decode(PSU.POM.MarketBidCost, json_ready)
         @test typeof(model.shut_down) === PSU.PCOM.InputOutputCurve
         # function_data is itself a discriminated oneOf; .value holds the resolved type.
         @test model.shut_down.function_data.value.constant_term == 0.0
         @test model.shut_down.function_data.value.proportional_term == 0.0
-        @test model.no_load_cost.function_data.value.constant_term == 12.5
 
         # scoped narrowly: a scalar named "shut_down" on any other type is left alone
         other_rep = PSU.ConversionReport()

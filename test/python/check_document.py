@@ -13,8 +13,6 @@ DOMAINS = ("core", "operations", "investments", "dynamics")
 # From SiennaSchemas/Core/SystemDocument.json. `name`, `description` and
 # `frequency` are optional; everything here is required.
 REQUIRED_KEYS = {
-    "base_power",
-    "unit_system",
     "components",
     "supplemental_attributes",
     "supplemental_attribute_associations",

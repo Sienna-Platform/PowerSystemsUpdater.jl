@@ -534,7 +534,7 @@ end
 Rewrite `case`'s PSY5 sidecar as the InfraStore pair PSY6 reads: `out_dir/time_series.h5`
 holding the content-addressed arrays and `out_dir/time_series.h5.sqlite` holding the
 catalog. Returns the `.h5` path (what the document names) together with the
-`PowerTimeSeriesOpenAPIModels.TimeSeriesAssociation` rows read back from the freshly
+`InfrastructureTimeSeriesOpenAPIModels.TimeSeriesAssociation` rows read back from the freshly
 written catalog.
 
 The two files are one artifact — the arrays are addressed by content hash and the catalog is

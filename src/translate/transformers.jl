@@ -69,16 +69,20 @@ end
 
 """
 PSY5's `primary_shunt` serializes a `Complex{Float64}` with keys `real`/`imag`, matching
-PSY6's `ComplexNumber` schema (`SiennaSchemas/Core/common.json#/definitions/ComplexNumber`)
-exactly. Built explicitly rather than forwarding the raw dict so construction does not
-depend on the two shapes coinciding.
+PSY6's `TwoWindingTransformer.magnetizing_shunt` schema
+(`SiennaSchemas/Operations/Branch/TwoWindingTransformer.json`) exactly. Built explicitly
+rather than forwarding the raw dict so construction does not depend on the two shapes
+coinciding.
+
+`magnetizing_shunt` `\$ref`s `Core/common.json#/\$defs/ComplexNumber` and generates as the
+shared `ComplexNumber` type, so that is what is built here.
 """
 function _magnetizing_shunt(raw::AbstractDict)
     shunt = get(raw, "primary_shunt", nothing)
     if isnothing(shunt)
         return nothing
     end
-    return PCOM.ComplexNumber(;
+    return ICOM.ComplexNumber(;
         real = Float64(shunt["real"]),
         imag = Float64(shunt["imag"]),
     )
@@ -97,6 +101,7 @@ function _build_circuit(raw::AbstractDict, ctx::TranslationContext, alpha::Float
         :id => circuit_id,
         :alpha => alpha,
         :base_power => base_power_for(raw, ctx.system_base),
+        :power_units => "COMPONENT_BASE",
     )
     if !haskey(raw, "tap")
         extra[:tap] = 1.0
@@ -124,7 +129,7 @@ function _translate_two_winding(
         circuit = circuit.id,
         magnetizing_shunt = _magnetizing_shunt(raw),
     )
-    return OpenAPI.APIModel[circuit, transformer]
+    return ICOM.APIModel[circuit, transformer]
 end
 
 function _group_alpha(raw::AbstractDict)
@@ -205,21 +210,28 @@ function _winding_circuit(
 )
     suffix = string(terminal)
     circuit_id = allocate_id!(ctx.ledger)
-    return POM.TransformerCircuit(;
-        id = circuit_id,
-        available = raw["available_$suffix"],
-        arc = lookup_id(ctx.ledger, reference_uuid(raw["$(suffix)_star_arc"])),
-        tap = raw["$(suffix)_turns_ratio"],
-        alpha = winding_group_alpha(get(raw, "$(suffix)_group_number", "UNDEFINED")),
-        r = raw["r_$suffix"],
-        x = raw["x_$suffix"],
-        rating = get(raw, "rating_$suffix", nothing),
-        active_power_flow = get(raw, "active_power_flow_$suffix", nothing),
-        reactive_power_flow = get(raw, "reactive_power_flow_$suffix", nothing),
-        base_power = base_power_for(raw, ctx.system_base),
-        base_voltage_primary = get(raw, "base_voltage_$suffix", nothing),
-        control_objective = get(raw, "control_objective_$suffix", nothing),
+    # Built as a plain kwargs Dict and run through `_decode_kwargs`, the same as
+    # `build_kwargs`'s output, rather than passed straight to the constructor: `power_units`
+    # and `control_objective` are bare `String`s here (a schema enum spelling), and
+    # `TransformerCircuit`'s fields are strictly typed (`UnitSystem`,
+    # `TransformerCircuitControlObjective`) under the OpenAPI 1.1 generator.
+    kwargs = Dict{Symbol, Any}(
+        :id => circuit_id,
+        :available => raw["available_$suffix"],
+        :arc => lookup_id(ctx.ledger, reference_uuid(raw["$(suffix)_star_arc"])),
+        :tap => raw["$(suffix)_turns_ratio"],
+        :alpha => winding_group_alpha(get(raw, "$(suffix)_group_number", "UNDEFINED")),
+        :r => raw["r_$suffix"],
+        :x => raw["x_$suffix"],
+        :rating => get(raw, "rating_$suffix", nothing),
+        :active_power_flow => get(raw, "active_power_flow_$suffix", nothing),
+        :reactive_power_flow => get(raw, "reactive_power_flow_$suffix", nothing),
+        :base_power => base_power_for(raw, ctx.system_base),
+        :power_units => "COMPONENT_BASE",
+        :base_voltage_primary => get(raw, "base_voltage_$suffix", nothing),
+        :control_objective => get(raw, "control_objective_$suffix", nothing),
     )
+    return POM.TransformerCircuit(; _decode_kwargs(POM.TransformerCircuit, kwargs)...)
 end
 
 """
@@ -285,16 +297,16 @@ function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationCon
         base_power_23 = raw["base_power_23"],
         base_power_31 = raw["base_power_13"],
         # PSY5 stores the star-to-ground magnetizing shunt as two floats (g, b); PSY6
-        # stores it as one ComplexNumber.
-        magnetizing_shunt = PCOM.ComplexNumber(;
+        # stores it as one shared ComplexNumber (see _magnetizing_shunt above).
+        magnetizing_shunt = ICOM.ComplexNumber(;
             real = Float64(raw["g"]),
             imag = Float64(raw["b"]),
         ),
         # PSY5's g/b are star-bus-to-ground, not primary-side, so
         # the schema's PRIMARY default is wrong here — unlike the two-winding path.
-        shunt_location = "STAR",
+        shunt_location = POM.ThreeWindingTransformerShuntLocation("STAR"),
     )
-    models = OpenAPI.APIModel[c for c in circuits]
+    models = ICOM.APIModel[c for c in circuits]
     push!(models, transformer)
     return models
 end

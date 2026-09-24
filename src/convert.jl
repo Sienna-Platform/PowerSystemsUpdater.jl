@@ -21,15 +21,13 @@ function build_document(case::Psy5Case, report::ConversionReport)
     end
 
     metadata = get(case.raw, "metadata", Dict{String, Any}())
-    doc = POM.SystemDocument(
-        system_base_power(case);
-        unit_system = "COMPONENT_BASE",
+    doc = POM.SystemDocument(;
         name = get(metadata, "name", nothing),
         description = get(metadata, "description", nothing),
         frequency = get(case.raw, "frequency", nothing),
         time_series_storage_file = storage_file,
     )
-    POM.reserve_ids!(doc, ledger.counter[])
+    POM.reserve_ids!(doc, ledger.counter)
 
     ctx = TranslationContext(ledger, report, system_base_power(case))
     # Masked sub-units translate before the HybridSystem that references them, so a
@@ -45,7 +43,7 @@ function build_document(case::Psy5Case, report::ConversionReport)
         end
     end
     # allocate_id! may have advanced past the ids reserved above
-    POM.reserve_ids!(doc, ledger.counter[])
+    POM.reserve_ids!(doc, ledger.counter)
 
     _add_supplemental_attributes!(doc, case, ctx)
     _add_service_associations!(doc, case, ctx)
@@ -67,7 +65,7 @@ function _add_supplemental_association!(
 )
     push!(
         doc.supplemental_attribute_associations,
-        PCOM.SupplementalAttributeAssociation(;
+        ICOM.SupplementalAttributeAssociation(;
             component_id = owner_id,
             component_type = String(owner_type_name),
             attribute_id = attribute_id,
@@ -154,7 +152,7 @@ function _add_supplemental_attributes!(
         end
         raw_attribute = by_uuid[attribute_uuid]
         type_name = component_type(raw_attribute)
-        if !PCOM.has_model_type(type_name)
+        if !ICOM.has_model_type(type_name)
             record_unmapped_type!(ctx.report, type_name)
             continue
         end
@@ -168,7 +166,7 @@ function _add_supplemental_attributes!(
             continue
         end
         push!(added, attribute_uuid)
-        model_type = PCOM.model_type(type_name)
+        model_type = ICOM.model_type(type_name)
         kwargs = build_kwargs(
             model_type,
             raw_attribute,
@@ -178,7 +176,7 @@ function _add_supplemental_attributes!(
         )
         POM.add_supplemental_attribute!(doc, model_type(; kwargs...), owner_id)
     end
-    POM.reserve_ids!(doc, ctx.ledger.counter[])
+    POM.reserve_ids!(doc, ctx.ledger.counter)
     return nothing
 end
 

@@ -12,11 +12,17 @@ const KNOWN_GAPS = String[]
 # InputOutputCurve by src/translate/fields.jl, which the schema sanctions.
 const KNOWN_ROUNDTRIP_GAPS = Dict{String, String}()
 
-# Systems that fail conversion outright because a PSY5 value field holds an embedded
-# time-series pointer (`__metadata__.type` of `ForecastKey` or `StaticTimeSeriesKey`)
-# instead of a literal value. PSY6 has no field type that can represent an embedded
-# time-series reference, so `translate_value` throws `Psy5FormatError` rather than
-# converting or dropping it — this is intentional, not a bug in the translator.
+# Systems that fail conversion outright, in both cases because PSY5 holds something PSY6 has
+# no way to represent, and the translator throws `Psy5FormatError` rather than converting or
+# dropping it — intentional, not a bug in the translator.
+#
+# Most entries: a PSY5 value field holds an embedded time-series pointer
+# (`__metadata__.type` of `ForecastKey` or `StaticTimeSeriesKey`) instead of a literal value,
+# and PSY6 has no field type for an embedded time-series reference.
+#
+# The two `TModelHVDCLine` entries: PSY6 per-unitizes that type against a required
+# `base_current` (A) which PSY5 does not record and the schema gives no default for. See the
+# `translate(::Val{:TModelHVDCLine}, ...)` header in src/translate/dispatch.jl.
 const KNOWN_CONVERSION_GAPS = Dict(
     "c_linear_fuel_test_ts" => "FuelCurve.fuel_cost is a time-series pointer",
     "c_market_bid_cost" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
@@ -27,6 +33,8 @@ const KNOWN_CONVERSION_GAPS = Dict(
     "c_sys5_hybrid_ed" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
     "c_sys5_hybrid_uc" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
     "c_sys5_re_fuel_cost" => "FuelCurve.fuel_cost is a time-series pointer",
+    "MTHVDC_two_RTS_DA_sys_noForecast" => "TModelHVDCLine has no base_current",
+    "sys10_pjm_ac_dc" => "TModelHVDCLine has no base_current",
 )
 
 """
