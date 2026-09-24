@@ -50,9 +50,6 @@ PowerOperationsOpenAPIModels = "0.1"
 Dates = "1"
 DocStringExtensions = "~0.8, ~0.9"
 HDF5 = "0.17"
-# Bumped from 0.11: IS4 (the InfrastructureSystems rev this file now pins) itself requires
-# InfraStore 0.12; 0.11 makes resolution unsatisfiable. Not a version bump ahead of release —
-# it is the floor IS4 already imposes.
 InfraStore = "0.14"
 InfrastructureSystems = "3.6"
 JSON = "1"
