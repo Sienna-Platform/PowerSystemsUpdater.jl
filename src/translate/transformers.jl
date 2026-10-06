@@ -107,13 +107,13 @@ function _build_circuit(raw::AbstractDict, ctx::TranslationContext, alpha::Float
         extra[:tap] = 1.0
     end
     kwargs = build_kwargs(
-        POM.TransformerCircuit,
+        POOM.TransformerCircuit,
         _circuit_source(raw),
         ctx.ledger,
         ctx.report;
         extra = extra,
     )
-    return POM.TransformerCircuit(; kwargs...)
+    return POOM.TransformerCircuit(; kwargs...)
 end
 
 function _translate_two_winding(
@@ -123,7 +123,7 @@ function _translate_two_winding(
 )
     _record_dropped_fields!(raw, ctx)
     circuit = _build_circuit(raw, ctx, alpha)
-    transformer = POM.TwoWindingTransformer(;
+    transformer = POOM.TwoWindingTransformer(;
         id = lookup_id(ctx.ledger, component_uuid(raw)),
         name = raw["name"],
         circuit = circuit.id,
@@ -231,7 +231,7 @@ function _winding_circuit(
         :base_voltage_primary => get(raw, "base_voltage_$suffix", nothing),
         :control_objective => get(raw, "control_objective_$suffix", nothing),
     )
-    return POM.TransformerCircuit(; _decode_kwargs(POM.TransformerCircuit, kwargs)...)
+    return POOM.TransformerCircuit(; _decode_kwargs(POOM.TransformerCircuit, kwargs)...)
 end
 
 """
@@ -280,7 +280,7 @@ function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationCon
     _check_transformer3w_top_level!(raw)
     _record_dropped_three_winding_fields!(raw, ctx)
     circuits = [_winding_circuit(raw, ctx, t) for t in THREE_WINDING_TERMINALS]
-    transformer = POM.ThreeWindingTransformer(;
+    transformer = POOM.ThreeWindingTransformer(;
         id = lookup_id(ctx.ledger, component_uuid(raw)),
         name = raw["name"],
         primary_circuit = circuits[1].id,
@@ -304,7 +304,7 @@ function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationCon
         ),
         # PSY5's g/b are star-bus-to-ground, not primary-side, so
         # the schema's PRIMARY default is wrong here — unlike the two-winding path.
-        shunt_location = POM.ThreeWindingTransformerShuntLocation("STAR"),
+        shunt_location = POOM.ThreeWindingTransformerShuntLocation("STAR"),
     )
     models = ICOM.APIModel[c for c in circuits]
     push!(models, transformer)

@@ -1,5 +1,5 @@
 @testset "translate reserves" begin
-    using PowerOpenAPIModels: OnlineReserve
+    using PowerOperationsOpenAPIModels: OnlineReserve
 
     led = PSU.Ledger()
     rep = PSU.ConversionReport()
@@ -25,7 +25,7 @@
     @test res.name == "Reg_Up"
     # reserve_direction is a strictly-typed enum wrapper (ReserveDirection)
     # under the OpenAPI 1.1 generator, not a bare String.
-    @test res.reserve_direction == PSU.POM.ReserveDirection("UP")
+    @test res.reserve_direction == PSU.POOM.ReserveDirection("UP")
     @test res.requirement == 0.4
     @test res.time_frame == 60.0
     # Under OpenAPI.jl 1.x an absent optional field decodes to the `ABSENT` sentinel, not
@@ -61,8 +61,8 @@
         @test typeof(out_const[1]) === OnlineReserve
         @test typeof(out_var[1]) === OnlineReserve
         @test out_const[1].reserve_direction ==
-              PSU.POM.ReserveDirection("DOWN")
-        @test out_var[1].reserve_direction == PSU.POM.ReserveDirection("UP")
+              PSU.POOM.ReserveDirection("DOWN")
+        @test out_var[1].reserve_direction == PSU.POOM.ReserveDirection("UP")
     end
 
     @testset "ordinary fields survive the mapping" begin

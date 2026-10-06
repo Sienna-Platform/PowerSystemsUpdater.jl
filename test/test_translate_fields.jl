@@ -1,5 +1,5 @@
 @testset "translate fields" begin
-    using PowerOpenAPIModels: ACBus
+    using PowerCoreOpenAPIModels: ACBus
 
     led = PSU.Ledger()
     bus_id = PSU.assign_id!(led, "uuid-bus")
@@ -31,7 +31,7 @@
     # bustype is a strictly-typed enum wrapper (ACBusType) under the OpenAPI 1.1 generator;
     # build_kwargs now decodes it from the raw "REF" spelling rather than leaving it a bare
     # String, so it round-trips into ACBus(; kwargs...) without a MethodError.
-    @test kwargs[:bustype] == PSU.POM.ACBusType("REF")
+    @test kwargs[:bustype] == PSU.PCOM.ACBusType("REF")
     @test kwargs[:area] == area_id          # reference resolved to Int
     @test kwargs[:base_voltage] == 230.0
     @test !haskey(kwargs, :not_a_psy6_field)
@@ -119,7 +119,7 @@
         )
         for (name, keys) in expected
             actual = setdiff(
-                Set(fieldnames(getfield(PSU.POM, name))),
+                Set(fieldnames(PSU.openapi_type(name))),
                 (:additional_properties,),
             )
             @test actual == keys
@@ -335,7 +335,7 @@
         @test scalar_rep.unmapped_fields[("MarketBidCost", "no_load_cost")] == 1
 
         # actually constructs: ICOM.decode (from_json's OpenAPI 1.1 replacement) is what
-        # POM.read_document uses to turn a JSON dict into a typed model, and this is the
+        # PCOM.read_document uses to turn a JSON dict into a typed model, and this is the
         # exact call that raised "MethodError: Cannot convert an object of type Float64 to
         # ... InputOutputCurve" before this fix.
         json_ready = Dict{String, Any}("cost_type" => "MARKET_BID")
@@ -345,7 +345,7 @@
             end
             json_ready[key] = value
         end
-        model = PSU.ICOM.decode(PSU.POM.MarketBidCost, json_ready)
+        model = PSU.ICOM.decode(PSU.PCOM.MarketBidCost, json_ready)
         @test typeof(model.shut_down) === PSU.PCOM.InputOutputCurve
         # function_data is itself a discriminated oneOf; .value holds the resolved type.
         @test model.shut_down.function_data.value.constant_term == 0.0

@@ -65,13 +65,25 @@ function direct_translate(
     return ICOM.APIModel[T(; kwargs...)]
 end
 
+"""
+The OpenAPI model type named `name`, from whichever model package defines it.
+"""
+function openapi_type(name::Symbol)
+    for mod in (PCOM, POOM, ITSOM, ICOM)
+        if isdefined(mod, name)
+            return getfield(mod, name)
+        end
+    end
+    error("no OpenAPI model package defines $(name)")
+end
+
 for name in DIRECT_TYPES
     @eval function translate(
         ::Val{$(QuoteNode(name))},
         raw::AbstractDict,
         ctx::TranslationContext,
     )
-        return direct_translate(POM.$(name), raw, ctx)
+        return direct_translate($(openapi_type(name)), raw, ctx)
     end
 end
 
@@ -102,7 +114,7 @@ function translate(::Val{:Arc}, raw::AbstractDict, ctx::TranslationContext)
     renamed = copy(raw)
     renamed["from_id"] = pop!(renamed, "from")
     renamed["to_id"] = pop!(renamed, "to")
-    return direct_translate(POM.Arc, renamed, ctx)
+    return direct_translate(PCOM.Arc, renamed, ctx)
 end
 
 # PSY5 spells FixedAdmittance's admittance field `Y`; the PSY6 schema property is also `Y`,
@@ -113,7 +125,7 @@ end
 function translate(::Val{:FixedAdmittance}, raw::AbstractDict, ctx::TranslationContext)
     renamed = copy(raw)
     renamed["y"] = pop!(renamed, "Y")
-    return direct_translate(POM.FixedAdmittance, renamed, ctx)
+    return direct_translate(POOM.FixedAdmittance, renamed, ctx)
 end
 
 # PSY5 stores a device's loss coefficients as a bare curve (`InputOutputCurve` or
@@ -151,7 +163,7 @@ for name in
         raw::AbstractDict,
         ctx::TranslationContext,
     )
-        return direct_translate(POM.$(name), _wrap_loss_curves(raw), ctx)
+        return direct_translate($(openapi_type(name)), _wrap_loss_curves(raw), ctx)
     end
 end
 
@@ -166,7 +178,7 @@ function translate(::Val{:HydroPumpTurbine}, raw::AbstractDict, ctx::Translation
     if haskey(renamed, "status")
         renamed["operating_mode"] = pop!(renamed, "status")
     end
-    return direct_translate(POM.HydroPumpTurbine, renamed, ctx)
+    return direct_translate(POOM.HydroPumpTurbine, renamed, ctx)
 end
 
 # PSY5 spells ExponentialLoad's voltage-dependency exponents with Greek letters `α`/`β`;
@@ -177,7 +189,7 @@ function translate(::Val{:ExponentialLoad}, raw::AbstractDict, ctx::TranslationC
     renamed = copy(raw)
     renamed["alpha"] = pop!(renamed, "α")
     renamed["beta"] = pop!(renamed, "β")
-    return direct_translate(POM.ExponentialLoad, renamed, ctx)
+    return direct_translate(POOM.ExponentialLoad, renamed, ctx)
 end
 
 const TRANSLATED_TYPES = Set(

@@ -6,17 +6,19 @@ import InfraStore
 import InfrastructureSystems
 import JSON
 import OpenAPI
-import PowerOpenAPIModels
-import PowerOpenAPIModels.PowerCoreOpenAPIModels
-import PowerOpenAPIModels.InfrastructureCoreOpenAPIModels
+import InfrastructureCoreOpenAPIModels
+import InfrastructureTimeSeriesOpenAPIModels
+import PowerCoreOpenAPIModels
+import PowerOperationsOpenAPIModels
 import SQLite
 import Tables
 import TimeZones
 
 const IS = InfrastructureSystems
-const POM = PowerOpenAPIModels
-const PCOM = PowerOpenAPIModels.PowerCoreOpenAPIModels
-const ICOM = PowerOpenAPIModels.InfrastructureCoreOpenAPIModels
+const ICOM = InfrastructureCoreOpenAPIModels
+const ITSOM = InfrastructureTimeSeriesOpenAPIModels
+const PCOM = PowerCoreOpenAPIModels
+const POOM = PowerOperationsOpenAPIModels
 
 using DocStringExtensions
 

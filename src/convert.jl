@@ -21,29 +21,29 @@ function build_document(case::Psy5Case, report::ConversionReport)
     end
 
     metadata = get(case.raw, "metadata", Dict{String, Any}())
-    doc = POM.SystemDocument(;
+    doc = PCOM.SystemDocument(;
         name = get(metadata, "name", nothing),
         description = get(metadata, "description", nothing),
         frequency = get(case.raw, "frequency", nothing),
         time_series_storage_file = storage_file,
     )
-    POM.reserve_ids!(doc, ledger.counter)
+    PCOM.reserve_ids!(doc, ledger.counter)
 
     ctx = TranslationContext(ledger, report, system_base_power(case))
     # Masked sub-units translate before the HybridSystem that references them, so a
     # sub-unit's skip is known to references_skipped by the time its owner is checked.
     for raw in masked
         for model in translate_component(raw, ctx)
-            POM.add_component!(doc, model)
+            PCOM.add_component!(doc, model)
         end
     end
     for raw in own_components
         for model in translate_component(raw, ctx)
-            POM.add_component!(doc, model)
+            PCOM.add_component!(doc, model)
         end
     end
     # allocate_id! may have advanced past the ids reserved above
-    POM.reserve_ids!(doc, ledger.counter)
+    PCOM.reserve_ids!(doc, ledger.counter)
 
     _add_supplemental_attributes!(doc, case, ctx)
     _add_service_associations!(doc, case, ctx)
@@ -57,7 +57,7 @@ supports one attribute shared by many components, and `assign_id!` is idempotent
 repeat would push the same model twice under one id and `validate_document` would reject it.
 """
 function _add_supplemental_association!(
-    doc::POM.SystemDocument,
+    doc::PCOM.SystemDocument,
     attribute_id::Int,
     owner_id::Int,
     owner_type_name::AbstractString,
@@ -87,7 +87,7 @@ membership, since the entity or the service not making it into the document is a
 recorded once at its own root.
 """
 function _add_service_associations_for!(
-    doc::POM.SystemDocument,
+    doc::PCOM.SystemDocument,
     raw::AbstractDict,
     ctx::TranslationContext,
 )
@@ -107,16 +107,16 @@ function _add_service_associations_for!(
             continue
         end
         service_id = lookup_id(ctx.ledger, service_uuid)
-        POM.add_service_association!(
+        PCOM.add_service_association!(
             doc,
-            POM.ServiceAssociation(; service_id = service_id, entity_id = entity_id),
+            POOM.ServiceAssociation(; service_id = service_id, entity_id = entity_id),
         )
     end
     return nothing
 end
 
 function _add_service_associations!(
-    doc::POM.SystemDocument,
+    doc::PCOM.SystemDocument,
     case::Psy5Case,
     ctx::TranslationContext,
 )
@@ -127,7 +127,7 @@ function _add_service_associations!(
 end
 
 function _add_supplemental_attributes!(
-    doc::POM.SystemDocument,
+    doc::PCOM.SystemDocument,
     case::Psy5Case,
     ctx::TranslationContext,
 )
@@ -174,9 +174,9 @@ function _add_supplemental_attributes!(
             ctx.report;
             extra = Dict{Symbol, Any}(:id => attribute_id),
         )
-        POM.add_supplemental_attribute!(doc, model_type(; kwargs...), owner_id)
+        PCOM.add_supplemental_attribute!(doc, model_type(; kwargs...), owner_id)
     end
-    POM.reserve_ids!(doc, ctx.ledger.counter)
+    PCOM.reserve_ids!(doc, ctx.ledger.counter)
     return nothing
 end
 
@@ -204,14 +204,14 @@ function _record_time_series_skips!(
 end
 
 """
-The result of one conversion: the assembled `POM.SystemDocument`, the `ConversionReport`
+The result of one conversion: the assembled `PCOM.SystemDocument`, the `ConversionReport`
 of what could not be carried across, and the path to the rewritten time-series sidecar
 (`nothing` when the source had none). The sidecar named here is the `.h5` half of the
 InfraStore pair [`convert_time_series`](@ref) writes; its `.sqlite` catalog sits beside it
 and the two only mean anything together.
 """
 struct ConversionResult
-    document::POM.SystemDocument
+    document::PCOM.SystemDocument
     report::ConversionReport
     time_series_file::Union{Nothing, String}
 end
@@ -243,9 +243,9 @@ function convert_system(
     if has_time_series(case)
         time_series_file, associations = convert_time_series(case, ledger, out_dir, report)
         for assoc in associations
-            POM.add_time_series_association!(doc, assoc)
+            PCOM.add_time_series_association!(doc, assoc)
         end
     end
-    POM.write_document(doc, joinpath(out_dir, "system.json"); force = force)
+    PCOM.write_document(doc, joinpath(out_dir, "system.json"); force = force)
     return ConversionResult(doc, report, time_series_file)
 end
