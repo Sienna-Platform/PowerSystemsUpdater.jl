@@ -1,5 +1,6 @@
 @testset "translate dispatch" begin
-    using PowerOpenAPIModels: ACBus, ThermalStandard
+    using PowerCoreOpenAPIModels: ACBus
+    using PowerOperationsOpenAPIModels: ThermalStandard
 
     led = PSU.Ledger()
     rep = PSU.ConversionReport()
@@ -177,7 +178,7 @@
         # Has a translator, but one that only throws: PSY5 records no base_current.
         @test !(:TModelHVDCLine in PSU.DIRECT_TYPES)
         for name in PSU.DIRECT_TYPES
-            @test isdefined(PSU.POM, name)
+            @test nameof(PSU.openapi_type(name)) == name
         end
     end
 
@@ -198,7 +199,7 @@
         out_arc = PSU.translate_component(raw_arc, ctx5)
         @test length(out_arc) == 1
         arc = out_arc[1]
-        @test typeof(arc) === PSU.POM.Arc
+        @test typeof(arc) === PSU.PCOM.Arc
         @test arc.from_id == PSU.lookup_id(led5, "uuid-arc-from")
         @test arc.to_id == PSU.lookup_id(led5, "uuid-arc-to")
         @test isempty(rep5.unmapped_fields)
@@ -232,7 +233,7 @@
         out_expload = PSU.translate_component(raw_expload, ctx6)
         @test length(out_expload) == 1
         load = out_expload[1]
-        @test typeof(load) === PSU.POM.ExponentialLoad
+        @test typeof(load) === PSU.POOM.ExponentialLoad
         @test load.alpha == 1.5
         @test load.beta == 2.0
         @test isempty(rep6.unmapped_fields)

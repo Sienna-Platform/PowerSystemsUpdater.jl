@@ -1,4 +1,5 @@
-using PowerOpenAPIModels: TransformerCircuit, TwoWindingTransformer, ThreeWindingTransformer
+using PowerOperationsOpenAPIModels:
+    TransformerCircuit, TwoWindingTransformer, ThreeWindingTransformer
 
 _is_circuit(::TransformerCircuit) = true
 _is_circuit(::PSU.ICOM.APIModel) = false
@@ -41,7 +42,7 @@ end
 end
 
 @testset "translate Transformer2W" begin
-    using PowerOpenAPIModels: TwoWindingTransformer, TransformerCircuit
+    using PowerOperationsOpenAPIModels: TwoWindingTransformer, TransformerCircuit
 
     led = PSU.Ledger()
     rep = PSU.ConversionReport()
@@ -87,7 +88,7 @@ end
 end
 
 @testset "translate TapTransformer" begin
-    using PowerOpenAPIModels: TwoWindingTransformer, TransformerCircuit
+    using PowerOperationsOpenAPIModels: TwoWindingTransformer, TransformerCircuit
 
     led = PSU.Ledger()
     rep = PSU.ConversionReport()
@@ -127,7 +128,7 @@ end
 end
 
 @testset "translate PhaseShiftingTransformer" begin
-    using PowerOpenAPIModels: TransformerCircuit
+    using PowerOperationsOpenAPIModels: TransformerCircuit
 
     led = PSU.Ledger()
     rep = PSU.ConversionReport()
@@ -224,7 +225,7 @@ end
 end
 
 @testset "translate Transformer3W" begin
-    using PowerOpenAPIModels: ThreeWindingTransformer, TransformerCircuit
+    using PowerOperationsOpenAPIModels: ThreeWindingTransformer, TransformerCircuit
 
     led = PSU.Ledger()
     rep = PSU.ConversionReport()
@@ -325,7 +326,7 @@ end
         @test tx.magnetizing_shunt.real == 0.0
         @test tx.magnetizing_shunt.imag == 0.0
         # shunt_location is a strictly-typed enum wrapper under the OpenAPI 1.1 generator.
-        @test tx.shunt_location == PSU.POM.ThreeWindingTransformerShuntLocation("STAR")
+        @test tx.shunt_location == PSU.POOM.ThreeWindingTransformerShuntLocation("STAR")
     end
 end
 
@@ -372,7 +373,7 @@ end
     tx = only(filter(_is_three_winding, out))
     @test tx.magnetizing_shunt.real == 0.0013
     @test tx.magnetizing_shunt.imag == 0.021
-    @test tx.shunt_location == PSU.POM.ThreeWindingTransformerShuntLocation("STAR")
+    @test tx.shunt_location == PSU.POOM.ThreeWindingTransformerShuntLocation("STAR")
     # g/b are consumed now; top-level available (no top-level rating in this fixture) is
     # still redundant with the per-circuit fields and stays a recorded drop.
     @test Set(keys(rep.unmapped_fields)) == Set([("Transformer3W", "available")])
@@ -522,7 +523,7 @@ end
         @test tx.magnetizing_shunt.imag == tx_raw["b"]
         # Pinned even though g == b == 0.0 here: the corpus can't catch a wrong location.
         # shunt_location is a strictly-typed enum wrapper under the OpenAPI 1.1 generator.
-        @test tx.shunt_location == PSU.POM.ThreeWindingTransformerShuntLocation("STAR")
+        @test tx.shunt_location == PSU.POOM.ThreeWindingTransformerShuntLocation("STAR")
 
         # PSY5's top-level `available`/`rating` are redundant with the per-circuit
         # available_$suffix/rating_$suffix fields (PSY6 has neither on the transformer

@@ -559,7 +559,7 @@ function convert_time_series(
         owner_translated(ledger, row)
     ]
     raw_store = InfraStore.Store(; path = destination, in_memory = false, overwrite = true)
-    associations = POM.TimeSeriesAssociation[]
+    associations = ITSOM.TimeSeriesAssociation[]
     try
         batch = InfraStore.AddBatch()
         HDF5.h5open(case.time_series_path, "r") do file
