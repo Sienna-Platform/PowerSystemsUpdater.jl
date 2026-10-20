@@ -4,9 +4,17 @@
 # through a JSON snapshot at all.
 #
 # Each includer must define, for its own PowerSystems version, before including this file:
-#   - `const IS`: that version's InfrastructureSystems module (the time-series accessors used
-#     here are named the same in IS3 and IS4).
-# and, anywhere in the file:
+#   - `const IS`: that version's InfrastructureSystems module.
+# and, anywhere in the file, the time series catalog adapter (IS3 lists keys, IS4 metadata
+# rows; a "handle" is whichever one the version uses):
+#   - `list_series(owner)`: a handle per time series attached to `owner`.
+#   - `series_type(handle)`: the *stored* type. IS4 reads a derived forecast back as a plain
+#     `Deterministic`, so the type must come from the catalog, not from the read series.
+#   - `series_name(handle)`, `series_metadata(handle)`: name, and a `Dict` of
+#     `initial_timestamp`, `resolution`, `horizon`, `interval`, `count`, `length` and
+#     `features`, `nothing` where one does not apply.
+#   - `read_series(owner, handle)`: the series itself.
+# and:
 #   - `read_field(x, field::Symbol)`: the field's value, read through its getter in system
 #     base units where the getter is unit-aware.
 #   - `snapshot_value(x::PowerSystems.Component)`: a reference record (see `component_ref`).
@@ -140,33 +148,48 @@ function values_record(writer::ValuesWriter, ts)
     )
 end
 
-const TS_METADATA_GETTERS = (
-    "initial_timestamp" => :get_initial_timestamp,
-    "resolution" => :get_resolution,
-    "horizon" => :get_horizon,
-    "interval" => :get_interval,
-    "count" => :get_count,
-)
-
 """
-Metadata for one time series, with its values written to `writer`. Values are read raw — PSY5
-scaling-factor multipliers are not applied, matching what the updater carries across.
+Metadata for one time series, from its catalog entry rather than its data, with its values
+written to `writer`. Values are read raw — PSY5 scaling-factor multipliers are not applied,
+matching what the updater carries across.
 """
-function time_series_record(writer::ValuesWriter, ts)
+function time_series_record(writer::ValuesWriter, owner, handle)
+    T = series_type(handle)
     record = Dict{String, Any}(
         # Bare name: PSY6 prints the element type parameters (`Deterministic{Float64, 1}`)
         # that PSY5 leaves off, and the values themselves are compared below.
-        "type" => string(nameof(typeof(ts))),
-        "name" => IS.get_name(ts),
+        "type" => string(nameof(T)),
+        "name" => series_name(handle),
     )
-    for (key, getter) in TS_METADATA_GETTERS
-        if isdefined(IS, getter)
-            record[key] = attempt(() -> snapshot_value(getfield(IS, getter)(ts)))
-        end
+    for (key, value) in series_metadata(handle)
+        record[key] = attempt(() -> snapshot_value(value))
     end
-    record["values"] = attempt(() -> values_record(writer, ts))
+    record["values"] = attempt(() -> values_record(writer, T, owner, handle))
     return record
 end
+
+"""
+A `DeterministicSingleTimeSeries` stores no data of its own: its windows are overlapping views
+of the `SingleTimeSeries` of the same name and resolution, which is snapshotted and compared
+element by element on its own.
+"""
+function values_record(
+    ::ValuesWriter,
+    ::Type{<:IS.DeterministicSingleTimeSeries},
+    _,
+    handle,
+)
+    return Dict{String, Any}(
+        "derived_from" => Dict{String, Any}(
+            "type" => "SingleTimeSeries",
+            "name" => series_name(handle),
+            "resolution" => snapshot_value(series_metadata(handle)["resolution"]),
+        ),
+    )
+end
+
+values_record(writer::ValuesWriter, ::Type, owner, handle) =
+    values_record(writer, read_series(owner, handle))
 
 """
 The series' values and the start of each forecast window (`nothing` for a static series).
@@ -190,7 +213,7 @@ function time_series_records(writer::ValuesWriter, owner)
     if !IS.supports_time_series(owner)
         return Any[]
     end
-    records = [time_series_record(writer, ts) for ts in IS.get_time_series_multiple(owner)]
+    records = [time_series_record(writer, owner, h) for h in list_series(owner)]
     sort!(records; by = r -> (r["type"], r["name"], string(get(r, "resolution", ""))))
     return records
 end

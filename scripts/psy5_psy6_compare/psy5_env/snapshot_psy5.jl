@@ -59,6 +59,37 @@ end
 services_of(component::PSY.Device) = PSY.get_services(component)
 services_of(::PSY.Component) = ()
 
+# Time series catalog: IS3 lists one key per series, carrying its stored type and window
+# parameters.
+list_series(owner) = IS.get_time_series_keys(owner)
+series_type(key::IS.TimeSeriesKey) = key.time_series_type
+series_name(key::IS.TimeSeriesKey) = key.name
+read_series(owner, key::IS.TimeSeriesKey) = IS.get_time_series(owner, key)
+
+function series_metadata(key::IS.StaticTimeSeriesKey)
+    return Dict{String, Any}(
+        "initial_timestamp" => key.initial_timestamp,
+        "resolution" => key.resolution,
+        "horizon" => nothing,
+        "interval" => nothing,
+        "count" => nothing,
+        "length" => key.length,
+        "features" => key.features,
+    )
+end
+
+function series_metadata(key::IS.ForecastKey)
+    return Dict{String, Any}(
+        "initial_timestamp" => key.initial_timestamp,
+        "resolution" => key.resolution,
+        "horizon" => key.horizon,
+        "interval" => key.interval,
+        "count" => key.count,
+        "length" => nothing,
+        "features" => key.features,
+    )
+end
+
 supplemental_attributes(sys::PSY.System) =
     PSY.get_supplemental_attributes(PSY.SupplementalAttribute, sys)
 associated_components(sys::PSY.System, attribute) =
