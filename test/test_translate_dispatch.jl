@@ -247,6 +247,58 @@
         @test isempty(rep.unmapped_types)
     end
 
+    @testset "TwoTerminalGenericHVDCLine: rating from active_power_limits_from" begin
+        led = PSU.Ledger()
+        rep = PSU.ConversionReport()
+        ctx = PSU.TranslationContext(led, rep, 100.0)
+
+        PSU.assign_id!(led, "uuid-dc-arc")
+        PSU.assign_id!(led, "uuid-dc")
+        raw_dc = Dict{String, Any}(
+            "__metadata__" =>
+                Dict("module" => "PowerSystems", "type" => "TwoTerminalGenericHVDCLine"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-dc")),
+            "name" => "DCL2",
+            "available" => true,
+            "active_power_flow" => 0.0,
+            "arc" => Dict("value" => "uuid-dc-arc"),
+            "active_power_limits_from" => Dict("min" => -30.0, "max" => 25.0),
+            "active_power_limits_to" => Dict("min" => -30.0, "max" => 30.0),
+            "reactive_power_limits_from" => Dict("min" => -30.0, "max" => 30.0),
+            "reactive_power_limits_to" => Dict("min" => -30.0, "max" => 30.0),
+            "loss" => Dict{String, Any}(
+                "__metadata__" => Dict(
+                    "module" => "InfrastructureSystems",
+                    "type" => "InputOutputCurve",
+                    "parameters" => ["LinearFunctionData"],
+                ),
+                "input_at_zero" => nothing,
+                "function_data" => Dict{String, Any}(
+                    "__metadata__" => Dict(
+                        "module" => "InfrastructureSystems",
+                        "type" => "LinearFunctionData",
+                    ),
+                    "constant_term" => 0.0,
+                    "proportional_term" => 0.01,
+                ),
+            ),
+        )
+        line = only(PSU.translate_component(raw_dc, ctx))
+        @test nameof(typeof(line)) === :TwoTerminalGenericHVDCLine
+        @test line.rating == 25.0
+        # The limits' min and the `_to` side have no PSY6 home, so they stay reported.
+        @test haskey(
+            rep.unmapped_fields,
+            ("TwoTerminalGenericHVDCLine", "active_power_limits_from"),
+        )
+
+        delete!(raw_dc, "active_power_limits_from")
+        @test_throws PSU.Psy5FormatError PSU.translate_component(
+            raw_dc,
+            PSU.TranslationContext(led, PSU.ConversionReport(), 100.0),
+        )
+    end
+
     @testset "ExponentialLoad: α/β renamed to alpha/beta" begin
         led6 = PSU.Ledger()
         rep6 = PSU.ConversionReport()

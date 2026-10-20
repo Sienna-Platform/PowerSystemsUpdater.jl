@@ -176,9 +176,40 @@ function _wrap_loss_curves(raw::AbstractDict)
     return renamed
 end
 
-for name in
-    (:TwoTerminalGenericHVDCLine, :TwoTerminalLCCLine, :TwoTerminalVSCLine,
-    :InterconnectingConverter)
+"""
+PSY6 requires a `rating` (the DC line's transfer rating) on the generic and LCC HVDC lines,
+which PSY5 does not record; PSY5 bounds the transfer with `active_power_limits_from` instead,
+and PSY6 removed that field. The rating is taken as `active_power_limits_from.max`, on the same
+base, so it carries across unscaled. `active_power_limits_from` itself is left in place for
+`build_kwargs` to report as dropped: its `min`, and the `_to` limits, have no PSY6 home.
+"""
+function _with_rating_from_limits(raw::AbstractDict)
+    limits = get(raw, "active_power_limits_from", nothing)
+    if isnothing(limits)
+        throw(
+            Psy5FormatError(
+                "$(component_type(raw)) $(get(raw, "name", "")) has no " *
+                "active_power_limits_from to take the PSY6 rating from",
+            ),
+        )
+    end
+    rated = copy(raw)
+    rated["rating"] = limits["max"]
+    return rated
+end
+
+for name in (:TwoTerminalGenericHVDCLine, :TwoTerminalLCCLine)
+    @eval function translate(
+        ::Val{$(QuoteNode(name))},
+        raw::AbstractDict,
+        ctx::TranslationContext,
+    )
+        rated = _with_rating_from_limits(raw)
+        return direct_translate($(openapi_type(name)), _wrap_loss_curves(rated), ctx)
+    end
+end
+
+for name in (:TwoTerminalVSCLine, :InterconnectingConverter)
     @eval function translate(
         ::Val{$(QuoteNode(name))},
         raw::AbstractDict,

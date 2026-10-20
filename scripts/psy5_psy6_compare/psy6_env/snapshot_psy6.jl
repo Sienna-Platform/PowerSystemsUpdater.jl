@@ -112,14 +112,20 @@ function main(args)
     work_dir, cases = parse_step_args(args)
     for case in cases
         bundle = joinpath(case_dir(work_dir, case), PSY6_BUNDLE)
-        if !isdir(bundle)
+        # A failed conversion can leave a partial bundle behind; loading it would only add a
+        # second, misleading error after the conversion's own.
+        if !isdir(bundle) ||
+           isfile(joinpath(case_dir(work_dir, case), error_file("convert")))
             # Conversion failed or never ran; an older snapshot must not stand in for this one.
             clear_step!(case_dir(work_dir, case), "psy6_snapshot")
             @warn "no converted bundle; skipping" case = case_name(case)
             continue
         end
         run_case_step(work_dir, case, "psy6_snapshot") do dir
-            sys = PSY.from_file(bundle; time_series_read_only = true)
+            # Default (writable) mode, as a user would load it. Read-only currently fails
+            # for any system with supplemental attributes: PSY6's loader writes their
+            # associations into the time series store, which read-only rejects.
+            sys = PSY.from_file(bundle)
             write_snapshot(sys, dir, PSY6_SNAPSHOT, PSY6_VALUES)
         end
     end
