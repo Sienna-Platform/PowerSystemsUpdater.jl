@@ -33,14 +33,10 @@ function build_document(case::Psy5Case, report::ConversionReport)
     # Masked sub-units translate before the HybridSystem that references them, so a
     # sub-unit's skip is known to references_skipped by the time its owner is checked.
     for raw in masked
-        for model in translate_component(raw, ctx)
-            PCOM.add_component!(doc, model)
-        end
+        _add_translated!(doc, raw, ctx)
     end
     for raw in own_components
-        for model in translate_component(raw, ctx)
-            PCOM.add_component!(doc, model)
-        end
+        _add_translated!(doc, raw, ctx)
     end
     # allocate_id! may have advanced past the ids reserved above
     PCOM.reserve_ids!(doc, ledger.counter)
@@ -49,6 +45,52 @@ function build_document(case::Psy5Case, report::ConversionReport)
     _add_service_associations!(doc, case, ctx)
     _record_time_series_skips!(case, ledger, report)
     return doc, ledger
+end
+
+"""
+Translate `raw` and add the resulting models to `doc`, carrying its `ext` across unless it was
+skipped.
+"""
+function _add_translated!(
+    doc::PCOM.SystemDocument,
+    raw::AbstractDict,
+    ctx::TranslationContext,
+)
+    models = translate_component(raw, ctx)
+    for model in models
+        PCOM.add_component!(doc, model)
+    end
+    if !isempty(models)
+        _carry_ext!(doc, raw, ctx)
+    end
+    return nothing
+end
+
+"""
+PSY5 types whose PSY6 model has no `ext`. PowerSystems' importer ignores a `doc.ext` entry for
+them (`_merge_doc_ext!` in its `import_document.jl`), so an `ext` on one is recorded as dropped
+rather than written where nothing reads it.
+"""
+const TYPES_WITHOUT_EXT = Set(["Arc", "TransmissionInterface"])
+
+"""
+Carry `raw`'s PSY5 `ext` into `doc.ext`, keyed by the PSY6 id of the component translated from
+it; PSY6's importer merges each entry into that component's `ext`. A transformer's entry is
+keyed by the id its PSY5 UUID maps to, the `TwoWindingTransformer`/`ThreeWindingTransformer`
+container, not one of its circuits (which, like `Arc`, have no `ext` in PSY6).
+"""
+function _carry_ext!(doc::PCOM.SystemDocument, raw::AbstractDict, ctx::TranslationContext)
+    ext = get(raw, "ext", nothing)
+    if isnothing(ext) || isempty(ext)
+        return nothing
+    end
+    type_name = component_type(raw)
+    if type_name in TYPES_WITHOUT_EXT
+        record_unmapped_field!(ctx.report, type_name, "ext")
+        return nothing
+    end
+    doc.ext[lookup_id(ctx.ledger, component_uuid(raw))] = Dict{String, Any}(ext)
+    return nothing
 end
 
 """

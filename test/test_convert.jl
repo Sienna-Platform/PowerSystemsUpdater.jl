@@ -297,6 +297,60 @@ end
     @test !haskey(report.unmapped_fields, ("ACBus", "services"))
 end
 
+@testset "build_document: ext is carried in the document's ext table" begin
+    raw_data = Dict{String, Any}(
+        "components" => Any[
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "ACBus"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-bus1")),
+                "name" => "bus1", "number" => 1, "available" => true,
+                "bustype" => "REF",
+                "ext" => Dict{String, Any}("ARNAME" => "north", "LEN" => 4.5),
+            ),
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "ACBus"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-bus2")),
+                "name" => "bus2", "number" => 2, "available" => true,
+                "bustype" => "PQ",
+                "ext" => Dict{String, Any}(),
+            ),
+            # PSY6's Arc has no ext, so its ext is reported dropped instead of written.
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "Arc"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-arc")),
+                "from" => Dict("value" => "uuid-bus1"),
+                "to" => Dict("value" => "uuid-bus2"),
+                "ext" => Dict{String, Any}("note" => "dropped"),
+            ),
+            # A skipped component's ext has no component to land on.
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "SomeUnmappedType"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-gone")),
+                "name" => "gone",
+                "ext" => Dict{String, Any}("lost" => true),
+            ),
+        ],
+    )
+    raw = Dict{String, Any}(
+        "data" => raw_data,
+        "units_settings" => Dict("base_value" => 100.0),
+        "frequency" => 60.0,
+        "metadata" => Dict{String, Any}("name" => nothing, "description" => nothing),
+        "data_format_version" => "5.0.0",
+    )
+    case = PSU.Psy5Case(raw, "test-ext", nothing)
+    report = PSU.ConversionReport()
+    doc, ledger = PSU.build_document(case, report)
+
+    @test doc.ext == Dict(
+        PSU.lookup_id(ledger, "uuid-bus1") =>
+            Dict{String, Any}("ARNAME" => "north", "LEN" => 4.5),
+    )
+    @test report.unmapped_fields[("Arc", "ext")] == 1
+    @test !haskey(report.unmapped_fields, ("ACBus", "ext"))
+    PSU.PCOM.validate_document(doc)
+end
+
 @testset "build_document: a service association to a skipped entity is dropped" begin
     raw_data = Dict{String, Any}(
         "components" => Any[
