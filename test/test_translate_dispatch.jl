@@ -158,7 +158,8 @@
         @test PSU.has_translator("Line")
         @test PSU.has_translator("ThermalStandard")
         for name in
-            ("Arc", "ConstantReserve", "VariableReserve", "Transformer2W", "TapTransformer",
+            ("Arc", "MonitoredLine", "ConstantReserve", "VariableReserve", "Transformer2W",
+            "TapTransformer",
             "PhaseShiftingTransformer", "Transformer3W", "TModelHVDCLine")
             @test PSU.has_translator(name)
         end
@@ -166,8 +167,10 @@
     end
 
     @testset "DIRECT_TYPES" begin
-        @test length(PSU.DIRECT_TYPES) == 21
+        @test length(PSU.DIRECT_TYPES) == 20
         @test !(:Arc in PSU.DIRECT_TYPES)
+        # PSY6 folded MonitoredLine into Line; it has its own translator.
+        @test !(:MonitoredLine in PSU.DIRECT_TYPES)
         @test !(:ExponentialLoad in PSU.DIRECT_TYPES)
         @test !(:FixedAdmittance in PSU.DIRECT_TYPES)
         @test !(:TwoTerminalGenericHVDCLine in PSU.DIRECT_TYPES)
@@ -203,6 +206,45 @@
         @test arc.from_id == PSU.lookup_id(led5, "uuid-arc-from")
         @test arc.to_id == PSU.lookup_id(led5, "uuid-arc-to")
         @test isempty(rep5.unmapped_fields)
+    end
+
+    @testset "MonitoredLine: becomes a Line with operational_flow_limit" begin
+        led = PSU.Ledger()
+        rep = PSU.ConversionReport()
+        ctx = PSU.TranslationContext(led, rep, 100.0)
+
+        PSU.assign_id!(led, "uuid-ml-arc")
+        PSU.assign_id!(led, "uuid-ml")
+        raw_ml = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "MonitoredLine"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-ml")),
+            "name" => "inter_area_line",
+            "available" => true,
+            "active_power_flow" => 0.0,
+            "reactive_power_flow" => 0.0,
+            "arc" => Dict("value" => "uuid-ml-arc"),
+            "r" => 0.01,
+            "x" => 0.1,
+            "b" => Dict("from" => 0.0, "to" => 0.0),
+            "g" => Dict("from" => 0.0, "to" => 0.0),
+            "flow_limits" => Dict("from_to" => 7.0, "to_from" => 6.0),
+            "rating" => 10.0,
+            "angle_limits" => Dict("min" => -1.57, "max" => 1.57),
+            "rating_b" => nothing,
+            "rating_c" => nothing,
+        )
+        out = PSU.translate_component(raw_ml, ctx)
+        @test length(out) == 1
+        line = only(out)
+        @test nameof(typeof(line)) === :Line
+        @test line.id == PSU.lookup_id(led, "uuid-ml")
+        @test line.rating == 10.0
+        limit = line.operational_flow_limit
+        @test (limit.from_to_min, limit.from_to_max) == (0.0, 7.0)
+        @test (limit.to_from_min, limit.to_from_max) == (0.0, 6.0)
+        # flow_limits is carried, not reported dropped.
+        @test isempty(rep.unmapped_fields)
+        @test isempty(rep.unmapped_types)
     end
 
     @testset "ExponentialLoad: α/β renamed to alpha/beta" begin

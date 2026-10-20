@@ -72,6 +72,13 @@ function _corpus_systems()
     return paths
 end
 
+"""
+A corpus system's name, as `REQUIRED_SYSTEMS` and the gap tables spell it: the file name
+without a `.json` extension. `scripts/psy5_case_generator/psb_case_generator.jl` writes
+`<name>.json`; `test/fixtures/generate_fixtures.jl` writes `<name>` with no extension.
+"""
+_system_name(path::AbstractString) = replace(basename(path), r"\.json$" => "")
+
 @testset "corpus conversion" begin
     systems = _corpus_systems()
     if !require_corpus_systems(
@@ -92,12 +99,12 @@ end
                 try
                     PSU.convert_system(path, out; report = report, force = true)
                 catch e
-                    push!(failures, (basename(path), sprint(showerror, e)))
+                    push!(failures, (_system_name(path), sprint(showerror, e)))
                 end
             end
         end
 
-        present = Set(basename.(systems))
+        present = Set(_system_name.(systems))
         missing_required = setdiff(REQUIRED_SYSTEMS, present)
         if !isempty(missing_required)
             @error "required system(s) missing from the corpus" missing =
@@ -154,7 +161,7 @@ end
         broke = Tuple{String, String}[]
         mktempdir() do tmp
             for path in systems
-                name = basename(path)
+                name = _system_name(path)
                 out = joinpath(tmp, name)
                 try
                     PSU.convert_system(path, out; force = true)
@@ -192,7 +199,7 @@ end
         # entry rather than leaving a stale exemption that hides a future regression.
         # Restricted to gaps this run actually swept: the smaller fixture corpus
         # legitimately omits some of them, and an omitted system is not a passing one.
-        present = Set(basename.(systems))
+        present = Set(_system_name.(systems))
         applicable_gaps = filter(k -> k in present, collect(keys(KNOWN_ROUNDTRIP_GAPS)))
         stale = [k for k in applicable_gaps if !any(p -> p[1] == k, broke)]
         for name in stale

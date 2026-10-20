@@ -15,8 +15,11 @@ PowerSystemsUpdater = {path = ".."}
 # Test-only dep: PSU must never gain a package dependency on PSY, but the test suite and
 # fixture generation exercise translated output against real PSY types.
 PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "psy6"}
-# Branch pin until the psy6-line InfrastructureSystems is registered.
-InfrastructureSystems = {url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git", rev = "IS4"}
+# Pin until the psy6-line InfrastructureSystems is registered. Held at the last IS4 commit before
+# its InfraStore 0.15 bump (0ea15bae2): PowerSystems psy6 and PowerSystemsUpdater both still
+# require InfraStore 0.14, so IS4 head cannot resolve with them. Return to `rev = "IS4"` once
+# both move to 0.15.
+InfrastructureSystems = {url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git", rev = "eafc6f3550a40f2687fec2808c7b47016b2cef52"}
 
 [compat]
 julia = "^1.6"

@@ -117,6 +117,27 @@ function translate(::Val{:Arc}, raw::AbstractDict, ctx::TranslationContext)
     return direct_translate(PCOM.Arc, renamed, ctx)
 end
 
+"""
+PSY6 has no `MonitoredLine`: it is a `Line` whose `operational_flow_limit` is set. PSY5's
+`flow_limits` holds one maximum per direction, `(from_to, to_from)`; PSY6 holds a min/max pair
+per direction, written flat in the document (`from_to_min`, `from_to_max`, ...). Each PSY5
+value becomes that direction's max, and each min is `0.0`, reading the PSY5 limits as bounds
+on the flow in each direction separately (the PSY6 field documents "minimum and maximum flow
+in each direction"). The limits are on the same base as `rating`, so they carry across
+unscaled, as `rating` does.
+"""
+function translate(::Val{:MonitoredLine}, raw::AbstractDict, ctx::TranslationContext)
+    renamed = copy(raw)
+    limits = pop!(renamed, "flow_limits")
+    renamed["operational_flow_limit"] = Dict{String, Any}(
+        "from_to_min" => 0.0,
+        "from_to_max" => limits["from_to"],
+        "to_from_min" => 0.0,
+        "to_from_max" => limits["to_from"],
+    )
+    return direct_translate(openapi_type(:Line), renamed, ctx)
+end
+
 # PSY5 spells FixedAdmittance's admittance field `Y`; the PSY6 schema property is also `Y`,
 # but the generated Julia struct field is the lowercased `y` (the generator lowercases an
 # all-uppercase property name). `build_kwargs` matches PSY5 keys against `fieldnames(T)`, so
@@ -196,7 +217,7 @@ const TRANSLATED_TYPES = Set(
     vcat(
         String.(collect(DIRECT_TYPES)),
         [
-            "Arc", "ConstantReserve", "VariableReserve",
+            "Arc", "MonitoredLine", "ConstantReserve", "VariableReserve",
             "Transformer2W", "TapTransformer", "PhaseShiftingTransformer",
             "Transformer3W", "HydroReservoir", "ExponentialLoad", "FixedAdmittance",
             "TwoTerminalGenericHVDCLine", "TwoTerminalLCCLine", "TwoTerminalVSCLine",

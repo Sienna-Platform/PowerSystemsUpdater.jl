@@ -54,6 +54,8 @@ const TYPE_MAPPINGS = Dict{String, TypeMapping}(
     # Three circuits rather than one, so no single flatten lines it up; its per-winding
     # fields are compared as missing/extra until a dedicated mapping is written.
     "Transformer3W" => TypeMapping("ThreeWindingTransformer"),
+    # PSY6 folded MonitoredLine into Line; `flow_limits` is compared through `FIELD_RULES`.
+    "MonitoredLine" => TypeMapping("Line"),
     "ConstantReserve{ReserveUp}" => TypeMapping("OnlineReserve{ReserveUp, *}"),
     "ConstantReserve{ReserveDown}" => TypeMapping("OnlineReserve{ReserveDown, *}"),
     "ConstantReserve{ReserveSymmetric}" =>
@@ -113,6 +115,22 @@ function as_linear_curve(v::AbstractDict)
 end
 as_linear_curve(v) = v
 
+"""
+PSY6's `operational_flow_limit` is a min/max pair per direction where PSY5's `flow_limits` held
+one maximum per direction. With both minimums zero it is PSY5's `(from_to, to_from)`; a nonzero
+minimum has no PSY5 counterpart and is left as is, so it fails.
+"""
+function as_flow_limits(v::AbstractDict)
+    from_to = get(v, "from_to", nothing)
+    to_from = get(v, "to_from", nothing)
+    if isnothing(from_to) || isnothing(to_from) ||
+       get(from_to, "min", nothing) != 0.0 || get(to_from, "min", nothing) != 0.0
+        return v
+    end
+    return Dict{String, Any}("from_to" => from_to["max"], "to_from" => to_from["max"])
+end
+as_flow_limits(v) = v
+
 const FIELD_RULES = FieldRule[
     # `status` became an `OperationalStates` enum. PSY5's pump status distinguished GEN from
     # PUMP; PSY6's ONLINE does not, so only OFF has a counterpart and a running pump fails.
@@ -137,6 +155,7 @@ const FIELD_RULES = FieldRule[
         "head_to_volume_factor",
         as_linear_curve,
     ),
+    FieldRule("MonitoredLine", "operational_flow_limit", "flow_limits", as_flow_limits),
 ]
 
 """
