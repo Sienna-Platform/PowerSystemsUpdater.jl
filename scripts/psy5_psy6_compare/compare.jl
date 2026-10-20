@@ -85,6 +85,16 @@ end
 is_error(x::AbstractDict) = haskey(x, "__error__")
 is_error(x) = false
 
+is_ref(x::AbstractDict) = haskey(x, "__ref__")
+is_ref(x) = false
+
+"""
+Whether a PSY5 and a PSY6 component reference name the same component: same name, and the
+PSY6 type is where `TYPE_MAPPINGS` says the PSY5 type went.
+"""
+refers_to_same(a::AbstractDict, b::AbstractDict) =
+    a["name"] == b["name"] && glob_match(type_mapping(a["__ref__"]).psy6_type, b["__ref__"])
+
 record!(out, site::Site, kind, path, a, b) =
     push!(out, Difference(kind, site.psy5_type, site.psy6_type, site.name, path, a, b))
 
@@ -99,6 +109,11 @@ function diff_values!(out, site::Site, path, a::AbstractDict, b::AbstractDict)
     elseif is_error(a) || is_error(b)
         record!(out, site, "unreadable", path, a, b)
         return
+    elseif is_ref(a) && is_ref(b)
+        if !refers_to_same(a, b)
+            record!(out, site, "value", path, a, b)
+        end
+        return
     end
     for key in sort!(collect(union(keys(a), keys(b))))
         diff_values!(
@@ -112,6 +127,11 @@ function diff_values!(out, site::Site, path, a::AbstractDict, b::AbstractDict)
 end
 
 function diff_values!(out, site::Site, path, a::AbstractVector, b::AbstractVector)
+    if all(is_ref, a) && all(is_ref, b)
+        # Each side sorted its references by its own type labels; line them up by name.
+        a = sort(a; by = r -> r["name"])
+        b = sort(b; by = r -> r["name"])
+    end
     if length(a) != length(b)
         record!(out, site, "value", path, a, b)
         return
@@ -142,10 +162,42 @@ function diff_values!(out, site::Site, path, a, b)
 end
 
 """
-The PSY6 record reshaped to line up with the PSY5 one: nested structs named in
-`mapping.flatten` are lifted to the top level, then fields are renamed to their PSY5 names.
+`NESTED_ALIGNMENTS` applied to every struct inside `x`, innermost first.
 """
-function align(record::AbstractDict, mapping::TypeMapping)
+function align_nested(x::AbstractDict)
+    aligned = Dict{String, Any}(k => align_nested(v) for (k, v) in x)
+    for f in NESTED_ALIGNMENTS
+        aligned = f(aligned)
+    end
+    return aligned
+end
+align_nested(x::AbstractVector) = Any[align_nested(v) for v in x]
+align_nested(x) = x
+
+"""
+Apply `FIELD_RULES` for `psy5_type` to an already-renamed PSY6 record.
+"""
+function apply_field_rules(record::Dict{String, Any}, psy5_type::AbstractString)
+    applied = Set{String}()
+    for rule in FIELD_RULES
+        field = rule.psy6_field
+        if field in applied || !haskey(record, field) ||
+           !glob_match(rule.psy5_type, psy5_type)
+            continue
+        end
+        push!(applied, field)
+        value = pop!(record, field)
+        record[rule.psy5_field] = rule.to_psy5(value)
+    end
+    return record
+end
+
+"""
+The PSY6 record reshaped to line up with the PSY5 one: nested structs named in
+`mapping.flatten` are lifted to the top level, fields are renamed to their PSY5 names, then
+`FIELD_RULES` and `NESTED_ALIGNMENTS` translate the forms PSY6 changed.
+"""
+function align(record::AbstractDict, mapping::TypeMapping, psy5_type::AbstractString)
     lifted = Dict{String, Any}()
     for (key, value) in record
         if key in mapping.flatten
@@ -158,7 +210,8 @@ function align(record::AbstractDict, mapping::TypeMapping)
             lifted[key] = value
         end
     end
-    return Dict{String, Any}(get(mapping.renames, k, k) => v for (k, v) in lifted)
+    renamed = Dict{String, Any}(get(mapping.renames, k, k) => v for (k, v) in lifted)
+    return align_nested(apply_field_rules(renamed, psy5_type))
 end
 
 function diff_records!(out, site::Site, a::AbstractDict, b::AbstractDict)
@@ -173,23 +226,47 @@ function diff_records!(out, site::Site, a::AbstractDict, b::AbstractDict)
     end
 end
 
+"""
+Every PSY6 entry, keyed by name, under a type label matching `pattern` (a `TypeMapping`'s
+`psy6_type`), with the label it was found under. PSY6 can parameterize a type PSY5 did not
+(`OnlineReserve{ReserveUp, NaturalUnit}`), so a mapping names its target by pattern.
+"""
+function psy6_matching(psy6::AbstractDict, pattern::AbstractString)
+    found = Dict{String, Tuple{String, Any}}()
+    for label in keys(psy6)
+        if glob_match(pattern, label)
+            for (name, entry) in psy6[label]
+                found[name] = (label, entry)
+            end
+        end
+    end
+    return found
+end
+
 function diff_components!(out, psy5::AbstractDict, psy6::AbstractDict)
     matched = Set{Tuple{String, String}}()
     for psy5_type in sort!(collect(keys(psy5)))
         mapping = type_mapping(psy5_type)
-        psy6_of_type = get(psy6, mapping.psy6_type, Dict{String, Any}())
+        candidates = psy6_matching(psy6, mapping.psy6_type)
         for name in sort!(collect(keys(psy5[psy5_type])))
-            site = Site(psy5_type, mapping.psy6_type, name)
-            if !haskey(psy6_of_type, name)
-                record!(out, site, "missing_component", "", name, nothing)
+            if !haskey(candidates, name)
+                record!(
+                    out,
+                    Site(psy5_type, mapping.psy6_type, name),
+                    "missing_component",
+                    "",
+                    name,
+                    nothing,
+                )
                 continue
             end
-            push!(matched, (mapping.psy6_type, name))
+            psy6_type, record = candidates[name]
+            push!(matched, (psy6_type, name))
             diff_records!(
                 out,
-                site,
+                Site(psy5_type, psy6_type, name),
                 psy5[psy5_type][name],
-                align(psy6_of_type[name], mapping),
+                align(record, mapping, psy5_type),
             )
         end
     end
@@ -365,14 +442,15 @@ function diff_time_series!(out, psy5::AbstractDict, psy6::AbstractDict, files::V
     seen = Set{Tuple{String, String}}()
     for psy5_type in sort!(collect(keys(psy5)))
         mapping = type_mapping(psy5_type)
-        psy6_of_type = get(psy6, mapping.psy6_type, Dict{String, Any}())
+        candidates = psy6_matching(psy6, mapping.psy6_type)
         for name in sort!(collect(keys(psy5[psy5_type])))
-            push!(seen, (mapping.psy6_type, name))
+            psy6_type, records = get(candidates, name, (mapping.psy6_type, Any[]))
+            push!(seen, (psy6_type, name))
             diff_keyed!(
                 out,
-                Site(psy5_type, mapping.psy6_type, name),
+                Site(psy5_type, psy6_type, name),
                 psy5[psy5_type][name],
-                get(psy6_of_type, name, Any[]),
+                records,
                 time_series_key,
                 time_series_label,
                 "time_series";
@@ -646,6 +724,20 @@ function compare_case(work_dir, case)
     )
 end
 
+"""
+Where to look for a case: its comparison, else the error file of the step that failed, else
+(an output was missing without an error, e.g. a step was skipped) the case directory.
+"""
+report_path(work_dir, r::CaseResult) =
+    if isnothing(r.failed_step)
+        joinpath(r.case, COMPARISON_REPORT)
+    else
+        _failure_path(work_dir, r.case, error_file(r.failed_step))
+    end
+
+_failure_path(work_dir, case, file) =
+    isfile(joinpath(work_dir, case, file)) ? joinpath(case, file) : case
+
 function write_summary(io, work_dir, results)
     println(
         io,
@@ -659,11 +751,7 @@ function write_summary(io, work_dir, results)
         else
             passed(r) ? "PASS" : "FAIL"
         end
-        report = if isnothing(r.failed_step)
-            joinpath(r.case, COMPARISON_REPORT)
-        else
-            joinpath(r.case, error_file(r.failed_step))
-        end
+        report = report_path(work_dir, r)
         println(
             io,
             "| ",
