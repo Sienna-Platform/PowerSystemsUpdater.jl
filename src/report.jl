@@ -39,7 +39,10 @@ function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
     _show_section(io, "UNMAPPED TYPES (root skips)", report.unmapped_types)
     _show_section(io, "CASCADED SKIPS", report.cascaded_skips)
     _show_section(
-        io, "UNMAPPED FIELDS", report.unmapped_fields;
+        io,
+        "UNMAPPED FIELDS (values kept in the component's ext[\"psy5_unmapped\"], " *
+        "except on a skipped component or one with no ext)",
+        report.unmapped_fields;
         label = key -> "$(key[1]).$(key[2])",
     )
     if !has_findings(report)

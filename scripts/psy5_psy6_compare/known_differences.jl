@@ -261,8 +261,11 @@ Differences that are recorded and reported but never fail a case:
     as `missing_field`.
   - `unreadable_both`: the snapshot could read the value on neither side (e.g. `horizon` of a
     `SingleTimeSeries`), so there is nothing to compare.
+  - `moved_to_ext`: a PSY5 field with no PSY6 field, which the updater kept in the component's
+    `ext["psy5_unmapped"]`. Not lost, but no longer a field, so it is listed. Its value is as
+    PSY5 stored it, not through a getter, so it is not compared.
 """
-const INFORMATIONAL_KINDS = Set(["extra_field", "unreadable_both"])
+const INFORMATIONAL_KINDS = Set(["extra_field", "unreadable_both", "moved_to_ext"])
 
 """
 Relative and absolute tolerance for numeric values. Loose enough for per-unit conversions done

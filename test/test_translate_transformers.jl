@@ -563,3 +563,115 @@ end
         @test rep.unmapped_fields[("TapTransformer", "tap_limits")] == 1
     end
 end
+
+@testset "control objective bands: PSY5 fields, then PSS/E ext, then UNDEFINED" begin
+    function _controlled(type, objective; extra = Dict{String, Any}())
+        led = PSU.Ledger()
+        rep = PSU.ConversionReport()
+        ctx = PSU.TranslationContext(led, rep, 100.0)
+        PSU.assign_id!(led, "uuid-ctl")
+        PSU.assign_id!(led, "uuid-ctl-arc")
+        raw = Dict{String, Any}(
+            "__metadata__" => Dict("type" => type),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-ctl")),
+            "name" => "ctl", "available" => true,
+            "arc" => Dict("value" => "uuid-ctl-arc"),
+            "r" => 0.01, "x" => 0.1, "tap" => 1.0, "rating" => 4.0,
+            "base_power" => 100.0,
+            "active_power_flow" => 0.0, "reactive_power_flow" => 0.0,
+            "control_objective" => objective,
+        )
+        if type == "PhaseShiftingTransformer"
+            raw["α"] = 0.0
+        end
+        merge!(raw, extra)
+        circuit = only(filter(_is_circuit, PSU.translate_component(raw, ctx)))
+        return circuit, rep
+    end
+    _band(b) = (b.min, b.max)
+
+    @testset "tier 1: TapTransformer voltage_setpoint" begin
+        circuit, rep = _controlled("TapTransformer", "VOLTAGE";
+            extra = Dict{String, Any}("voltage_setpoint" => 1.02))
+        @test string(circuit.control_objective) == "VOLTAGE"
+        @test _band(circuit.controlled_voltage_limits) == (1.02, 1.02)
+        # Used, so not reported dropped.
+        @test !haskey(rep.unmapped_fields, ("TapTransformer", "voltage_setpoint"))
+    end
+
+    @testset "tier 1 then 2: phase angle from the field, flow band from ext" begin
+        circuit, rep = _controlled("PhaseShiftingTransformer", "ACTIVE_POWER_FLOW";
+            extra = Dict{String, Any}(
+                "phase_angle_limits" => Dict("min" => -0.5, "max" => 0.5),
+                "ext" =>
+                    Dict{String, Any}("COD1" => 3, "VMA1" => 330.0, "VMI1" => 300.0),
+            ))
+        @test string(circuit.control_objective) == "ACTIVE_POWER_FLOW"
+        @test _band(circuit.phase_angle_limits) == (-0.5, 0.5)
+        # MW on a 100 MVA circuit, written per unit on its own base.
+        @test all(_band(circuit.controlled_active_power_flow_limits) .≈ (3.0, 3.3))
+    end
+
+    @testset "tier 2: PSS/E VMA/VMI as a voltage band" begin
+        circuit, _ = _controlled("PhaseShiftingTransformer", "FIXED";
+            extra = Dict{String, Any}(
+                "ext" => Dict{String, Any}("COD1" => 0, "VMA1" => 1.1, "VMI1" => 0.9),
+            ))
+        @test string(circuit.control_objective) == "FIXED"
+        @test _band(circuit.controlled_voltage_limits) == (0.9, 1.1)
+    end
+
+    @testset "tier 3: ext describing another control is not used" begin
+        circuit, rep = _controlled("PhaseShiftingTransformer", "FIXED";
+            extra = Dict{String, Any}(
+                "ext" => Dict{String, Any}("COD1" => 1, "VMA1" => 1.1, "VMI1" => 0.9),
+            ))
+        @test string(circuit.control_objective) == "UNDEFINED"
+        @test rep.unmapped_fields[("PhaseShiftingTransformer", "control_objective")] == 1
+    end
+
+    @testset "tier 3: no data at all" begin
+        circuit, rep = _controlled("PhaseShiftingTransformer", "REACTIVE_POWER_FLOW")
+        @test string(circuit.control_objective) == "UNDEFINED"
+        @test rep.unmapped_fields[("PhaseShiftingTransformer", "control_objective")] == 1
+    end
+
+    @testset "tap_ratio_limits: tap_limits, then ext RMA/RMI, then the schema default" begin
+        circuit, rep = _controlled("TapTransformer", "VOLTAGE";
+            extra = Dict{String, Any}(
+                "voltage_setpoint" => 1.0,
+                "tap_limits" => Dict("min" => 0.8, "max" => 1.2),
+            ))
+        @test _band(circuit.tap_ratio_limits) == (0.8, 1.2)
+        @test !haskey(rep.unmapped_fields, ("TapTransformer", "tap_limits"))
+
+        circuit, _ = _controlled("PhaseShiftingTransformer", "FIXED";
+            extra = Dict{String, Any}(
+                "ext" => Dict{String, Any}(
+                    "COD1" => 0, "VMA1" => 1.1, "VMI1" => 0.9,
+                    "RMA1" => 1.25, "RMI1" => 0.75,
+                ),
+            ))
+        @test _band(circuit.tap_ratio_limits) == (0.75, 1.25)
+
+        circuit, _ = _controlled("TapTransformer", "VOLTAGE";
+            extra = Dict{String, Any}("voltage_setpoint" => 1.0))
+        @test _band(circuit.tap_ratio_limits) == (0.9, 1.1)
+
+        # Phase-moving objectives get no tap band.
+        circuit, _ = _controlled("PhaseShiftingTransformer", "ACTIVE_POWER_FLOW";
+            extra = Dict{String, Any}(
+                "phase_angle_limits" => Dict("min" => -0.5, "max" => 0.5),
+                "ext" =>
+                    Dict{String, Any}("COD1" => 3, "VMA1" => 330.0, "VMI1" => 300.0),
+            ))
+        @test circuit.tap_ratio_limits === nothing ||
+              circuit.tap_ratio_limits isa PSU.OpenAPI.Runtime.Absent
+    end
+
+    @testset "UNDEFINED needs no band" begin
+        circuit, rep = _controlled("TapTransformer", "UNDEFINED")
+        @test string(circuit.control_objective) == "UNDEFINED"
+        @test !haskey(rep.unmapped_fields, ("TapTransformer", "control_objective"))
+    end
+end

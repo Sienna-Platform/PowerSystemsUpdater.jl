@@ -21,6 +21,8 @@ One difference between the snapshots. Kinds:
 
   - `missing_component` / `extra_component`: present on one side only
   - `missing_field` / `extra_field`: a field on one side of a matched component only
+  - `moved_to_ext`: a PSY5 field with no PSY6 field, kept in the component's
+    `ext["psy5_unmapped"]`
   - `value`: a field, time series or attribute value that differs
   - `unreadable`: the snapshot could read the value on one side only
   - `unreadable_both`: the snapshot could read the value on neither side
@@ -214,9 +216,39 @@ function align(record::AbstractDict, mapping::TypeMapping, psy5_type::AbstractSt
     return align_nested(apply_field_rules(renamed, psy5_type))
 end
 
-function diff_records!(out, site::Site, a::AbstractDict, b::AbstractDict)
+"""
+The `ext` key under which the updater keeps PSY5 values that have no PSY6 field
+(`UNMAPPED_EXT_KEY` in the updater's `convert.jl`).
+"""
+const MOVED_TO_EXT_KEY = "psy5_unmapped"
+
+_moved(ext::AbstractDict) = get(ext, MOVED_TO_EXT_KEY, Dict{String, Any}())
+_moved(::Any) = Dict{String, Any}()
+
+"""
+Split the PSY5 values the updater moved to `ext` off an aligned PSY6 record, so the record's
+`ext` compares against PSY5's own `ext` and the moved values can account for missing fields.
+"""
+function split_moved(record::Dict{String, Any})
+    moved = _moved(get(record, "ext", nothing))
+    if !isempty(moved)
+        record["ext"] = without(record["ext"], MOVED_TO_EXT_KEY)
+    end
+    return record, moved
+end
+
+function diff_records!(
+    out,
+    site::Site,
+    a::AbstractDict,
+    b::AbstractDict,
+    moved::AbstractDict = Dict{String, Any}(),
+)
     for key in sort!(collect(union(keys(a), keys(b))))
-        if !haskey(b, key)
+        if !haskey(b, key) && haskey(moved, key)
+            # Kept as PSY5 stored it, so its value is not compared against the getter's.
+            record!(out, site, "moved_to_ext", key, a[key], moved[key])
+        elseif !haskey(b, key)
             record!(out, site, "missing_field", key, a[key], nothing)
         elseif !haskey(a, key)
             record!(out, site, "extra_field", key, nothing, b[key])
@@ -262,11 +294,13 @@ function diff_components!(out, psy5::AbstractDict, psy6::AbstractDict)
             end
             psy6_type, record = candidates[name]
             push!(matched, (psy6_type, name))
+            aligned, moved = split_moved(align(record, mapping, psy5_type))
             diff_records!(
                 out,
                 Site(psy5_type, psy6_type, name),
                 psy5[psy5_type][name],
-                align(record, mapping, psy5_type),
+                aligned,
+                moved,
             )
         end
     end
@@ -661,7 +695,10 @@ function write_case_report(dir, case, diffs, psy5_version, psy6_version, convers
         write_group_table(io, unexpected)
         println(io, "## Expected (accepted breaking changes)\n")
         write_group_table(io, expected; reasons = reasons)
-        println(io, "## Informational (new in PSY6, or unreadable on both sides)\n")
+        println(
+            io,
+            "## Informational (new in PSY6, moved to ext, or unreadable on both sides)\n",
+        )
         write_group_table(io, informational)
         write_conversion_section(io, conversion)
     end

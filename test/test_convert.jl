@@ -351,6 +351,71 @@ end
     PSU.PCOM.validate_document(doc)
 end
 
+@testset "build_document: unmapped PSY5 fields are kept in ext" begin
+    function _bus(uuid, number; extra...)
+        raw = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "ACBus"),
+            "internal" => Dict("uuid" => Dict("value" => uuid)),
+            "name" => "bus$number", "number" => number, "available" => true,
+            "bustype" => "REF",
+        )
+        for (k, v) in extra
+            raw[string(k)] = v
+        end
+        return raw
+    end
+    function _doc(components)
+        raw = Dict{String, Any}(
+            "data" => Dict{String, Any}("components" => Any[components...]),
+            "units_settings" => Dict("base_value" => 100.0),
+            "frequency" => 60.0,
+            "metadata" =>
+                Dict{String, Any}("name" => nothing, "description" => nothing),
+            "data_format_version" => "5.0.0",
+        )
+        report = PSU.ConversionReport()
+        doc, ledger =
+            PSU.build_document(PSU.Psy5Case(raw, "test-unmapped", nothing), report)
+        return doc, ledger, report
+    end
+
+    doc, ledger, report = _doc([
+        # An unmapped field alongside the component's own ext.
+        _bus(
+            "uuid-b1",
+            1;
+            legacy_flag = true,
+            ext = Dict{String, Any}("ARNAME" => "north"),
+        ),
+        # Only an unmapped field, no ext of its own.
+        _bus("uuid-b2", 2; legacy_rating = 7.5),
+        # PSY6's Arc has no ext: the field is reported but has nowhere to go.
+        Dict{String, Any}(
+            "__metadata__" => Dict("type" => "Arc"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-arc")),
+            "from" => Dict("value" => "uuid-b1"),
+            "to" => Dict("value" => "uuid-b2"),
+            "legacy_arc_field" => 1,
+        ),
+    ])
+    @test doc.ext[PSU.lookup_id(ledger, "uuid-b1")] == Dict{String, Any}(
+        "ARNAME" => "north",
+        "psy5_unmapped" => Dict{String, Any}("legacy_flag" => true),
+    )
+    @test doc.ext[PSU.lookup_id(ledger, "uuid-b2")] ==
+          Dict{String, Any}("psy5_unmapped" => Dict{String, Any}("legacy_rating" => 7.5))
+    @test !haskey(doc.ext, PSU.lookup_id(ledger, "uuid-arc"))
+    @test report.unmapped_fields[("ACBus", "legacy_flag")] == 1
+    @test report.unmapped_fields[("Arc", "legacy_arc_field")] == 1
+    PSU.PCOM.validate_document(doc)
+
+    # The key is reserved: a PSY5 ext already using it is an error, not a silent merge.
+    @test_throws PSU.Psy5FormatError _doc([
+        _bus("uuid-b3", 3; legacy_flag = true,
+            ext = Dict{String, Any}("psy5_unmapped" => "mine")),
+    ])
+end
+
 @testset "build_document: a service association to a skipped entity is dropped" begin
     raw_data = Dict{String, Any}(
         "components" => Any[

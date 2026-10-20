@@ -33,7 +33,13 @@ function translate_component(raw::AbstractDict, ctx::TranslationContext)
         record_cascaded_skip!(ctx.report, type_name)
         return ICOM.APIModel[]
     end
-    return translate(Val(Symbol(type_name)), raw, ctx)
+    # Values the translation cannot place are kept against this component (`keep_unmapped!`).
+    ctx.ledger.owner = uuid
+    try
+        return translate(Val(Symbol(type_name)), raw, ctx)
+    finally
+        ctx.ledger.owner = nothing
+    end
 end
 
 """

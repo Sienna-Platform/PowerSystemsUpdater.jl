@@ -9,14 +9,26 @@ Base.showerror(io::IO, e::DanglingReferenceError) =
 Maps PSY5 component UUIDs onto the document-wide unique integer ids PSY6 requires, and
 records components that were skipped so references to them can be detected rather than
 emitted as dangling integers.
+
+It also keeps, per component, the PSY5 values that have no PSY6 field (`unmapped`, keyed by
+UUID), collected against `owner`, the component being translated (`translate_component`).
+They are written to the component's `ext` (`_carry_ext!` in convert.jl) rather than dropped.
 """
 mutable struct Ledger
     ids::Dict{String, Int}
     skipped::Dict{String, String}
     counter::Int
+    owner::Union{Nothing, String}
+    unmapped::Dict{String, Dict{String, Any}}
 end
 
-Ledger() = Ledger(Dict{String, Int}(), Dict{String, String}(), 0)
+Ledger() = Ledger(
+    Dict{String, Int}(),
+    Dict{String, String}(),
+    0,
+    nothing,
+    Dict{String, Dict{String, Any}}(),
+)
 
 """
 Assign an id to `uuid`, or return the one already assigned. Idempotent.
@@ -72,6 +84,23 @@ function mark_skipped!(ledger::Ledger, uuid::AbstractString, reason::AbstractStr
 end
 
 is_skipped(ledger::Ledger, uuid::AbstractString) = haskey(ledger.skipped, String(uuid))
+
+"""
+Keep `value`, a PSY5 value with no PSY6 field, for the component being translated, under
+`key` (the field name, or `Type.field` for a field of a nested struct). Every caller also
+records the field on the `ConversionReport`; this is what keeps the value itself. A `nothing`
+value has nothing to keep, and outside `translate_component` there is no owner to keep it on.
+"""
+function keep_unmapped!(ledger::Ledger, key::AbstractString, value)
+    if isnothing(ledger.owner) || isnothing(value)
+        return nothing
+    end
+    get!(Dict{String, Any}, ledger.unmapped, ledger.owner)[String(key)] = value
+    return nothing
+end
+
+unmapped_values(ledger::Ledger, uuid::AbstractString) =
+    get(ledger.unmapped, String(uuid), nothing)
 skip_reason(ledger::Ledger, uuid::AbstractString) = ledger.skipped[String(uuid)]
 
 _is_uuid_payload(::AbstractString) = true

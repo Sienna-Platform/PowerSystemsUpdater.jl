@@ -74,22 +74,49 @@ rather than written where nothing reads it.
 const TYPES_WITHOUT_EXT = Set(["Arc", "TransmissionInterface"])
 
 """
-Carry `raw`'s PSY5 `ext` into `doc.ext`, keyed by the PSY6 id of the component translated from
-it; PSY6's importer merges each entry into that component's `ext`. A transformer's entry is
-keyed by the id its PSY5 UUID maps to, the `TwoWindingTransformer`/`ThreeWindingTransformer`
-container, not one of its circuits (which, like `Arc`, have no `ext` in PSY6).
+The `ext` key under which a component keeps the PSY5 values that have no PSY6 field, as
+`Dict(field => value)`. A field of a nested struct is keyed `Type.field` (e.g.
+`ImportExportCost.ancillary_service_offers`). Values are as PSY5 stored them, including its
+per-unit basis; each one is also listed in the `ConversionReport`.
+"""
+const UNMAPPED_EXT_KEY = "psy5_unmapped"
+
+"""
+Carry `raw`'s PSY5 `ext`, and the PSY5 values its translation kept because they have no PSY6
+field (`keep_unmapped!`, under `UNMAPPED_EXT_KEY`), into `doc.ext`, keyed by the PSY6 id of the
+component translated from it; PSY6's importer merges each entry into that component's `ext`.
+A transformer's entry is keyed by the id its PSY5 UUID maps to, the
+`TwoWindingTransformer`/`ThreeWindingTransformer` container, not one of its circuits (which,
+like `Arc`, have no `ext` in PSY6).
 """
 function _carry_ext!(doc::PCOM.SystemDocument, raw::AbstractDict, ctx::TranslationContext)
-    ext = get(raw, "ext", nothing)
-    if isnothing(ext) || isempty(ext)
+    uuid = component_uuid(raw)
+    ext = Dict{String, Any}(something(get(raw, "ext", nothing), Dict{String, Any}()))
+    unmapped = unmapped_values(ctx.ledger, uuid)
+    has_unmapped = !isnothing(unmapped) && !isempty(unmapped)
+    if isempty(ext) && !has_unmapped
         return nothing
     end
     type_name = component_type(raw)
     if type_name in TYPES_WITHOUT_EXT
-        record_unmapped_field!(ctx.report, type_name, "ext")
+        # Nowhere to put either; the unmapped fields are already on the report.
+        if !isempty(ext)
+            record_unmapped_field!(ctx.report, type_name, "ext")
+        end
         return nothing
     end
-    doc.ext[lookup_id(ctx.ledger, component_uuid(raw))] = Dict{String, Any}(ext)
+    if has_unmapped
+        if haskey(ext, UNMAPPED_EXT_KEY)
+            throw(
+                Psy5FormatError(
+                    "$type_name $(get(raw, "name", uuid)) already has an ext key " *
+                    "\"$UNMAPPED_EXT_KEY\", which the updater reserves for unmapped PSY5 fields",
+                ),
+            )
+        end
+        ext[UNMAPPED_EXT_KEY] = unmapped
+    end
+    doc.ext[lookup_id(ctx.ledger, uuid)] = ext
     return nothing
 end
 

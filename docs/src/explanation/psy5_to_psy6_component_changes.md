@@ -170,11 +170,37 @@ written — so filling them into the document too would add a second copy with n
 
 ## Fields with no PSY6 home
 
-Dropped by design: `services` (schema convention), `WindingGroupNumber` (superseded by
-`alpha`), `Transformer3W.available` / `.rating` (now circuit-level).
+**Rule: data that would otherwise be lost is moved to `ext`.** A PSY5 value with no PSY6
+field is kept on the component it came from, in the document's `ext` table under the reserved
+key `psy5_unmapped`, and PSY6 merges it into that component's `ext` on import:
 
-Dropped without a stated replacement, and worth reporting when encountered:
-`TapTransformer.tap_limits`, `TapTransformer.voltage_setpoint`.
+```julia
+get_ext(component)["psy5_unmapped"]  # Dict("R_th" => 5.0e-6, "X_th" => 5.0e-6, ...)
+```
+
+  - Keys are the PSY5 field name, or `Type.field` for a field of a nested struct (e.g.
+    `ImportExportCost.ancillary_service_offers`, `head_to_volume_factor.input_at_zero`).
+  - Values are exactly as PSY5 stored them, including its per-unit basis (device base for
+    unit-bearing fields), so they are a record of the source, not PSY6 values.
+  - The component's own PSY5 `ext` entries are carried alongside, unchanged. A PSY5 `ext` that
+    already uses the key `psy5_unmapped` is an error rather than silently merged.
+  - Every kept field is also listed under UNMAPPED FIELDS in the `ConversionReport`.
+
+Examples: `Source.R_th`/`X_th`; the HVDC lines' `active_power_limits_from`/`_to` (only
+`from.max` survives, as `rating`); a transformer `control_objective` written as `UNDEFINED`
+because no band data could be found for it.
+
+Where `ext` cannot hold it, the data is still lost, and only reported:
+
+  - **Skipped components** (a PSY5 type with no PSY6 counterpart, and the components that
+    reference one) have no PSY6 component to carry an `ext`.
+  - **`Arc`, `TransmissionInterface` and `TransformerCircuit`** have no `ext` in PSY6. A
+    two- or three-winding transformer's dropped fields go on the transformer, not its circuits.
+
+Not lost, but no longer a field of their own: `services` (now `ServiceAssociation` rows),
+`WindingGroupNumber` (now the circuit's `alpha`), `Transformer3W.available`/`.rating` (now
+per circuit), and `TapTransformer.tap_limits`/`voltage_setpoint` (now the circuit's
+`tap_ratio_limits`/`controlled_voltage_limits` when its control objective needs them).
 
 ## What PSY6 cannot yet express
 

@@ -2,8 +2,9 @@
 PSY5 keys that never become PSY6 properties on the entity itself. `services` is carried
 separately as `ServiceAssociation` rows (`_add_service_associations!` in convert.jl), not as
 a field on the component; `ext` is carried in the document's own `ext` table, keyed by
-component id (`_carry_ext!` in convert.jl); `internal` and `__metadata__` are serialization
-scaffolding.
+component id (`_carry_ext!` in convert.jl), which is also where any PSY5 field with no PSY6
+counterpart is kept (under `UNMAPPED_EXT_KEY`); `internal` and `__metadata__` are
+serialization scaffolding.
 """
 const PSY5_INTERNAL_FIELDS = Set(["__metadata__", "internal", "services", "ext"])
 
@@ -246,7 +247,8 @@ translate_value(value, ::Ledger, ::ConversionReport) = value
 """
 Record every key on a resolved nested composite (`type_name` from `__metadata__.type`, or
 `"StartUpStages"` for the untagged shape) that is not one of `ICOM.model_type(type_name)`'s
-fieldnames — the nested analogue of `build_kwargs`'s unmapped-field guard.
+fieldnames — the nested analogue of `build_kwargs`'s unmapped-field guard. The value is kept
+for the owning component's `ext` as `Type.field` (`keep_unmapped!`).
 
 Only fires when `type_name` resolves to a registered PSY6 model; an unresolved nested dict
 (no `__metadata__.type`, or a PSY5 type with no PSY6 counterpart) is forwarded unchanged, as
@@ -256,6 +258,7 @@ schemas allow the extra key.
 function _record_unmapped_nested_fields!(
     translated::AbstractDict,
     type_name::Union{Nothing, AbstractString},
+    ledger::Ledger,
     report::ConversionReport,
 )
     if isnothing(type_name) || !ICOM.has_model_type(type_name)
@@ -268,6 +271,7 @@ function _record_unmapped_nested_fields!(
         end
         if !(Symbol(key) in targets)
             record_unmapped_field!(report, type_name, key)
+            keep_unmapped!(ledger, "$type_name.$key", translated[key])
         end
     end
     return nothing
@@ -328,7 +332,7 @@ function translate_value(value::AbstractDict, ledger::Ledger, report::Conversion
         type_name = "StartUpStages"
         translated["startup_stages_type"] = "STAGES"
     end
-    _record_unmapped_nested_fields!(translated, type_name, report)
+    _record_unmapped_nested_fields!(translated, type_name, ledger, report)
     return translated
 end
 
@@ -426,6 +430,7 @@ function build_kwargs(
         symbol = Symbol(key)
         if !(symbol in targets)
             record_unmapped_field!(report, type_name, key)
+            keep_unmapped!(ledger, key, value)
             continue
         end
         if isnothing(value)
