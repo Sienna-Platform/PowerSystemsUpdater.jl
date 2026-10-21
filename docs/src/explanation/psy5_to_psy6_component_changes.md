@@ -159,9 +159,11 @@ Three element layouts and one time series type make the crossing:
 | `DeterministicSingleTimeSeries`                   | derived by `transform_single_time_series!` |
 
 A derived forecast stores no array of its own in PSY6 — it re-describes the
-`SingleTimeSeries` it came from. InfraStore derives from every series at a resolution or from
-none, so a sidecar whose derived rows cover only some of them aborts rather than gaining or
-losing forecasts. Every other layout and type (`PiecewiseLinearData`, `Probabilistic`,
+`SingleTimeSeries` it came from. InfraStore derives from every series of one owner category
+(components, or supplemental attributes) at a resolution or from none. PSY5 and PSY6 both
+derive for components only, so a supplemental attribute's series, such as an outage
+probability, keeps no derived forecast. A sidecar whose derived rows cover only some of a
+category's series at a resolution aborts rather than gaining or losing forecasts. Every other layout and type (`PiecewiseLinearData`, `Probabilistic`,
 `Scenarios`) errors: the two stores agree on nothing but plain scalars, and a `Probabilistic`
 association row carries no percentiles to rebuild one from.
 

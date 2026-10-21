@@ -184,7 +184,7 @@ end
     # series present is one PSY6 can read. A byte-copied PSY5 sidecar cannot get here at
     # all: it has no catalog, and its arrays are keyed by a UUID nothing addresses any more.
     dir = joinpath(@__DIR__, "..", "data", "PSISystems")
-    path = joinpath(dir, "5_bus_hydro_ed_sys")
+    path = joinpath(dir, "5_bus_hydro_ed_sys.json")
     if require_corpus_file(path)
         case = PSU.read_psy5(path)
         rows = PSU.read_associations(case.time_series_path)
@@ -265,9 +265,44 @@ end
         end
     end
 
-    # A sidecar whose derived forecasts cover only some of the SingleTimeSeries at a
-    # resolution cannot be reproduced: InfraStore derives from every series at a resolution
-    # or none. Dropping one static row from the corpus's row set makes the derived set
+    # PSY5 derives forecasts for components only: an outage attribute's probability series
+    # has no derived forecast, and must not gain one while every component series keeps its.
+    ts_outage = joinpath(
+        @__DIR__,
+        "..",
+        "data",
+        "SPISystems",
+        "RTS_GMLC_Hourly with TimeSeries Outage Data.json",
+    )
+    if require_corpus_file(ts_outage)
+        rows = PSU.read_associations(PSU.read_psy5(ts_outage).time_series_path)
+        attribute_statics = count(
+            r ->
+                r["owner_category"] == "SupplementalAttribute" &&
+                    r["time_series_type"] == "SingleTimeSeries",
+            rows,
+        )
+        @test attribute_statics > 0
+        derived = count(r -> r["time_series_type"] == "DeterministicSingleTimeSeries", rows)
+        mktempdir() do tmp
+            PSU.convert_system(ts_outage, tmp; force = true)
+            catalog = InfraStore.open_store(
+                joinpath(tmp, PSU.TIME_SERIES_FILENAME); read_only = true,
+            )
+            try
+                counts = InfraStore.get_counts(catalog)
+                @test counts.forecasts == derived
+                @test counts.static_time_series ==
+                      count(r -> r["time_series_type"] == "SingleTimeSeries", rows)
+            finally
+                InfraStore.close!(catalog)
+            end
+        end
+    end
+
+    # A sidecar whose derived forecasts cover only some of an owner category's
+    # SingleTimeSeries at a resolution cannot be reproduced: InfraStore derives from every
+    # series of a category at a resolution or none. Dropping one static row from the corpus's row set makes the derived set
     # over-cover, and that must abort rather than write a store with extra forecasts.
     if isfile(path)
         case = PSU.read_psy5(path)

@@ -446,11 +446,15 @@ end
 """
 Re-derive the `DeterministicSingleTimeSeries` rows as InfraStore derivations.
 
-`InfraStore.transform_single_time_series!` works on every `SingleTimeSeries` at a resolution
-at once, so it can only reproduce a PSY5 sidecar whose derived rows cover all of them. Both
-preconditions are checked before anything is written — one `(horizon, interval)` per
-resolution, and one derived row per static row — and a sidecar that breaks either aborts
-rather than silently gaining or losing forecasts.
+`InfraStore.transform_single_time_series!` works on every `SingleTimeSeries` of one owner
+category at a resolution at once, so it can only reproduce a PSY5 sidecar whose derived rows
+cover all of them. Both preconditions are checked before anything is written — one
+`(horizon, interval)` per category and resolution, and one derived row per static row — and a
+sidecar that breaks either aborts rather than silently gaining or losing forecasts.
+
+The owner category matters because PSY5 derives forecasts for components only, as IS does
+(`owner_category = InfraStore.Component`): a supplemental attribute's static series, such as an
+outage probability, has no derived forecast and must not gain one.
 
 `normalize_single_window` and `require_uniform_forecast_grid` are set the way IS sets them,
 because IS is what reads the result.
@@ -458,13 +462,16 @@ because IS is what reads the result.
 function _derive_forecasts!(store::InfraStore.Store, rows::AbstractVector{<:AbstractDict})
     derived = _rows_of_kind(rows, DerivedDeterministicKind())
     isempty(derived) && return nothing
-    static_owners = _association_identities(_rows_of_kind(rows, SingleKind()))
-    for (resolution, group) in _group_by_resolution(derived)
+    statics = _rows_of_kind(rows, SingleKind())
+    for ((category, resolution), group) in _group_by_category_and_resolution(derived)
+        static_owners = _association_identities(
+            [row for row in statics if _owner_category(row) == category],
+        )
         windows = unique((row["horizon"], row["interval"]) for row in group)
         if length(windows) != 1
             throw(
                 Psy5FormatError(
-                    "resolution $resolution carries derived forecasts over " *
+                    "$category resolution $resolution carries derived forecasts over " *
                     "$(length(windows)) distinct (horizon, interval) pairs; InfraStore " *
                     "derives one window shape per resolution",
                 ),
@@ -475,9 +482,10 @@ function _derive_forecasts!(store::InfraStore.Store, rows::AbstractVector{<:Abst
         if covered != sources
             throw(
                 Psy5FormatError(
-                    "resolution $resolution has $(length(covered)) derived forecasts over " *
-                    "$(length(sources)) SingleTimeSeries; InfraStore derives from every " *
-                    "series at a resolution or none, so a partial set cannot be " *
+                    "$category resolution $resolution has $(length(covered)) derived " *
+                    "forecasts over $(length(sources)) SingleTimeSeries; InfraStore " *
+                    "derives from every series of an owner category at a resolution or " *
+                    "none, so a partial set cannot be " *
                     "reproduced (missing: $(collect(setdiff(sources, covered))))",
                 ),
             )
@@ -486,6 +494,7 @@ function _derive_forecasts!(store::InfraStore.Store, rows::AbstractVector{<:Abst
             store,
             _required_duration(first(group), "horizon"),
             _required_duration(first(group), "interval");
+            owner_category = category,
             resolution = _psy5_duration(resolution),
             normalize_single_window = true,
             require_uniform_forecast_grid = true,
@@ -505,10 +514,13 @@ end
 _rows_of_kind(rows::AbstractVector{<:AbstractDict}, kind::Psy5TimeSeriesKind) =
     [row for row in rows if _time_series_kind(row) === kind]
 
-function _group_by_resolution(rows::AbstractVector{R}) where {R <: AbstractDict}
-    grouped = Dict{String, Vector{R}}()
+function _group_by_category_and_resolution(
+    rows::AbstractVector{R},
+) where {R <: AbstractDict}
+    grouped = Dict{Tuple{InfraStore.OwnerCategory, String}, Vector{R}}()
     for row in rows
-        push!(get!(grouped, string(row["resolution"]), R[]), row)
+        key = (_owner_category(row), string(row["resolution"]))
+        push!(get!(grouped, key, R[]), row)
     end
     return grouped
 end
