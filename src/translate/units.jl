@@ -30,6 +30,17 @@ struct Natural <: Psy5Storage end
 """Natural, but per hour where PSY6 is per second (`m3/h` against `m3/s`)."""
 struct PerHour <: Psy5Storage end
 
+"""Natural power (MW, MVA, MVAr), which a per-unit PSY6 field takes on the component's base."""
+struct NaturalPower <: Psy5Storage end
+
+"""
+Per unit of the base voltage of one end of the component's arc (`end_index` 1 for `from`, 2
+for `to`): a converter setpoint referred to its own AC terminal.
+"""
+struct ArcEndVoltagePU <: Psy5Storage
+    end_index::Int
+end
+
 """
 A multiple of another PSY5 value: a level stored as a fraction of `storage_level_limits.max`,
 or a voltage in per unit of `rated_dc_voltage`. `path` names that value in the PSY5 record.
@@ -76,6 +87,12 @@ const PSY5_STORAGE = Dict{Tuple{String, String}, Psy5Storage}(
     ("TwoTerminalLCCLine", "rectifier_capacitor_reactance") => SystemBasePU(),
     ("TwoTerminalLCCLine", "inverter_capacitor_reactance") => SystemBasePU(),
     ("TwoTerminalLCCLine", "compounding_resistance") => Natural(),
+    ("TwoTerminalLCCLine", "rectifier_base_voltage") => Natural(),
+    ("TwoTerminalLCCLine", "inverter_base_voltage") => Natural(),
+    # From PSY5's `transfer_setpoint` (`_lcc_control`): "in MW units" (power mode) or "in
+    # Amperes units" (current mode); "must not be specified in per-unit".
+    ("TwoTerminalLCCLine", "power_transfer_setpoint") => NaturalPower(),
+    ("TwoTerminalLCCLine", "current_transfer_setpoint") => Natural(),
     ("TwoTerminalLCCLine", "scheduled_dc_voltage") => Natural(),
     ("TwoTerminalLCCLine", "switch_mode_voltage") => Natural(),
     ("TwoTerminalLCCLine", "min_compounding_voltage") => Natural(),
@@ -86,6 +103,21 @@ const PSY5_STORAGE = Dict{Tuple{String, String}, Psy5Storage}(
     ("TwoTerminalVSCLine", "voltage_limits_from") => RelativeTo(["rated_dc_voltage"]),
     ("TwoTerminalVSCLine", "voltage_limits_to") => RelativeTo(["rated_dc_voltage"]),
     ("TwoTerminalVSCLine", "rated_dc_voltage") => Natural(),
+    # From PSY5's `dc_setpoint_*` / `ac_setpoint_*` (`_vsc_setpoints`): DC power "in per-unit
+    # (SYSTEM_BASE)", DC voltage "in per-unit of `rated_dc_voltage`", AC voltage "entered in
+    # per unit" (of the converter's AC bus), power factor dimensionless.
+    ("TwoTerminalVSCLine", "dc_power_setpoint_from") => SystemBasePU(),
+    ("TwoTerminalVSCLine", "dc_power_setpoint_to") => SystemBasePU(),
+    ("TwoTerminalVSCLine", "dc_voltage_setpoint_from") =>
+        RelativeTo(["rated_dc_voltage"]),
+    ("TwoTerminalVSCLine", "dc_voltage_setpoint_to") =>
+        RelativeTo(["rated_dc_voltage"]),
+    ("TwoTerminalVSCLine", "ac_voltage_setpoint_from") => ArcEndVoltagePU(1),
+    ("TwoTerminalVSCLine", "ac_voltage_setpoint_to") => ArcEndVoltagePU(2),
+    ("TwoTerminalVSCLine", "power_factor_setpoint_from") => Natural(),
+    ("TwoTerminalVSCLine", "rated_ac_voltage_from") => Natural(),
+    ("TwoTerminalVSCLine", "rated_ac_voltage_to") => Natural(),
+    ("TwoTerminalVSCLine", "power_factor_setpoint_to") => Natural(),
     ("TwoTerminalVSCLine", "dc_current") => Natural(),
     ("TwoTerminalVSCLine", "max_dc_current_from") => Natural(),
     ("TwoTerminalVSCLine", "max_dc_current_to") => Natural(),
@@ -236,12 +268,21 @@ function voltage_base(units::ComponentUnits)
     if is_reference(bus)
         return get(units.buses.base_voltage, reference_uuid(bus), nothing)
     end
+    return arc_end_voltage(units, 1)
+end
+
+"""The base voltage (kV) of one end of the component's arc (1 `from`, 2 `to`), or `nothing`."""
+function arc_end_voltage(units::ComponentUnits, end_index::Int)
     arc = get(units.raw, "arc", nothing)
-    if is_reference(arc)
-        ends = get(units.buses.arcs, reference_uuid(arc), nothing)
-        return isnothing(ends) ? nothing : get(units.buses.base_voltage, ends[1], nothing)
+    if !is_reference(arc)
+        return nothing
     end
-    return nothing
+    ends = get(units.buses.arcs, reference_uuid(arc), nothing)
+    return if isnothing(ends)
+        nothing
+    else
+        get(units.buses.base_voltage, ends[end_index], nothing)
+    end
 end
 
 _scale(value::Bool, ::Real) = value
@@ -307,6 +348,26 @@ _relative(_, ::Any, storage::RelativeTo) =
 
 convert_units(::PerHour, unit::AbstractString, value, ::ComponentUnits) =
     endswith(unit, "/s") ? _scale(value, 1 / 3600) : value
+
+function convert_units(::NaturalPower, unit::AbstractString, value, units::ComponentUnits)
+    if _is_per_unit(unit)
+        return _scale(value, 1 / units.component_base)
+    end
+    return unit in POWER_UNITS ? value : UnverifiedUnit("no conversion from MW to $unit")
+end
+
+function convert_units(
+    storage::ArcEndVoltagePU,
+    unit::AbstractString,
+    value,
+    units::ComponentUnits,
+)
+    kv = arc_end_voltage(units, storage.end_index)
+    if unit != "kV" || isnothing(kv)
+        return UnverifiedUnit("per unit of an arc end's voltage, to $unit")
+    end
+    return _scale(value, kv)
+end
 
 function convert_units(
     storage::Union{DeviceBasePU, SystemBasePU},

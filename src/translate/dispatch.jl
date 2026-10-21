@@ -26,6 +26,67 @@ const PSY5_FIELD_RENAMES = Dict{Tuple{String, String}, String}(
     ("Source", "X_th") => "x_th",
 )
 
+"""
+PSY5 fields whose PSY6 counterpart is a different field carrying the same information,
+rewritten by `direct_translate` before the field copy. Each consumes the PSY5 field it maps,
+so it is not also reported as unmapped; one that cannot be mapped is left for the copy to
+report and keep in `ext`.
+"""
+_derive_fields(::Type{T}, raw::AbstractDict, ctx::TranslationContext) where {T} =
+    _derive_minimum_energy_offer(_derive_commitment_mode(T, raw), ctx)
+
+"""
+PSY5's `must_run = true` is PSY6's `commitment_mode = MUST_RUN`. `false` says nothing more
+than PSY6's default commitment mode, so it is consumed without writing one.
+"""
+function _derive_commitment_mode(::Type{T}, raw::AbstractDict) where {T}
+    if !haskey(raw, "must_run") || !(:commitment_mode in fieldnames(T))
+        return raw
+    end
+    derived = copy(raw)
+    if pop!(derived, "must_run") === true
+        derived["commitment_mode"] = "MUST_RUN"
+    end
+    return derived
+end
+
+_market_bid_no_load_cost(cost::AbstractDict) =
+    if _psy5_type_name(cost) == "MarketBidCost" &&
+       isnothing(get(cost, "minimum_energy_offer", nothing))
+        _real_or_nothing(get(cost, "no_load_cost", nothing))
+    else
+        nothing
+    end
+_market_bid_no_load_cost(::Any) = nothing
+
+_real_or_nothing(value::Real) = Float64(value)
+_real_or_nothing(::Any) = nothing
+
+_min_of(limits::AbstractDict) = _real_or_nothing(get(limits, "min", nothing))
+_min_of(::Any) = nothing
+
+"""
+PSY5's `MarketBidCost.no_load_cost` (\$/h) is PSY6's `minimum_energy_offer` (\$/MWh at the
+unit's minimum power), by the conversion the schema documents: `no_load_cost / P_min`. P_min
+is the owning device's `active_power_limits.min`, in MW. With no positive P_min the cost is
+left for the copy to report and keep in `ext`.
+"""
+function _derive_minimum_energy_offer(raw::AbstractDict, ctx::TranslationContext)
+    cost = get(raw, "operation_cost", nothing)
+    no_load = _market_bid_no_load_cost(cost)
+    min_pu = _min_of(get(raw, "active_power_limits", nothing))
+    if isnothing(no_load) || isnothing(min_pu) || min_pu <= 0
+        return raw
+    end
+    p_min = min_pu * base_power_for(raw, ctx.system_base)
+    offer = Dict{String, Any}(cost)
+    delete!(offer, "no_load_cost")
+    offer["minimum_energy_offer"] = _promote_market_bid_cost_scalar(no_load / p_min)
+    derived = copy(raw)
+    derived["operation_cost"] = offer
+    return derived
+end
+
 function _rename_fields(raw::AbstractDict)
     type_name = component_type(raw)
     renamed = raw
@@ -105,7 +166,7 @@ function direct_translate(
     if :power_units in fieldnames(T)
         extra[:power_units] = "COMPONENT_BASE"
     end
-    renamed = _rename_fields(raw)
+    renamed = _derive_fields(T, _rename_fields(raw), ctx)
     kwargs = build_kwargs(
         T,
         renamed,
@@ -250,18 +311,120 @@ function _with_rating_from_limits(raw::AbstractDict)
     return rated
 end
 
-for name in (:TwoTerminalGenericHVDCLine, :TwoTerminalLCCLine)
-    @eval function translate(
-        ::Val{$(QuoteNode(name))},
-        raw::AbstractDict,
-        ctx::TranslationContext,
+function translate(
+    ::Val{:TwoTerminalGenericHVDCLine},
+    raw::AbstractDict,
+    ctx::TranslationContext,
+)
+    rated = _with_rating_from_limits(raw)
+    return direct_translate(
+        openapi_type(:TwoTerminalGenericHVDCLine),
+        _wrap_loss_curves(rated),
+        ctx,
     )
-        rated = _with_rating_from_limits(raw)
-        return direct_translate($(openapi_type(name)), _wrap_loss_curves(rated), ctx)
-    end
 end
 
-for name in (:TwoTerminalVSCLine, :InterconnectingConverter)
+"""
+PSY5's LCC `power_mode` flag and single `transfer_setpoint` are PSY6's `control_mode` and one
+of two setpoints: `power_mode = true` is `POWER` with `power_transfer_setpoint` (MW), `false`
+is `CURRENT` with `current_transfer_setpoint` (A).
+"""
+function _lcc_control(raw::AbstractDict)
+    mode = get(raw, "power_mode", nothing)
+    if isnothing(mode)
+        return raw
+    end
+    derived = copy(raw)
+    delete!(derived, "power_mode")
+    setpoint = pop!(derived, "transfer_setpoint", nothing)
+    derived["control_mode"] = mode ? "POWER" : "CURRENT"
+    derived[mode ? "power_transfer_setpoint" : "current_transfer_setpoint"] = setpoint
+    return derived
+end
+
+function translate(::Val{:TwoTerminalLCCLine}, raw::AbstractDict, ctx::TranslationContext)
+    derived = _lcc_control(_with_rating_from_limits(raw))
+    return direct_translate(
+        openapi_type(:TwoTerminalLCCLine),
+        _wrap_loss_curves(derived),
+        ctx,
+    )
+end
+
+"""
+PSY5's VSC `dc_setpoint_*` and `ac_setpoint_*` each hold whichever quantity the converter's
+control mode regulates; PSY6 has one field per quantity, selected by the same mode.
+"""
+const VSC_SETPOINT_FIELDS = (
+    (
+        "dc_setpoint",
+        "dc_control",
+        Dict(
+            "DC_POWER" => "dc_power_setpoint",
+            "DC_VOLTAGE" => "dc_voltage_setpoint",
+            "DC_VOLTAGE_DROOP" => "dc_voltage_setpoint",
+        ),
+    ),
+    (
+        "ac_setpoint",
+        "ac_control",
+        Dict(
+            "AC_VOLTAGE" => "ac_voltage_setpoint",
+            "AC_REACTIVE_POWER" => "power_factor_setpoint",
+        ),
+    ),
+)
+
+function _vsc_setpoints(raw::AbstractDict)
+    derived = copy(raw)
+    # PSY5 (PSS/E) spells "regulates its own terminal bus" as remote bus 0; PSY6 as no remote
+    # bus, and rejects 0 as a bus number.
+    for side in ("from", "to")
+        if get(derived, "remote_bus_control_$side", nothing) == 0
+            delete!(derived, "remote_bus_control_$side")
+        end
+    end
+    for side in ("from", "to"), (setpoint, control, targets) in VSC_SETPOINT_FIELDS
+        key = "$(setpoint)_$side"
+        target = get(targets, string(get(raw, "$(control)_$side", "")), nothing)
+        if haskey(derived, key) && !isnothing(target)
+            derived["$(target)_$side"] = pop!(derived, key)
+        end
+    end
+    return derived
+end
+
+"""
+PSY6 interprets a kV `ac_voltage_setpoint_*` against that side's `rated_ac_voltage_*` ("0.0
+means unspecified"), which PSY5 does not record. The setpoint is converted on the AC bus's
+base voltage (`ArcEndVoltagePU`), so that base is recorded as the rated voltage.
+"""
+function _vsc_rated_ac_voltages(raw::AbstractDict, ctx::TranslationContext)
+    derived = raw
+    for (end_index, side) in ((1, "from"), (2, "to"))
+        if !haskey(raw, "ac_voltage_setpoint_$side") ||
+           haskey(raw, "rated_ac_voltage_$side")
+            continue
+        end
+        kv = arc_end_voltage(component_units(raw, ctx), end_index)
+        if !isnothing(kv)
+            derived = derived === raw ? copy(raw) : derived
+            derived["rated_ac_voltage_$side"] = kv
+        end
+    end
+    return derived
+end
+
+function translate(::Val{:TwoTerminalVSCLine}, raw::AbstractDict, ctx::TranslationContext)
+    derived = _vsc_rated_ac_voltages(_vsc_setpoints(raw), ctx)
+    return direct_translate(
+        openapi_type(:TwoTerminalVSCLine),
+        _wrap_loss_curves(derived),
+        ctx,
+    )
+end
+
+for name in (:InterconnectingConverter,)
     @eval function translate(
         ::Val{$(QuoteNode(name))},
         raw::AbstractDict,

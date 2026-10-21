@@ -77,7 +77,8 @@ type_mapping(psy5_type::AbstractString) =
 
 """
 A component field whose name or value form changed in PSY6. On the PSY6 record, `psy6_field`
-is renamed to `psy5_field` and its value passed through `to_psy5`, which gives the value PSY5
+is renamed to `psy5_field` and its value passed through `to_psy5(value, system)` (`system`
+is the snapshot's system header, for the base power), which gives the value PSY5
 would have held. The values are then compared as usual, so a value with no PSY5 counterpart,
 or the wrong one, still fails. For each `psy6_field`, the first rule whose `psy5_type` glob
 matches applies.
@@ -95,7 +96,7 @@ through unchanged and so fails the comparison.
 """
 function value_map(pairs::Pair...)
     table = Dict{Any, Any}(pairs...)
-    return v -> get(table, v, v)
+    return (v, _...) -> get(table, v, v)
 end
 
 """
@@ -103,7 +104,7 @@ PSY6's `HydroReservoir.head_to_volume_factor` is the `LinearFunctionData` PSY5 w
 `LinearCurve`. Rewrapping it compares the function data itself, and PSY5's `input_at_zero`
 against `nothing`, since PSY6 has nowhere to keep it.
 """
-function as_linear_curve(v::AbstractDict)
+function as_linear_curve(v::AbstractDict, _...)
     if get(v, "__type__", nothing) != "LinearFunctionData"
         return v
     end
@@ -113,14 +114,14 @@ function as_linear_curve(v::AbstractDict)
         "input_at_zero" => nothing,
     )
 end
-as_linear_curve(v) = v
+as_linear_curve(v, _...) = v
 
 """
 PSY6's `operational_flow_limit` is a min/max pair per direction where PSY5's `flow_limits` held
 one maximum per direction. With both minimums zero it is PSY5's `(from_to, to_from)`; a nonzero
 minimum has no PSY5 counterpart and is left as is, so it fails.
 """
-function as_flow_limits(v::AbstractDict)
+function as_flow_limits(v::AbstractDict, _...)
     from_to = get(v, "from_to", nothing)
     to_from = get(v, "to_from", nothing)
     if isnothing(from_to) || isnothing(to_from) ||
@@ -129,7 +130,33 @@ function as_flow_limits(v::AbstractDict)
     end
     return Dict{String, Any}("from_to" => from_to["max"], "to_from" => to_from["max"])
 end
-as_flow_limits(v) = v
+as_flow_limits(v, _...) = v
+
+"""A system-base per-unit power read back from PSY6, in the MW PSY5 stored."""
+per_unit_to_mw(v::Real, system::AbstractDict) = v * system["base_power"]
+per_unit_to_mw(v, _...) = v
+
+"""The value unchanged; for a rule that only renames."""
+same(v, _...) = v
+
+"""
+A phase-shift impedance correction curve read back in PSY6's radians, in the degrees PSY5
+stored (PSS/E's convention).
+"""
+function radians_to_degrees_x(curve::AbstractDict, _...)
+    points = get(curve, "points", nothing)
+    if !(points isa AbstractVector)
+        return curve
+    end
+    converted = Dict{String, Any}(curve)
+    converted["points"] =
+        [
+            merge(Dict{String, Any}(p), Dict{String, Any}("x" => p["x"] * 180 / pi)) for
+            p in points
+        ]
+    return converted
+end
+radians_to_degrees_x(curve, _...) = curve
 
 const FIELD_RULES = FieldRule[
     # `status` became an `OperationalStates` enum. PSY5's pump status distinguished GEN from
@@ -156,6 +183,58 @@ const FIELD_RULES = FieldRule[
         as_linear_curve,
     ),
     FieldRule("MonitoredLine", "operational_flow_limit", "flow_limits", as_flow_limits),
+    # LCC: PSY5's `power_mode` flag and one `transfer_setpoint` (MW or A) became
+    # `control_mode` and one setpoint per mode; the MW setpoint is per unit in PSY6.
+    FieldRule(
+        "TwoTerminalLCCLine",
+        "control_mode",
+        "power_mode",
+        value_map("POWER" => true, "CURRENT" => false),
+    ),
+    FieldRule(
+        "TwoTerminalLCCLine",
+        "power_transfer_setpoint",
+        "transfer_setpoint",
+        per_unit_to_mw,
+    ),
+    FieldRule("TwoTerminalLCCLine", "current_transfer_setpoint", "transfer_setpoint", same),
+    # VSC: each converter's single DC and AC setpoint became one field per controlled
+    # quantity, selected by the control mode; all read back per unit, as PSY5 stored them.
+    FieldRule("TwoTerminalVSCLine", "dc_power_setpoint_from", "dc_setpoint_from", same),
+    FieldRule("TwoTerminalVSCLine", "dc_voltage_setpoint_from", "dc_setpoint_from", same),
+    FieldRule("TwoTerminalVSCLine", "dc_power_setpoint_to", "dc_setpoint_to", same),
+    FieldRule("TwoTerminalVSCLine", "dc_voltage_setpoint_to", "dc_setpoint_to", same),
+    FieldRule("TwoTerminalVSCLine", "ac_voltage_setpoint_from", "ac_setpoint_from", same),
+    FieldRule("TwoTerminalVSCLine", "power_factor_setpoint_from", "ac_setpoint_from", same),
+    FieldRule("TwoTerminalVSCLine", "ac_voltage_setpoint_to", "ac_setpoint_to", same),
+    FieldRule("TwoTerminalVSCLine", "power_factor_setpoint_to", "ac_setpoint_to", same),
+    # "Regulates its own bus": remote bus 0 in PSY5, none in PSY6.
+    FieldRule(
+        "TwoTerminalVSCLine",
+        "remote_bus_control_from",
+        "remote_bus_control_from",
+        value_map(nothing => 0),
+    ),
+    FieldRule(
+        "TwoTerminalVSCLine",
+        "remote_bus_control_to",
+        "remote_bus_control_to",
+        value_map(nothing => 0),
+    ),
+    # ImpedanceCorrectionData: one curve, interpreted by `transformer_control_mode`, became one
+    # field per mode; a phase-shift curve's x axis went from degrees to radians.
+    FieldRule(
+        "ImpedanceCorrectionData",
+        "tap_ratio_correction_curve",
+        "impedance_correction_curve",
+        same,
+    ),
+    FieldRule(
+        "ImpedanceCorrectionData",
+        "phase_angle_correction_curve",
+        "impedance_correction_curve",
+        radians_to_degrees_x,
+    ),
 ]
 
 """
@@ -234,6 +313,14 @@ const EXPECTED = Expected[
         "*",
         "dynamic_injector",
         "dynamic model dropped (no 0.2 schema home); static device kept, link reported",
+    ),
+    # An attribute's monitored components are a set of UUIDs in PSY5 and of integer ids in PSY6:
+    # the identity change, which the snapshot cannot follow into a set.
+    Expected(
+        "value",
+        "SupplementalAttribute",
+        "*monitored_components.__type__",
+        "component identity moves from UUIDs to integer ids",
     ),
     # Transformers
     Expected(

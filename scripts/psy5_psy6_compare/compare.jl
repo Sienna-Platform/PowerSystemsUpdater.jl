@@ -179,7 +179,11 @@ align_nested(x) = x
 """
 Apply `FIELD_RULES` for `psy5_type` to an already-renamed PSY6 record.
 """
-function apply_field_rules(record::Dict{String, Any}, psy5_type::AbstractString)
+function apply_field_rules(
+    record::Dict{String, Any},
+    psy5_type::AbstractString,
+    system::AbstractDict,
+)
     applied = Set{String}()
     for rule in FIELD_RULES
         field = rule.psy6_field
@@ -188,8 +192,12 @@ function apply_field_rules(record::Dict{String, Any}, psy5_type::AbstractString)
             continue
         end
         push!(applied, field)
-        value = pop!(record, field)
-        record[rule.psy5_field] = rule.to_psy5(value)
+        value = rule.to_psy5(pop!(record, field), system)
+        # Several PSY6 fields can fold into one PSY5 field (a setpoint per mode); only the one
+        # the mode selected holds a value, so an empty one never overwrites it.
+        if !isnothing(value) || !haskey(record, rule.psy5_field)
+            record[rule.psy5_field] = value
+        end
     end
     return record
 end
@@ -199,7 +207,12 @@ The PSY6 record reshaped to line up with the PSY5 one: nested structs named in
 `mapping.flatten` are lifted to the top level, fields are renamed to their PSY5 names, then
 `FIELD_RULES` and `NESTED_ALIGNMENTS` translate the forms PSY6 changed.
 """
-function align(record::AbstractDict, mapping::TypeMapping, psy5_type::AbstractString)
+function align(
+    record::AbstractDict,
+    mapping::TypeMapping,
+    psy5_type::AbstractString,
+    system::AbstractDict,
+)
     lifted = Dict{String, Any}()
     for (key, value) in record
         if key in mapping.flatten
@@ -213,7 +226,7 @@ function align(record::AbstractDict, mapping::TypeMapping, psy5_type::AbstractSt
         end
     end
     renamed = Dict{String, Any}(get(mapping.renames, k, k) => v for (k, v) in lifted)
-    return align_nested(apply_field_rules(renamed, psy5_type))
+    return align_nested(apply_field_rules(renamed, psy5_type, system))
 end
 
 """
@@ -275,7 +288,7 @@ function psy6_matching(psy6::AbstractDict, pattern::AbstractString)
     return found
 end
 
-function diff_components!(out, psy5::AbstractDict, psy6::AbstractDict)
+function diff_components!(out, psy5::AbstractDict, psy6::AbstractDict, system::AbstractDict)
     matched = Set{Tuple{String, String}}()
     for psy5_type in sort!(collect(keys(psy5)))
         mapping = type_mapping(psy5_type)
@@ -294,7 +307,7 @@ function diff_components!(out, psy5::AbstractDict, psy6::AbstractDict)
             end
             psy6_type, record = candidates[name]
             push!(matched, (psy6_type, name))
-            aligned, moved = split_moved(align(record, mapping, psy5_type))
+            aligned, moved = split_moved(align(record, mapping, psy5_type, system))
             diff_records!(
                 out,
                 Site(psy5_type, psy6_type, name),
@@ -334,9 +347,10 @@ function diff_keyed!(
     label,
     noun;
     diff_pair = diff_values!,
+    keyer = keyed,
 )
-    a = keyed(psy5_records, key)
-    b = keyed(psy6_records, key)
+    a = keyer(psy5_records, key)
+    b = keyer(psy6_records, key)
     for k in sort!(collect(union(keys(a), keys(b))); by = string)
         if !haskey(b, k)
             record!(out, site, "missing_$noun", label(k), a[k], nothing)
@@ -455,8 +469,17 @@ function diff_attribute!(
     a::AbstractDict,
     b::AbstractDict,
     files::ValueFiles,
+    system::AbstractDict,
 )
-    diff_values!(out, site, path, without(a, "time_series"), without(b, "time_series"))
+    aligned =
+        apply_field_rules(Dict{String, Any}(b), string(get(a, "__type__", "")), system)
+    diff_values!(
+        out,
+        site,
+        path,
+        without(a, "time_series"),
+        without(aligned, "time_series"),
+    )
     diff_keyed!(
         out,
         Site(site.psy5_type, site.psy6_type, path),
@@ -469,8 +492,44 @@ function diff_attribute!(
     )
 end
 
-diff_attribute!(out, site::Site, path, a, b, ::ValueFiles) =
+diff_attribute!(out, site::Site, path, a, b, ::ValueFiles, ::AbstractDict) =
     diff_values!(out, site, path, a, b)
+
+"""
+A PSY5 component reference in PSY6 terms: the PSY6 type label `TYPE_MAPPINGS` sends its type
+to, found among the PSY6 snapshot's components by name. Unchanged when nothing matches, so the
+owner still reads as missing.
+"""
+function psy6_ref(ref::AbstractDict, psy6_components::AbstractDict)
+    candidates = psy6_matching(psy6_components, type_mapping(ref["__ref__"]).psy6_type)
+    match = get(candidates, ref["name"], nothing)
+    if isnothing(match)
+        return ref
+    end
+    return Dict{String, Any}("__ref__" => first(match), "name" => ref["name"])
+end
+
+_psy6_owners(owners::AbstractVector, psy6_components::AbstractDict) = sort!(
+    Any[psy6_ref(r, psy6_components) for r in owners];
+    by = r -> (r["__ref__"], r["name"]),
+)
+_psy6_owners(owners, ::AbstractDict) = owners
+
+"""
+PSY5 supplemental attributes with their owners named in PSY6 terms, so each matches its PSY6
+counterpart by owner (`attribute_key`) even where the owner's type was renamed.
+"""
+function with_psy6_owners(records::AbstractVector, psy6_components::AbstractDict)
+    return Any[
+        merge(
+            Dict{String, Any}(r),
+            Dict{String, Any}(
+                "components" => _psy6_owners(get(r, "components", Any[]), psy6_components),
+            ),
+        ) for r in records
+    ]
+end
+with_psy6_owners(records, ::AbstractDict) = records
 
 function diff_time_series!(out, psy5::AbstractDict, psy6::AbstractDict, files::ValueFiles)
     seen = Set{Tuple{String, String}}()
@@ -511,7 +570,33 @@ function diff_time_series!(out, psy5::AbstractDict, psy6::AbstractDict, files::V
 end
 
 attribute_key(r::AbstractDict) = (r["__type__"], JSON.json(r["components"]))
-attribute_label(key) = "$(key[1]) on $(key[2])"
+attribute_label(key) = "$(key[1]) on $(key[2])" * (key[3] > 1 ? " #$(key[3])" : "")
+
+"""
+The fields that tell apart attributes of one type on one owner: a three-winding transformer
+carries an impedance correction table per winding.
+"""
+attribute_order(r::AbstractDict) =
+    (string(get(r, "transformer_winding", "")), string(get(r, "table_number", "")))
+
+"""
+Attributes keyed by type, owners and their occurrence among those sharing both, in
+`attribute_order`, so several attributes of one type on one owner pair up one to one.
+"""
+function keyed_attributes(records::AbstractVector, key)
+    groups = Dict{Any, Vector{Any}}()
+    for r in records
+        push!(get!(Vector{Any}, groups, key(r)), r)
+    end
+    out = Dict{Any, Any}()
+    for (k, group) in groups
+        for (i, r) in enumerate(sort(group; by = attribute_order))
+            out[(k..., i)] = r
+        end
+    end
+    return out
+end
+keyed_attributes(records::AbstractDict, key) = Dict(("__error__", "", 1) => records)
 
 function diff_system!(out, psy5::AbstractDict, psy6::AbstractDict)
     found = Difference[]
@@ -538,18 +623,19 @@ end
 function compare_snapshots(psy5::AbstractDict, psy6::AbstractDict, files::ValueFiles)
     out = Difference[]
     diff_system!(out, psy5["system"], psy6["system"])
-    diff_components!(out, psy5["components"], psy6["components"])
+    diff_components!(out, psy5["components"], psy6["components"], psy6["system"])
     diff_time_series!(out, psy5["time_series"], psy6["time_series"], files)
     diff_keyed!(
         out,
         Site("SupplementalAttribute", "SupplementalAttribute", ""),
-        psy5["supplemental_attributes"],
+        with_psy6_owners(psy5["supplemental_attributes"], psy6["components"]),
         psy6["supplemental_attributes"],
         attribute_key,
         attribute_label,
         "supplemental_attribute";
+        keyer = keyed_attributes,
         diff_pair = (out, site, path, a, b) ->
-            diff_attribute!(out, site, path, a, b, files),
+            diff_attribute!(out, site, path, a, b, files, psy6["system"]),
     )
     return out
 end

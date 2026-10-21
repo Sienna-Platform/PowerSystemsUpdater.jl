@@ -126,6 +126,40 @@ function _carry_ext!(doc::PCOM.SystemDocument, raw::AbstractDict, ctx::Translati
 end
 
 """
+PSY5's `ImpedanceCorrectionData` holds one `impedance_correction_curve`, interpreted by
+`transformer_control_mode`; PSY6 holds the same curve in one of two fields named for that
+mode. A phase-shift curve's x axis is PSS/E's degrees in PSY5 and radians in PSY6.
+"""
+function _impedance_correction_curve(raw::AbstractDict)
+    curve = get(raw, "impedance_correction_curve", nothing)
+    mode = get(raw, "transformer_control_mode", nothing)
+    if isnothing(curve) || !(mode in ("TAP_RATIO", "PHASE_SHIFT_ANGLE"))
+        return raw
+    end
+    derived = copy(raw)
+    delete!(derived, "impedance_correction_curve")
+    if mode == "TAP_RATIO"
+        derived["tap_ratio_correction_curve"] = curve
+    else
+        radians = Dict{String, Any}(curve)
+        radians["points"] = [
+            merge(Dict{String, Any}(p), Dict{String, Any}("x" => p["x"] * pi / 180))
+            for
+            p in curve["points"]
+        ]
+        derived["phase_angle_correction_curve"] = radians
+    end
+    return derived
+end
+
+"""Supplemental attribute fields mapped onto differently named PSY6 fields, by attribute type."""
+const ATTRIBUTE_DERIVATIONS =
+    Dict{String, Function}("ImpedanceCorrectionData" => _impedance_correction_curve)
+
+_derive_attribute_fields(type_name::AbstractString, raw::AbstractDict) =
+    get(ATTRIBUTE_DERIVATIONS, type_name, identity)(raw)
+
+"""
 Push only the association row for an attribute already added under a different owner. IS
 supports one attribute shared by many components, and `assign_id!` is idempotent, so a naive
 repeat would push the same model twice under one id and `validate_document` would reject it.
@@ -243,7 +277,7 @@ function _add_supplemental_attributes!(
         model_type = ICOM.model_type(type_name)
         kwargs = build_kwargs(
             model_type,
-            raw_attribute,
+            _derive_attribute_fields(type_name, raw_attribute),
             ctx.ledger,
             ctx.report;
             extra = Dict{Symbol, Any}(:id => attribute_id),
