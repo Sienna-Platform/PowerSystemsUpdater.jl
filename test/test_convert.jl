@@ -609,3 +609,19 @@ end
 
     PSU.PCOM.validate_document(doc)
 end
+
+@testset "build_document: shared attribute rows use the PSY6 type names" begin
+    # PSY5's `Transformer3W` is PSY6's `ThreeWindingTransformer`; every owner of the shared
+    # impedance correction table must be named the PSY6 way, not only the first.
+    path = joinpath(@__DIR__, "..", "data", "PSSEParsingTestSystems",
+        "psse_modified_14bus_nominal_icd.json")
+    if require_corpus_file(path)
+        doc, _ = PSU.build_document(PSU.read_psy5(path), PSU.ConversionReport())
+        rows = doc.supplemental_attribute_associations
+        @test !isempty(rows)
+        @test all(a -> a.component_type == doc.component_types_by_id[a.component_id], rows)
+        @test !any(a -> a.component_type == "Transformer3W", rows)
+        @test any(a -> a.component_type == "ThreeWindingTransformer", rows)
+        PSU.PCOM.validate_document(doc)
+    end
+end

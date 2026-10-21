@@ -163,21 +163,31 @@ _derive_attribute_fields(type_name::AbstractString, raw::AbstractDict) =
 Push only the association row for an attribute already added under a different owner. IS
 supports one attribute shared by many components, and `assign_id!` is idempotent, so a naive
 repeat would push the same model twice under one id and `validate_document` would reject it.
+
+Both type names are the PSY6 ones, taken from the document as `add_supplemental_attribute!`
+does for the first owner: the owner's from the component the document holds under `owner_id`
+(PSY5's `Transformer3W` is `ThreeWindingTransformer`), the attribute's from its model type.
 """
 function _add_supplemental_association!(
     doc::PCOM.SystemDocument,
     attribute_id::Int,
     owner_id::Int,
-    owner_type_name::AbstractString,
-    attribute_type_name::AbstractString,
+    attribute_model_type::Type,
 )
+    if !haskey(doc.component_types_by_id, owner_id)
+        throw(
+            ArgumentError(
+                "supplemental attribute $attribute_id: owner id $owner_id is not in the document",
+            ),
+        )
+    end
     push!(
         doc.supplemental_attribute_associations,
         ICOM.SupplementalAttributeAssociation(;
             component_id = owner_id,
-            component_type = String(owner_type_name),
+            component_type = doc.component_types_by_id[owner_id],
             attribute_id = attribute_id,
-            attribute_type = String(attribute_type_name),
+            attribute_type = string(nameof(attribute_model_type)),
         ),
     )
     return nothing
@@ -243,9 +253,6 @@ function _add_supplemental_attributes!(
     for attribute in supplemental_attributes(case)
         by_uuid[attribute["internal"]["uuid"]["value"]] = attribute
     end
-    owners_by_uuid = Dict{String, Any}(
-        component_uuid(raw) => raw for raw in all_components(case)
-    )
     added = Set{String}()
     for association in supplemental_associations(case)
         attribute_uuid = association["attribute_uuid"]
@@ -265,16 +272,13 @@ function _add_supplemental_attributes!(
             continue
         end
         owner_id = lookup_id(ctx.ledger, owner_uuid)
-        owner_type_name = component_type(owners_by_uuid[owner_uuid])
         attribute_id = assign_id!(ctx.ledger, attribute_uuid)
+        model_type = ICOM.model_type(type_name)
         if attribute_uuid in added
-            _add_supplemental_association!(
-                doc, attribute_id, owner_id, owner_type_name, type_name,
-            )
+            _add_supplemental_association!(doc, attribute_id, owner_id, model_type)
             continue
         end
         push!(added, attribute_uuid)
-        model_type = ICOM.model_type(type_name)
         kwargs = build_kwargs(
             model_type,
             _derive_attribute_fields(type_name, raw_attribute),
