@@ -214,6 +214,27 @@ struct Expected
 end
 
 const EXPECTED = Expected[
+    # Dynamic models: the 0.2 schema has none. The updater skips them, keeps the static
+    # device, drops its link, and reports both (UNMAPPED TYPES, DYNAMIC MODELS DROPPED).
+    # Not `DynamicBranch`: it embeds a whole static `Line`, so dropping it loses the line.
+    Expected(
+        "missing_component",
+        "DynamicGenerator*",
+        "",
+        "dynamic models are not in the 0.2 schema; reported as dropped",
+    ),
+    Expected(
+        "missing_component",
+        "DynamicInverter*",
+        "",
+        "dynamic models are not in the 0.2 schema; reported as dropped",
+    ),
+    Expected(
+        "value",
+        "*",
+        "dynamic_injector",
+        "dynamic model dropped (no 0.2 schema home); static device kept, link reported",
+    ),
     # Transformers
     Expected(
         "missing_field",

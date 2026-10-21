@@ -416,6 +416,54 @@ end
     ])
 end
 
+@testset "build_document: a dynamic model is dropped, its static device kept" begin
+    _dynamic(uuid) = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "DynamicGenerator"),
+        "internal" => Dict("uuid" => Dict("value" => uuid)),
+        "name" => "gen-dyn",
+    )
+    _shunt(uuid, name, dynamic) = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "FixedAdmittance"),
+        "internal" => Dict("uuid" => Dict("value" => uuid)),
+        "name" => name, "available" => true,
+        "bus" => Dict("value" => "uuid-bus"),
+        "Y" => Dict("real" => 0.0, "imag" => 0.1),
+        "dynamic_injector" => Dict("value" => dynamic),
+    )
+    raw = Dict{String, Any}(
+        "data" => Dict{String, Any}(
+            "components" => Any[
+                Dict{String, Any}(
+                    "__metadata__" => Dict("type" => "ACBus"),
+                    "internal" => Dict("uuid" => Dict("value" => "uuid-bus")),
+                    "name" => "bus1", "number" => 1, "available" => true,
+                    "bustype" => "REF", "base_voltage" => 230.0,
+                ),
+                # The outcome must not depend on whether the dynamic model comes first.
+                _dynamic("uuid-dyn-a"),
+                _shunt("uuid-sh-a", "after", "uuid-dyn-a"),
+                _shunt("uuid-sh-b", "before", "uuid-dyn-b"),
+                _dynamic("uuid-dyn-b"),
+            ],
+        ),
+        "units_settings" => Dict("base_value" => 100.0),
+        "frequency" => 60.0,
+        "metadata" => Dict{String, Any}("name" => nothing, "description" => nothing),
+        "data_format_version" => "5.0.0",
+    )
+    report = PSU.ConversionReport()
+    doc, ledger = PSU.build_document(PSU.Psy5Case(raw, "test-dynamic", nothing), report)
+
+    shunts = doc.components["FixedAdmittance"]
+    @test sort([s.name for s in shunts]) == ["after", "before"]
+    @test all(s -> s.dynamic_injector isa PSU.OpenAPI.Runtime.Absent, shunts)
+    @test report.dropped_dynamic_models["FixedAdmittance"] == 2
+    @test report.unmapped_types["DynamicGenerator"] == 2
+    @test isempty(report.cascaded_skips)
+    @test occursin("DYNAMIC MODELS DROPPED", sprint(show, MIME("text/plain"), report))
+    PSU.PCOM.validate_document(doc)
+end
+
 @testset "build_document: a service association to a skipped entity is dropped" begin
     raw_data = Dict{String, Any}(
         "components" => Any[

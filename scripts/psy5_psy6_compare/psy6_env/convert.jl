@@ -22,6 +22,7 @@ function report_counts(report::ConversionReport)
             Dict("$type.$field" => n for ((type, field), n) in report.unmapped_fields),
         "unverified_units" =>
             Dict("$type.$field" => n for ((type, field), n) in report.unverified_units),
+        "dropped_dynamic_models" => report.dropped_dynamic_models,
     )
 end
 

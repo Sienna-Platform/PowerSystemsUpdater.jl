@@ -8,6 +8,14 @@ serialization scaffolding.
 """
 const PSY5_INTERNAL_FIELDS = Set(["__metadata__", "internal", "services", "ext"])
 
+"""
+PSY5 fields linking a static device to its dynamic model (`DynamicGenerator`,
+`DynamicInverter`, ...). The 0.2 schema has no dynamic models, so the updater skips them; the
+link is dropped and the static device kept, rather than the device being skipped with its
+model. Each dropped link is recorded on the report (`record_dropped_dynamic_model!`).
+"""
+const DYNAMIC_REFERENCE_FIELDS = Set(["dynamic_injector"])
+
 struct SkippedReferenceSignal <: Exception
     msg::String
 end
@@ -343,11 +351,13 @@ end
 """
 True when any reference on `raw` points at a component that was skipped. Such a component
 must itself be skipped: `validate_document` does not check ordinary component references,
-so a dangling integer would otherwise reach the output.
+so a dangling integer would otherwise reach the output. A link to a dynamic model
+(`DYNAMIC_REFERENCE_FIELDS`) is not such a reference: it is never written, so the device
+does not depend on its model.
 """
 function references_skipped(raw::AbstractDict, ledger::Ledger)
     for (key, value) in raw
-        if key in PSY5_INTERNAL_FIELDS
+        if key in PSY5_INTERNAL_FIELDS || key in DYNAMIC_REFERENCE_FIELDS
             continue
         end
         if _points_at_skipped(value, ledger)
@@ -431,6 +441,13 @@ function build_kwargs(
     type_name = component_type(raw)
     for (key, value) in raw
         if key in PSY5_INTERNAL_FIELDS
+            continue
+        end
+        if key in DYNAMIC_REFERENCE_FIELDS
+            # The dynamic model is skipped (no 0.2 schema home); never write a link to it.
+            if !isnothing(value)
+                record_dropped_dynamic_model!(report, type_name)
+            end
             continue
         end
         symbol = Symbol(key)

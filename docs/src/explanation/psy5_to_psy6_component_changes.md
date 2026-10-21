@@ -225,6 +225,10 @@ Where `ext` cannot hold it, the data is still lost, and only reported:
 
   - **Skipped components** (a PSY5 type with no PSY6 counterpart, and the components that
     reference one) have no PSY6 component to carry an `ext`.
+  - **Dynamic models** (`DynamicGenerator`, `DynamicInverter`, ...) have no home in the 0.2
+    schema and are skipped. A static device linked to one through `dynamic_injector` is kept
+    without the link, rather than skipped with it, and is counted under DYNAMIC MODELS
+    DROPPED in the `ConversionReport`.
   - **`Arc`, `TransmissionInterface` and `TransformerCircuit`** have no `ext` in PSY6. A
     two- or three-winding transformer's dropped fields go on the transformer, not its circuits.
 

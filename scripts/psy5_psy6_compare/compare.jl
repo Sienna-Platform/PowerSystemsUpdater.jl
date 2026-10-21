@@ -615,6 +615,10 @@ function write_conversion_section(io, c::AbstractDict)
             "Unverified units (PSY5 value not convertible to the PSY6 unit)",
             get(c, "unverified_units", Dict{String, Any}()),
         ),
+        (
+            "Dynamic models dropped (static device kept)",
+            get(c, "dropped_dynamic_models", Dict{String, Any}()),
+        ),
     )
     if all(isempty(counts) for (_, counts) in sections)
         println(io, "No findings.\n")
