@@ -283,14 +283,25 @@ const NESTED_ALIGNMENTS = (curve_units_as_field, variable_cost_as_variable)
 
 """
 An intended difference. `kind` is one of the `Difference` kinds in `compare.jl`; `psy5_type`
-and `path` are glob patterns; `reason` is shown in the report.
+and `path` are glob patterns; `reason` is shown in the report. `when(psy5, psy6)` narrows the
+match to particular values (default: any).
 """
-struct Expected
+struct Expected{F <: Function}
     kind::String
     psy5_type::String
     path::String
     reason::String
+    when::F
 end
+
+Expected(kind, psy5_type, path, reason) =
+    Expected(kind, psy5_type, path, reason, (_, _) -> true)
+
+"""
+A non-physical PSY5 value (≤ 0) the updater left unset and reported (INVALID VALUES DROPPED).
+"""
+dropped_non_physical(psy5::Real, psy6) = psy5 <= 0 && isnothing(psy6)
+dropped_non_physical(_, _) = false
 
 const EXPECTED = Expected[
     # Dynamic models: the 0.2 schema has none. The updater skips them, keeps the static
@@ -358,6 +369,13 @@ const EXPECTED = Expected[
         "Transformer3W",
         "rating",
         "Transformer3W rating is per-circuit in PSY6",
+    ),
+    Expected(
+        "value",
+        "*Transformer*",
+        "base_voltage_*",
+        "non-physical winding base voltage (≤ 0) left unset; reported as dropped",
+        dropped_non_physical,
     ),
 ]
 

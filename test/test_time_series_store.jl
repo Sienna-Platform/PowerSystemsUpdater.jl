@@ -232,6 +232,39 @@ end
         end
     end
 
+    # The catalog holds the document's supplemental attribute associations too. PSY6 opens a
+    # catalog in place under `time_series_read_only` and *writes* any association it lacks, so
+    # a catalog missing them cannot be loaded read-only.
+    outage = joinpath(
+        @__DIR__,
+        "..",
+        "data",
+        "SPISystems",
+        "RTS_GMLC_Hourly with Static Outage Data.json",
+    )
+    if require_corpus_file(outage)
+        mktempdir() do tmp
+            result = PSU.convert_system(outage, tmp; force = true)
+            declared = Set(
+                (a.component_id, a.attribute_id) for
+                a in result.document.supplemental_attribute_associations
+            )
+            @test !isempty(declared)
+            catalog = InfraStore.open_store(
+                joinpath(tmp, PSU.TIME_SERIES_FILENAME); read_only = true,
+            )
+            try
+                stored = Set(
+                    (a.component_id, a.attribute_id) for
+                    a in InfraStore.list_supplemental_attribute_associations(catalog)
+                )
+                @test stored == declared
+            finally
+                InfraStore.close!(catalog)
+            end
+        end
+    end
+
     # A sidecar whose derived forecasts cover only some of the SingleTimeSeries at a
     # resolution cannot be reproduced: InfraStore derives from every series at a resolution
     # or none. Dropping one static row from the corpus's row set makes the derived set

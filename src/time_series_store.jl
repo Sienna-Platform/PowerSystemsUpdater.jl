@@ -531,6 +531,25 @@ end
 # ── Entry point ─────────────────────────────────────────────────────────────────
 
 """
+The document's supplemental attribute associations as catalog rows.
+
+A sidecar's catalog is authoritative when PSY6 adopts it: the importer attaches a document
+association the catalog already holds and *adds* (writes) any it lacks. Under
+`time_series_read_only` the catalog is opened in place and that write fails, so the catalog
+must already hold every row the document declares, as a PSY6-written store does.
+"""
+_store_supplemental_associations(
+    rows::AbstractVector{ICOM.SupplementalAttributeAssociation},
+) = [
+    InfraStore.SupplementalAttributeAssociation(
+        Int64(row.component_id),
+        String(row.component_type),
+        Int64(row.attribute_id),
+        String(row.attribute_type),
+    ) for row in rows
+]
+
+"""
 Rewrite `case`'s PSY5 sidecar as the InfraStore pair PSY6 reads: `out_dir/time_series.h5`
 holding the content-addressed arrays and `out_dir/time_series.h5.sqlite` holding the
 catalog. Returns the `.h5` path (what the document names) together with the
@@ -546,12 +565,16 @@ must add to the document: they carry the `uri`/`data_hash`/`element_type`/`eleme
 the store itself computed, so they are guaranteed to match what PSY6's importer will find in
 the catalog. Rows whose owner was skipped are left out; their loss is recorded by
 `_record_time_series_skips!`, which walks the same PSY5 rows to build the document.
+
+`supplemental_associations` are the document's supplemental attribute association rows,
+written into the catalog as well (see [`_store_supplemental_associations`](@ref)).
 """
 function convert_time_series(
     case::Psy5Case,
     ledger::Ledger,
     out_dir::AbstractString,
-    report::ConversionReport,
+    report::ConversionReport;
+    supplemental_associations::AbstractVector{ICOM.SupplementalAttributeAssociation} = ICOM.SupplementalAttributeAssociation[],
 )
     destination = joinpath(out_dir, TIME_SERIES_FILENAME)
     rows = [
@@ -576,6 +599,12 @@ function convert_time_series(
         end
         iszero(length(batch)) || InfraStore.add_time_series_bulk!(raw_store, batch)
         _derive_forecasts!(raw_store, rows)
+        if !isempty(supplemental_associations)
+            InfraStore.add_supplemental_attribute_associations!(
+                raw_store,
+                _store_supplemental_associations(supplemental_associations),
+            )
+        end
         InfraStore.flush!(raw_store)
         associations = IS.openapi_time_series_association_rows(IS.Store(raw_store))
     finally

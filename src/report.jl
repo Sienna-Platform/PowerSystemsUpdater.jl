@@ -16,6 +16,10 @@ Base.@kwdef mutable struct ConversionReport
     # Static devices kept without their dynamic model, by static type. The dynamic models
     # themselves are counted under `unmapped_types`.
     dropped_dynamic_models::Dict{String, Int} = Dict{String, Int}()
+    # Fields whose PSY5 value is non-physical (a base voltage of 0), left unset rather than
+    # written; the value is kept in ext.
+    dropped_invalid_values::Dict{Tuple{String, String}, Int} =
+        Dict{Tuple{String, String}, Int}()
     systems::Vector{String} = String[]
 end
 
@@ -45,12 +49,19 @@ record_unverified_unit!(
 record_dropped_dynamic_model!(report::ConversionReport, static_type::AbstractString) =
     _bump!(report.dropped_dynamic_models, String(static_type))
 
+record_dropped_invalid_value!(
+    report::ConversionReport,
+    type_name::AbstractString,
+    field::AbstractString,
+) = _bump!(report.dropped_invalid_values, (String(type_name), String(field)))
+
 function has_findings(report::ConversionReport)
     return !isempty(report.unmapped_types) ||
            !isempty(report.cascaded_skips) ||
            !isempty(report.unmapped_fields) ||
            !isempty(report.unverified_units) ||
-           !isempty(report.dropped_dynamic_models)
+           !isempty(report.dropped_dynamic_models) ||
+           !isempty(report.dropped_invalid_values)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
@@ -76,6 +87,13 @@ function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
         "DYNAMIC MODELS DROPPED (static device kept; its dynamic model has no PSY6 schema " *
         "home and is lost)",
         report.dropped_dynamic_models,
+    )
+    _show_section(
+        io,
+        "INVALID VALUES DROPPED (non-physical PSY5 value left unset; kept in " *
+        "ext[\"psy5_unmapped\"])",
+        report.dropped_invalid_values;
+        label = key -> "$(key[1]).$(key[2])",
     )
     if !has_findings(report)
         println(io, "  no findings")

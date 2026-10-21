@@ -162,3 +162,37 @@ end
     @test kwargs[:requirement] == 0.4
     @test rep.unverified_units[("MysteryGroup", "requirement")] == 1
 end
+
+@testset "non-physical transformer base voltages are left unset and reported" begin
+    @test PSU._non_physical_base("base_voltage_primary", 0.0)
+    @test PSU._non_physical_base("base_voltage_secondary", -1.0)
+    @test !PSU._non_physical_base("base_voltage_primary", 138.0)
+    # A bus's base voltage is written as stored (PSY6's Line check needs one).
+    @test !PSU._non_physical_base("base_voltage", 0.0)
+    @test !PSU._non_physical_base("rating", 0.0)
+
+    ctx, led, rep = _units_ctx()
+    led.owner = "uuid-c"
+    raw = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "TapTransformer"),
+        "base_voltage_primary" => 0.0,
+        "base_voltage_secondary" => 69.0,
+    )
+    kwargs = PSU.build_kwargs(
+        PSU.POOM.TransformerCircuit, raw, led, rep;
+        units = PSU.component_units(raw, ctx),
+    )
+    @test !haskey(kwargs, :base_voltage_primary)
+    @test kwargs[:base_voltage_secondary] == 69.0
+    @test rep.dropped_invalid_values[("TapTransformer", "base_voltage_primary")] == 1
+    @test PSU.unmapped_values(led, "uuid-c")["base_voltage_primary"] == 0.0
+    @test occursin("INVALID VALUES DROPPED", sprint(show, MIME("text/plain"), rep))
+
+    # A zero bus base is no voltage base for unit conversion either.
+    zero_bus = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "ACBus"),
+        "internal" => Dict("uuid" => Dict("value" => "uuid-z")),
+        "base_voltage" => 0.0,
+    )
+    @test isempty(PSU.BusIndex([zero_bus]).base_voltage)
+end

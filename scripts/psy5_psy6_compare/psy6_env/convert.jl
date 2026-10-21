@@ -23,6 +23,9 @@ function report_counts(report::ConversionReport)
         "unverified_units" =>
             Dict("$type.$field" => n for ((type, field), n) in report.unverified_units),
         "dropped_dynamic_models" => report.dropped_dynamic_models,
+        "dropped_invalid_values" => Dict(
+            "$type.$field" => n for ((type, field), n) in report.dropped_invalid_values
+        ),
     )
 end
 

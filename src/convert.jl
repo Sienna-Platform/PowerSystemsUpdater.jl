@@ -326,7 +326,9 @@ end
 
 """
 Convert one PSY5 case into `out_dir/system.json` plus, when the source has time series, the
-`out_dir/time_series.h5` + `out_dir/time_series.h5.sqlite` InfraStore pair.
+`out_dir/time_series.h5` + `out_dir/time_series.h5.sqlite` InfraStore pair. The catalog
+also holds the document's supplemental attribute associations, so PSY6 can adopt it under
+`time_series_read_only` without writing to it.
 
 The document's time series association rows are the ones [`convert_time_series`](@ref)
 reads back from the sidecar it just wrote, not a re-derivation from the PSY5 rows: the
@@ -349,7 +351,10 @@ function convert_system(
     mkpath(out_dir)
     time_series_file = nothing
     if has_time_series(case)
-        time_series_file, associations = convert_time_series(case, ledger, out_dir, report)
+        time_series_file, associations = convert_time_series(
+            case, ledger, out_dir, report;
+            supplemental_associations = doc.supplemental_attribute_associations,
+        )
         for assoc in associations
             PCOM.add_time_series_association!(doc, assoc)
         end

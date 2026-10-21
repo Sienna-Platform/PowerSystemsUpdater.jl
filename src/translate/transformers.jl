@@ -392,6 +392,24 @@ function _record_dropped_three_winding_fields!(raw::AbstractDict, ctx::Translati
     return nothing
 end
 
+"""
+`raw[key]` if it is a usable base voltage; a non-physical one (`_non_physical_base`) is left
+unset, recorded and kept in `ext`, as `build_kwargs` does for the fields it copies.
+"""
+function _physical_base_voltage(
+    raw::AbstractDict,
+    key::AbstractString,
+    ctx::TranslationContext,
+)
+    value = get(raw, key, nothing)
+    if _non_physical_base(key, value)
+        record_dropped_invalid_value!(ctx.report, component_type(raw), key)
+        keep_unmapped!(ctx.ledger, key, value)
+        return nothing
+    end
+    return value
+end
+
 function _winding_circuit(
     raw::AbstractDict,
     ctx::TranslationContext,
@@ -421,7 +439,8 @@ function _winding_circuit(
         :reactive_power_flow => get(raw, "reactive_power_flow_$suffix", nothing),
         :base_power => base_power,
         :power_units => "COMPONENT_BASE",
-        :base_voltage_primary => get(raw, "base_voltage_$suffix", nothing),
+        :base_voltage_primary =>
+            _physical_base_voltage(raw, "base_voltage_$suffix", ctx),
         :control_objective => objective,
     )
     merge!(kwargs, bands)

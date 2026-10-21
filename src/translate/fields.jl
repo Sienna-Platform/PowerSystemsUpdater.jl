@@ -413,6 +413,20 @@ function _operational_state(status::Bool)
     return "OFFLINE"
 end
 
+"""
+Whether `value` is a transformer winding base voltage (`base_voltage_primary`, `_secondary`,
+...) no physical transformer has: PSY5 accepted `0.0` (a source that records none, e.g. some
+MATPOWER cases), PSY6 requires a positive base. The fields are optional in the schema, so the
+value is left unset (`build_kwargs`) and recorded on the report.
+
+A bus's `base_voltage` is not included: PowerSystems 6's `Line` endpoint check subtracts the
+two buses' base voltages without allowing for an unset one, so a bus base of 0 is written as
+stored, which PSY6 accepts.
+"""
+_non_physical_base(key::AbstractString, value::Real) =
+    startswith(key, "base_voltage_") && value <= 0
+_non_physical_base(::AbstractString, ::Any) = false
+
 _is_bool(::Bool) = true
 _is_bool(::Any) = false
 
@@ -457,6 +471,11 @@ function build_kwargs(
             continue
         end
         if isnothing(value)
+            continue
+        end
+        if _non_physical_base(key, value)
+            record_dropped_invalid_value!(report, type_name, key)
+            keep_unmapped!(ledger, key, value)
             continue
         end
         if symbol === :status && _is_bool(value)

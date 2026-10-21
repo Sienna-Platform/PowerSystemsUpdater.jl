@@ -74,7 +74,7 @@ end
 function classify(d::Difference)
     for e in EXPECTED
         if e.kind == d.kind && glob_match(e.psy5_type, d.psy5_type) &&
-           glob_match(e.path, d.path)
+           glob_match(e.path, d.path) && e.when(d.psy5, d.psy6)
             return (:expected, e.reason)
         end
     end
@@ -704,6 +704,10 @@ function write_conversion_section(io, c::AbstractDict)
         (
             "Dynamic models dropped (static device kept)",
             get(c, "dropped_dynamic_models", Dict{String, Any}()),
+        ),
+        (
+            "Invalid values dropped (non-physical PSY5 value left unset)",
+            get(c, "dropped_invalid_values", Dict{String, Any}()),
         ),
     )
     if all(isempty(counts) for (_, counts) in sections)

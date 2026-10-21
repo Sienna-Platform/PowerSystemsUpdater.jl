@@ -221,6 +221,12 @@ Examples: `Source.R_th`/`X_th`; the HVDC lines' `active_power_limits_from`/`_to`
 `from.max` survives, as `rating`); a transformer `control_objective` written as `UNDEFINED`
 because no band data could be found for it.
 
+**Non-physical values PSY6 rejects** are treated the same way. A transformer winding base
+voltage (`base_voltage_primary`, `_secondary`, ...) of 0 or less, which PSY5 accepted (some
+MATPOWER cases record none), is left unset (the schema field is optional). The value is kept in
+`psy5_unmapped` and counted under INVALID VALUES DROPPED in the `ConversionReport`. A bus's
+`base_voltage` is written as stored: PSY6's `Line` checks need one.
+
 Where `ext` cannot hold it, the data is still lost, and only reported:
 
   - **Skipped components** (a PSY5 type with no PSY6 counterpart, and the components that

@@ -238,8 +238,11 @@ function BusIndex(components)
     index = BusIndex()
     for raw in components
         type_name = component_type(raw)
-        if type_name in ("ACBus", "DCBus") && !isnothing(get(raw, "base_voltage", nothing))
-            index.base_voltage[component_uuid(raw)] = Float64(raw["base_voltage"])
+        kv = get(raw, "base_voltage", nothing)
+        if type_name in ("ACBus", "DCBus") && !isnothing(kv) && kv > 0
+            # A non-physical base (0) is no base: a field needing it is reported, not scaled
+            # by zero.
+            index.base_voltage[component_uuid(raw)] = Float64(kv)
         elseif type_name == "Arc"
             index.arcs[component_uuid(raw)] =
                 (reference_uuid(raw["from"]), reference_uuid(raw["to"]))
