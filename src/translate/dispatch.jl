@@ -2,6 +2,44 @@ struct TranslationContext
     ledger::Ledger
     report::ConversionReport
     system_base::Float64
+    buses::BusIndex
+end
+
+TranslationContext(ledger::Ledger, report::ConversionReport, system_base::Real) =
+    TranslationContext(ledger, report, Float64(system_base), BusIndex())
+
+"""What converting `raw`'s fields into their declared units needs (`convert_units`)."""
+component_units(raw::AbstractDict, ctx::TranslationContext) = ComponentUnits(
+    component_type(raw),
+    raw,
+    base_power_for(raw, ctx.system_base),
+    ctx.system_base,
+    ctx.buses,
+)
+
+"""
+PSY5 fields whose PSY6 counterpart has another name, applied by `direct_translate` before the
+field copy: `(PSY5 type, PSY5 field) => PSY6 field`.
+"""
+const PSY5_FIELD_RENAMES = Dict{Tuple{String, String}, String}(
+    ("Source", "R_th") => "r_th",
+    ("Source", "X_th") => "x_th",
+)
+
+function _rename_fields(raw::AbstractDict)
+    type_name = component_type(raw)
+    renamed = raw
+    for (key, value) in raw
+        target = get(PSY5_FIELD_RENAMES, (type_name, key), nothing)
+        if !isnothing(target)
+            if renamed === raw
+                renamed = copy(raw)
+            end
+            delete!(renamed, key)
+            renamed[target] = value
+        end
+    end
+    return renamed
 end
 
 """
@@ -67,7 +105,15 @@ function direct_translate(
     if :power_units in fieldnames(T)
         extra[:power_units] = "COMPONENT_BASE"
     end
-    kwargs = build_kwargs(T, raw, ctx.ledger, ctx.report; extra = extra)
+    renamed = _rename_fields(raw)
+    kwargs = build_kwargs(
+        T,
+        renamed,
+        ctx.ledger,
+        ctx.report;
+        extra = extra,
+        units = component_units(renamed, ctx),
+    )
     return ICOM.APIModel[T(; kwargs...)]
 end
 

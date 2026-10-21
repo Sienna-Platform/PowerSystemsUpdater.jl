@@ -29,7 +29,12 @@ function build_document(case::Psy5Case, report::ConversionReport)
     )
     PCOM.reserve_ids!(doc, ledger.counter)
 
-    ctx = TranslationContext(ledger, report, system_base_power(case))
+    ctx = TranslationContext(
+        ledger,
+        report,
+        system_base_power(case),
+        BusIndex(vcat(own_components, masked)),
+    )
     # Masked sub-units translate before the HybridSystem that references them, so a
     # sub-unit's skip is known to references_skipped by the time its owner is checked.
     for raw in masked

@@ -610,7 +610,11 @@ function write_conversion_section(io, c::AbstractDict)
     sections = (
         ("Unmapped types (components skipped)", c["unmapped_types"]),
         ("Cascaded skips (components referencing a skipped one)", c["cascaded_skips"]),
-        ("Unmapped fields (values dropped)", c["unmapped_fields"]),
+        ("Unmapped fields (values kept in ext)", c["unmapped_fields"]),
+        (
+            "Unverified units (PSY5 value not convertible to the PSY6 unit)",
+            get(c, "unverified_units", Dict{String, Any}()),
+        ),
     )
     if all(isempty(counts) for (_, counts) in sections)
         println(io, "No findings.\n")

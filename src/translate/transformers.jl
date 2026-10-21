@@ -292,12 +292,14 @@ function _build_circuit(raw::AbstractDict, ctx::TranslationContext, alpha::Float
     if !haskey(raw, "tap")
         extra[:tap] = 1.0
     end
+    source = _circuit_source(raw)
     kwargs = build_kwargs(
         POOM.TransformerCircuit,
-        _circuit_source(raw),
+        source,
         ctx.ledger,
         ctx.report;
         extra = extra,
+        units = component_units(source, ctx),
     )
     return POOM.TransformerCircuit(; kwargs...), consumed
 end

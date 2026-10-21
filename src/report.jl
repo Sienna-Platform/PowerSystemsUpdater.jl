@@ -8,6 +8,11 @@ Base.@kwdef mutable struct ConversionReport
     cascaded_skips::Dict{String, Int} = Dict{String, Int}()
     unmapped_fields::Dict{Tuple{String, String}, Int} =
         Dict{Tuple{String, String}, Int}()
+    # Fields whose PSY6 unit is physical and whose PSY5 value could not be converted into it
+    # (`convert_units` in translate/units.jl): written as PSY5 stored them if required, else
+    # kept in ext. Each is a value that may be in the wrong unit.
+    unverified_units::Dict{Tuple{String, String}, Int} =
+        Dict{Tuple{String, String}, Int}()
     systems::Vector{String} = String[]
 end
 
@@ -28,10 +33,17 @@ record_unmapped_field!(
     field::AbstractString,
 ) = _bump!(report.unmapped_fields, (String(type_name), String(field)))
 
+record_unverified_unit!(
+    report::ConversionReport,
+    type_name::AbstractString,
+    field::AbstractString,
+) = _bump!(report.unverified_units, (String(type_name), String(field)))
+
 function has_findings(report::ConversionReport)
     return !isempty(report.unmapped_types) ||
            !isempty(report.cascaded_skips) ||
-           !isempty(report.unmapped_fields)
+           !isempty(report.unmapped_fields) ||
+           !isempty(report.unverified_units)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
@@ -43,6 +55,13 @@ function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
         "UNMAPPED FIELDS (values kept in the component's ext[\"psy5_unmapped\"], " *
         "except on a skipped component or one with no ext)",
         report.unmapped_fields;
+        label = key -> "$(key[1]).$(key[2])",
+    )
+    _show_section(
+        io,
+        "UNVERIFIED UNITS (PSY5 value could not be converted to the PSY6 unit: written as " *
+        "stored if required, else kept in ext[\"psy5_unmapped\"])",
+        report.unverified_units;
         label = key -> "$(key[1]).$(key[2])",
     )
     if !has_findings(report)

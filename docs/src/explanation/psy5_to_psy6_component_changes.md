@@ -31,6 +31,37 @@ is the *system* base (`Area`, `LoadZone`, `FixedAdmittance`, `AreaInterchange`,
 recorded per component *"in lieu of a system-level table"*. `ACBus`, `Arc`, `AGC`, and `DCBus`
 still declare none; their base remains implicit on the system base.
 
+### Converting each field into its declared unit
+
+Not every field is per unit in PSY6. The schema declares a unit for each field (`x-unit`):
+either through a basis field with a per-unit option (`power_units`, `parameter_units`), a basis
+field without one (`admittance_units`: S or MVAr; `energy_units`: MWh), a data field
+(`level_data_type`: m³, m or MWh), or outright (reserve `requirement` is MW, LCC impedances
+are ohm). The updater converts every field it writes by one rule (`src/translate/units.jl`):
+
+  - **PSY6 side**: the unit the schema declares, read from the model packages
+    (`unit_discriminator`, `declared_unit`). A per-unit basis is chosen wherever one exists,
+    and any basis the conversion chose is written (`admittance_units = COMPONENT_MVAR`, ...).
+  - **PSY5 side**: how PSY5 stored the field. Fields PSY5's descriptors mark
+    `needs_conversion` are device-base per unit; that table is generated
+    (`src/translate/psy5_units_generated.jl`, by
+    `scripts/psy5_units/generate_psy5_units.jl`). Fields PSY5 stored some other way without
+    saying so are listed by hand in `PSY5_STORAGE`: system-base per unit (reserve
+    `requirement`, `FixedAdmittance.Y`, LCC impedances), relative to another value (reservoir
+    levels as a fraction of `storage_level_limits.max`; VSC DC voltage limits in per unit of
+    `rated_dc_voltage`), per hour where PSY6 is per second (reservoir flows), or already
+    natural (bases, LCC kV fields).
+  - **Conversion**: a per-unit PSY6 unit takes PSY5's device-base value as is. A power unit
+    (MW, MVA, MVAr, MWh, and rates) multiplies by the MVA base PSY5's value is on. Ohm, siemens
+    and kV also need a voltage base, taken from the component's buses: an injector's `bus`, or
+    a branch's `arc`, whose two ends share a base except across a transformer (whose
+    impedances are per unit and never converted); where they differ, the `from` bus is used.
+
+A field whose PSY6 unit is physical and whose PSY5 storage is not known is never silently
+copied: it is listed under UNVERIFIED UNITS in the `ConversionReport`. An optional one is left
+unset with its PSY5 value kept in `ext["psy5_unmapped"]`; a required one is written as PSY5
+stored it. A new entry there means `PSY5_STORAGE` needs the field's convention.
+
 ## Type parameters become fields
 
 PSY5 encodes variation in the type parameter; PSY6 in a property, often with a new vocabulary.

@@ -20,6 +20,8 @@ function report_counts(report::ConversionReport)
         "cascaded_skips" => report.cascaded_skips,
         "unmapped_fields" =>
             Dict("$type.$field" => n for ((type, field), n) in report.unmapped_fields),
+        "unverified_units" =>
+            Dict("$type.$field" => n for ((type, field), n) in report.unverified_units),
     )
 end
 

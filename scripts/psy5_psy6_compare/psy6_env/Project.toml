@@ -17,7 +17,10 @@ PowerSystemsUpdater = {path = "../../.."}
 # The rest mirror PowerSystems' own psy6 `[sources]`: Pkg honours `[sources]` only in the
 # active project, never a dependency's, so every unregistered package PSY6 pulls in must be
 # pinned again here. Swap any `url` for `path = "..."` to compare against a local checkout.
-PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "psy6"}
+# Local checkout, a sibling of this repository: whatever branch is checked out there is what
+# the comparison loads with (currently jp/updater_fixes). For the published branch use
+# `{url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "psy6"}`.
+PowerSystems = {path = "../../../../PowerSystems.jl"}
 # Held at the last IS4 commit before its InfraStore 0.15 bump (0ea15bae2): PowerSystems psy6
 # and PowerSystemsUpdater both still require InfraStore 0.14, so IS4 head cannot resolve
 # with them. Return to `rev = "IS4"` once both move to 0.15.

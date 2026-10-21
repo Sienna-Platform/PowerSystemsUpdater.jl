@@ -23,6 +23,13 @@ function translate(::Val{:HydroReservoir}, raw::AbstractDict, ctx::TranslationCo
         :id => id,
         :head_to_volume_factor => _head_to_volume_factor(raw, ctx),
     )
-    kwargs = build_kwargs(POOM.HydroReservoir, raw, ctx.ledger, ctx.report; extra = extra)
+    kwargs = build_kwargs(
+        POOM.HydroReservoir,
+        raw,
+        ctx.ledger,
+        ctx.report;
+        extra = extra,
+        units = component_units(raw, ctx),
+    )
     return ICOM.APIModel[POOM.HydroReservoir(; kwargs...)]
 end

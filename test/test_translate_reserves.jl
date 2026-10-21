@@ -26,7 +26,8 @@
     # reserve_direction is a strictly-typed enum wrapper (ReserveDirection)
     # under the OpenAPI 1.1 generator, not a bare String.
     @test res.reserve_direction == PSU.POOM.ReserveDirection("UP")
-    @test res.requirement == 0.4
+    # PSY5 stores the requirement per unit on the system base; PSY6 declares MW.
+    @test res.requirement == 0.4 * 100.0
     @test res.time_frame == 60.0
     # Under OpenAPI.jl 1.x an absent optional field decodes to the `ABSENT` sentinel, not
     # `nothing` — the pre-migration model runtime's absence value.

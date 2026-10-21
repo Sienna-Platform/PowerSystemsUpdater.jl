@@ -409,9 +409,14 @@ _is_bool(::Any) = false
 """
 Build the keyword arguments for `T` from a PSY5 component dict.
 
-Copies by name for every field `T` declares, resolving UUID references to integer ids.
-Values are never rescaled. PSY5 keys with no counterpart on `T` are recorded on `report`
-rather than dropped silently — an unmapped field is a finding about the schemas.
+Copies by name for every field `T` declares, resolving UUID references to integer ids. PSY5
+keys with no counterpart on `T` are recorded on `report` rather than dropped silently — an
+unmapped field is a finding about the schemas.
+
+With `units`, each value is first converted from how PSY5 stored it into the unit the schema
+declares for it (`convert_units` in translate/units.jl), and any unit-basis field the
+conversion chose is written (`admittance_units = COMPONENT_MVAR`, ...). Without it, values are
+copied as stored.
 """
 function build_kwargs(
     ::Type{T},
@@ -419,6 +424,7 @@ function build_kwargs(
     ledger::Ledger,
     report::ConversionReport;
     extra::AbstractDict = Dict{Symbol, Any}(),
+    units::Union{Nothing, ComponentUnits} = nothing,
 ) where {T <: ICOM.APIModel}
     targets = Set(fieldnames(T))
     kwargs = Dict{Symbol, Any}()
@@ -440,10 +446,69 @@ function build_kwargs(
             kwargs[symbol] = _operational_state(value)
             continue
         end
-        kwargs[symbol] = translate_value(value, ledger, report)
+        value, write =
+            _in_declared_units(T, symbol, key, value, units, kwargs, ledger, report)
+        if write
+            kwargs[symbol] = translate_value(value, ledger, report)
+        end
     end
     for (key, value) in extra
         kwargs[key] = value
     end
     return _decode_kwargs(T, kwargs)
 end
+
+_in_declared_units(::Type, ::Symbol, ::AbstractString, value, ::Nothing, args...) =
+    (value, true)
+
+"""
+`value` converted into the unit `T` declares for `field`, and whether to write it. A unit
+basis the conversion chose is written into `kwargs`. A value that could not be converted is
+reported; an optional field is then left unset with the PSY5 value kept in `ext`, while a
+required one is written as PSY5 stored it.
+"""
+function _in_declared_units(
+    ::Type{T},
+    field::Symbol,
+    key::AbstractString,
+    value,
+    units::ComponentUnits,
+    kwargs::AbstractDict,
+    ledger::Ledger,
+    report::ConversionReport,
+) where {T}
+    unit, basis = target_unit(T, field, units.raw)
+    if !isnothing(basis) && !haskey(kwargs, first(basis))
+        kwargs[first(basis)] = last(basis)
+    end
+    converted = convert_units(psy5_storage(units.psy5_type, key), unit, value, units)
+    return _settle(converted, T, field, key, value, units, ledger, report)
+end
+
+_settle(converted, ::Type, ::Symbol, ::AbstractString, _, ::ComponentUnits, args...) =
+    (converted, true)
+
+function _settle(
+    ::UnverifiedUnit,
+    ::Type{T},
+    field::Symbol,
+    key::AbstractString,
+    value,
+    units::ComponentUnits,
+    ledger::Ledger,
+    report::ConversionReport,
+) where {T}
+    record_unverified_unit!(report, units.psy5_type, key)
+    if _accepts_absent(fieldtype(T, field))
+        keep_unmapped!(ledger, key, value)
+        return (nothing, false)
+    end
+    return (value, true)
+end
+
+"""
+Whether a model field may be left unset: the generator types optional fields as a union with
+`Absent`. A query on the field's declared type, not on a value.
+"""
+_accepts_absent(field_type::Type) =
+    typeintersect(field_type, OpenAPI.Runtime.Absent) !== Union{}
