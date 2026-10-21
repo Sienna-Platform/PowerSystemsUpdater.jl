@@ -276,10 +276,67 @@ function variable_cost_as_variable(d::AbstractDict)
 end
 
 """
+PSY6 wraps an HVDC line's loss curve (`loss`, `converter_loss_from`/`_to`) in a `LossCurve`
+whose type parameter is its unit system: `LossCurve{LinearCurve, NaturalUnit}` holds PSY5's
+`LinearCurve` as `value_curve`. Compared by the wrapped curve, as `head_to_volume_factor` is.
+"""
+function loss_curve_as_value_curve(d::AbstractDict)
+    if !startswith(string(get(d, "__type__", "")), "LossCurve{") ||
+       !haskey(d, "value_curve")
+        return d
+    end
+    return d["value_curve"]
+end
+
+"""
+PSY6's `ZERO_OFFER_CURVE` (`CostCurve(PiecewiseIncrementalCurve(0.0, [0.0, 0.0], [0.0]))`), as
+it reads back after `curve_units_as_field`: PSY6's spelling of an offer curve PSY5 left
+`nothing` ("not offered").
+"""
+function is_zero_offer_curve(d::AbstractDict)
+    get(d, "__type__", nothing) == "CostCurve{PiecewiseIncrementalCurve}" || return false
+    curve = something(get(d, "value_curve", nothing), Dict())
+    data = something(get(curve, "function_data", nothing), Dict())
+    vom = something(get(d, "vom_cost", nothing), Dict())
+    vom_data = something(get(vom, "function_data", nothing), Dict())
+    return get(curve, "initial_input", nothing) == 0.0 &&
+           get(data, "x_coords", nothing) == [0.0, 0.0] &&
+           get(data, "y_coords", nothing) == [0.0] &&
+           get(vom_data, "constant_term", nothing) == 0.0 &&
+           get(vom_data, "proportional_term", nothing) == 0.0
+end
+is_zero_offer_curve(_) = false
+
+"""
+`ImportExportCost{NaturalUnit}` is PSY5's `ImportExportCost`: the unit system became a type
+parameter, which PSY5 never recorded (like the cost curves in 14). An offer curve PSY5 left
+`nothing` comes back as `ZERO_OFFER_CURVE`, and is compared as `nothing`.
+"""
+function import_export_cost_as_psy5(d::AbstractDict)
+    m = match(r"^ImportExportCost\{(\w+)\}$", string(get(d, "__type__", "")))
+    if isnothing(m) || !haskey(UNIT_SYSTEM_NAMES, m[1])
+        return d
+    end
+    aligned = Dict{String, Any}(d)
+    aligned["__type__"] = "ImportExportCost"
+    for field in ("import_offer_curves", "export_offer_curves")
+        if is_zero_offer_curve(get(d, field, nothing))
+            aligned[field] = nothing
+        end
+    end
+    return aligned
+end
+
+"""
 Rewrites applied to every nested struct on the PSY6 side, innermost first, for changes that
 are not tied to one component field.
 """
-const NESTED_ALIGNMENTS = (curve_units_as_field, variable_cost_as_variable)
+const NESTED_ALIGNMENTS = (
+    curve_units_as_field,
+    variable_cost_as_variable,
+    loss_curve_as_value_curve,
+    import_export_cost_as_psy5,
+)
 
 """
 An intended difference. `kind` is one of the `Difference` kinds in `compare.jl`; `psy5_type`
