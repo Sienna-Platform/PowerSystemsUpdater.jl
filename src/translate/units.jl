@@ -49,6 +49,14 @@ struct RelativeTo <: Psy5Storage
     path::Vector{String}
 end
 
+"""
+Per unit on the system base power and the voltage (kV) named by `path` in the PSY5 record,
+rather than a bus's: an LCC line's impedances, on the base of the circuit they sit in.
+"""
+struct SystemBasePUOnVoltage <: Psy5Storage
+    path::Vector{String}
+end
+
 """Not recorded anywhere: PSY5 never annotated the field and it is not in `PSY5_STORAGE`."""
 struct UnknownStorage <: Psy5Storage end
 
@@ -78,14 +86,22 @@ const PSY5_STORAGE = Dict{Tuple{String, String}, Psy5Storage}(
     ("HydroReservoir", "outflow") => PerHour(),
     ("HydroReservoir", "spillage_limits") => PerHour(),
     # Two-terminal LCC: impedances "in system p.u. (SYSTEM_BASE)", voltages "in kV",
-    # compounding resistance "in ohms".
-    ("TwoTerminalLCCLine", "r") => SystemBasePU(),
-    ("TwoTerminalLCCLine", "rectifier_rc") => SystemBasePU(),
-    ("TwoTerminalLCCLine", "rectifier_xc") => SystemBasePU(),
-    ("TwoTerminalLCCLine", "inverter_rc") => SystemBasePU(),
-    ("TwoTerminalLCCLine", "inverter_xc") => SystemBasePU(),
-    ("TwoTerminalLCCLine", "rectifier_capacitor_reactance") => SystemBasePU(),
-    ("TwoTerminalLCCLine", "inverter_capacitor_reactance") => SystemBasePU(),
+    # compounding resistance "in ohms". The impedance base voltage is the circuit's own, not a
+    # bus's: PSY5's PSS/E parser divides `RDC` by `VSCHD^2 / baseMVA` and each converter's
+    # `RC`/`XC`/`XCAP` by `EBAS^2 / baseMVA` (`parsers/pm_io/psse.jl`).
+    ("TwoTerminalLCCLine", "r") => SystemBasePUOnVoltage(["scheduled_dc_voltage"]),
+    ("TwoTerminalLCCLine", "rectifier_rc") =>
+        SystemBasePUOnVoltage(["rectifier_base_voltage"]),
+    ("TwoTerminalLCCLine", "rectifier_xc") =>
+        SystemBasePUOnVoltage(["rectifier_base_voltage"]),
+    ("TwoTerminalLCCLine", "rectifier_capacitor_reactance") =>
+        SystemBasePUOnVoltage(["rectifier_base_voltage"]),
+    ("TwoTerminalLCCLine", "inverter_rc") =>
+        SystemBasePUOnVoltage(["inverter_base_voltage"]),
+    ("TwoTerminalLCCLine", "inverter_xc") =>
+        SystemBasePUOnVoltage(["inverter_base_voltage"]),
+    ("TwoTerminalLCCLine", "inverter_capacitor_reactance") =>
+        SystemBasePUOnVoltage(["inverter_base_voltage"]),
     ("TwoTerminalLCCLine", "compounding_resistance") => Natural(),
     ("TwoTerminalLCCLine", "rectifier_base_voltage") => Natural(),
     ("TwoTerminalLCCLine", "inverter_base_voltage") => Natural(),
@@ -314,6 +330,14 @@ struct UnverifiedUnit
     reason::String
 end
 
+"""
+Marks a value whose PSY5 base is non-physical (a base voltage of 0 or less), so it has no
+value in the unit PSY6 declares: a data problem in the source, reported as an invalid value.
+"""
+struct NonPhysicalBase
+    reason::String
+end
+
 _base(::DeviceBasePU, units::ComponentUnits) = units.component_base
 _base(::SystemBasePU, units::ComponentUnits) = units.system_base
 
@@ -345,7 +369,12 @@ convert_units(::Natural, ::AbstractString, value, ::ComponentUnits) = value
 convert_units(storage::RelativeTo, ::AbstractString, value, units::ComponentUnits) =
     _relative(value, _lookup(units.raw, storage.path), storage)
 
-_relative(value, reference::Real, ::RelativeTo) = _scale(value, reference)
+_relative(value, reference::Real, storage::RelativeTo) =
+    if reference > 0
+        _scale(value, reference)
+    else
+        NonPhysicalBase("relative to $(join(storage.path, ".")) = $reference")
+    end
 _relative(_, ::Any, storage::RelativeTo) =
     UnverifiedUnit("relative to $(join(storage.path, ".")), which is missing")
 
@@ -389,6 +418,30 @@ function convert_units(
     end
     return _scale(value, factor)
 end
+
+function convert_units(
+    storage::SystemBasePUOnVoltage,
+    unit::AbstractString,
+    value,
+    units::ComponentUnits,
+)
+    return _on_voltage(value, unit, _lookup(units.raw, storage.path), storage, units)
+end
+
+function _on_voltage(value, unit, kv::Real, storage::SystemBasePUOnVoltage, units)
+    if kv <= 0
+        return NonPhysicalBase("on $(join(storage.path, ".")) = $kv")
+    end
+    z_base = kv^2 / units.system_base
+    if unit == "ohm"
+        return _scale(value, z_base)
+    elseif unit == "S"
+        return _scale(value, 1 / z_base)
+    end
+    return UnverifiedUnit("per unit on $(join(storage.path, ".")), to $unit")
+end
+_on_voltage(_, _, ::Any, storage::SystemBasePUOnVoltage, _) =
+    UnverifiedUnit("on $(join(storage.path, ".")), which is missing")
 
 function convert_units(::UnknownStorage, unit::AbstractString, value, ::ComponentUnits)
     if unit in PER_UNIT_PRONE_UNITS

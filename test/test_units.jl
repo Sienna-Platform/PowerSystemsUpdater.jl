@@ -11,6 +11,8 @@ using PowerOperationsOpenAPIModels: FixedAdmittance, HydroReservoir, TwoTerminal
     @test PSU.psy5_storage("ThermalStandard", "base_power") isa PSU.Natural
     @test PSU.psy5_storage("TransformerCircuit", "base_voltage_primary") isa PSU.Natural
     @test PSU.psy5_storage("SomeType", "some_field") isa PSU.UnknownStorage
+    @test PSU.psy5_storage("TwoTerminalLCCLine", "rectifier_xc") isa
+          PSU.SystemBasePUOnVoltage
     # The generated table is complete: PSY5 5.x marks 240 fields `needs_conversion`.
     @test length(PSU.PSY5_DEVICE_BASE_FIELDS) == 240
 end
@@ -103,15 +105,21 @@ end
     @test kwargs[:inflow] == 3600.0
 end
 
-@testset "LCC impedances: system-base pu to ohm on the from bus's voltage" begin
-    function _lcc(ctx)
+@testset "LCC impedances: system-base pu to ohm on the circuit's own voltage" begin
+    # The PSS/E case's values: PSY5's parser divides RDC by VSCHD^2 / baseMVA and each
+    # converter's RC/XC/XCAP by its EBAS^2 / baseMVA, whatever the buses' base voltages.
+    function _lcc(ctx; extra...)
         raw = Dict{String, Any}(
             "__metadata__" => Dict("type" => "TwoTerminalLCCLine"),
             "internal" => Dict("uuid" => Dict("value" => "uuid-c")),
             "arc" => Dict("value" => "uuid-arc"),
-            "r" => 0.01, "rectifier_rc" => 0.02, "compounding_resistance" => 3.0,
-            "scheduled_dc_voltage" => 500.0,
+            "r" => 2000.0, "scheduled_dc_voltage" => 1.0,
+            "rectifier_rc" => 0.02, "rectifier_xc" => 0.0003364839319470699,
+            "rectifier_capacitor_reactance" => 0.01, "rectifier_base_voltage" => 230.0,
+            "inverter_xc" => 0.08, "inverter_base_voltage" => 69.0,
+            "compounding_resistance" => 3.0,
         )
+        merge!(raw, Dict{String, Any}(String(k) => v for (k, v) in extra))
         units = PSU.component_units(raw, ctx)
         return PSU.build_kwargs(
             TwoTerminalLCCLine,
@@ -121,18 +129,53 @@ end
             units = units,
         )
     end
-    z_base = 230.0^2 / 100.0
-    ctx, _, rep = _units_ctx()
+    # Bus bases deliberately different from every circuit base.
+    ctx, _, rep = _units_ctx(; buses = Dict("uuid-b1" => 138.0, "uuid-b2" => 345.0))
     kwargs = _lcc(ctx)
-    @test kwargs[:r] ≈ 0.01 * z_base
-    @test kwargs[:rectifier_rc] ≈ 0.02 * z_base
+    @test kwargs[:r] ≈ 2000.0 * 1.0^2 / 100.0             # 20 ohm on VSCHD = 1 kV
+    @test kwargs[:rectifier_rc] ≈ 0.02 * 230.0^2 / 100.0
+    @test kwargs[:rectifier_xc] ≈ 0.178                    # PSS/E's XCR
+    @test kwargs[:rectifier_capacitor_reactance] ≈ 0.01 * 230.0^2 / 100.0
+    @test kwargs[:inverter_xc] ≈ 0.08 * 69.0^2 / 100.0
     @test kwargs[:compounding_resistance] == 3.0   # already ohm
-    @test kwargs[:scheduled_dc_voltage] == 500.0   # already kV
+    @test kwargs[:scheduled_dc_voltage] == 1.0     # already kV
     @test isempty(rep.unverified_units)
+    @test isempty(rep.dropped_invalid_values)
 
-    # Ends with different voltages: the `from` bus wins.
-    ctx, _, _ = _units_ctx(; buses = Dict("uuid-b1" => 138.0, "uuid-b2" => 230.0))
-    @test _lcc(ctx)[:r] ≈ 0.01 * 138.0^2 / 100.0
+    # A non-physical converter base: a required impedance is written as stored and reported.
+    ctx, _, rep = _units_ctx()
+    kwargs = _lcc(ctx; inverter_base_voltage = 0.0)
+    @test kwargs[:inverter_xc] == 0.08
+    @test rep.dropped_invalid_values[("TwoTerminalLCCLine", "inverter_xc")] == 1
+end
+
+@testset "VSC with no DC voltage base: values on it are reported" begin
+    # `c_sys14_hvdc_vsc`: rated_dc_voltage 0, so a DC voltage setpoint has no value in kV.
+    ctx, led, rep = _units_ctx()
+    led.owner = "uuid-c"
+    raw = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "TwoTerminalVSCLine"),
+        "internal" => Dict("uuid" => Dict("value" => "uuid-c")),
+        "arc" => Dict("value" => "uuid-arc"),
+        "rated_dc_voltage" => 0.0,
+        "dc_voltage_setpoint_from" => 0.0,
+        "voltage_limits_from" => Dict("min" => 0.9, "max" => 1.1),
+    )
+    kwargs = PSU.build_kwargs(
+        PSU.POOM.TwoTerminalVSCLine, raw, led, rep;
+        units = PSU.component_units(raw, ctx),
+    )
+    for field in ("rated_dc_voltage", "voltage_limits_from")
+        @test !haskey(kwargs, Symbol(field))
+        @test rep.dropped_invalid_values[("TwoTerminalVSCLine", field)] == 1
+        @test haskey(PSU.unmapped_values(led, "uuid-c"), field)
+    end
+    # The setpoint its control mode selects is required by the schema: written as stored, and
+    # still reported.
+    @test kwargs[:dc_voltage_setpoint_from] == 0.0
+    @test rep.dropped_invalid_values[("TwoTerminalVSCLine", "dc_voltage_setpoint_from")] ==
+          1
+    @test isempty(rep.unverified_units)
 end
 
 @testset "unverified units: reported, never silently copied" begin

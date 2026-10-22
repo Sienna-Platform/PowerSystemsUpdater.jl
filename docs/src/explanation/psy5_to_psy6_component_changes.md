@@ -56,6 +56,9 @@ are ohm). The updater converts every field it writes by one rule (`src/translate
     and kV also need a voltage base, taken from the component's buses: an injector's `bus`, or
     a branch's `arc`, whose two ends share a base except across a transformer (whose
     impedances are per unit and never converted); where they differ, the `from` bus is used.
+    LCC impedances are the exception: PSY5 put each on the voltage of the circuit it sits in,
+    the DC line's `r` on `scheduled_dc_voltage` and each converter's on its own
+    `rectifier_base_voltage` or `inverter_base_voltage`, and they are converted on that.
 
 A field whose PSY6 unit is physical and whose PSY5 storage is not known is never silently
 copied: it is listed under UNVERIFIED UNITS in the `ConversionReport`. An optional one is left
@@ -224,10 +227,14 @@ Examples: `Source.R_th`/`X_th`; the HVDC lines' `active_power_limits_from`/`_to`
 because no band data could be found for it.
 
 **Non-physical values PSY6 rejects** are treated the same way. A transformer winding base
-voltage (`base_voltage_primary`, `_secondary`, ...) of 0 or less, which PSY5 accepted (some
-MATPOWER cases record none), is left unset (the schema field is optional). The value is kept in
-`psy5_unmapped` and counted under INVALID VALUES DROPPED in the `ConversionReport`. A bus's
-`base_voltage` is written as stored: PSY6's `Line` checks need one.
+voltage (`base_voltage_primary`, `_secondary`, ...) or a VSC line's `rated_dc_voltage` of 0 or
+less, which PSY5 accepted (some MATPOWER cases and test systems record none), is left unset
+(the schema fields are optional). The value is kept in `psy5_unmapped` and counted under
+INVALID VALUES DROPPED in the `ConversionReport`. So is every value PSY5 stored relative to such
+a base (a VSC DC voltage setpoint or limit), since it has no physical value. A required field,
+including the VSC setpoint the converter's control mode selects, is written as PSY5 stored it,
+so the document stays valid. A bus's `base_voltage` is written as stored: PSY6's `Line` checks
+need one.
 
 Where `ext` cannot hold it, the data is still lost, and only reported:
 
@@ -249,8 +256,17 @@ per circuit), and `TapTransformer.tap_limits`/`voltage_setpoint` (now the circui
 
 **Time-series-valued fields.** PSY5 embeds a `ForecastKey` or `StaticTimeSeriesKey` directly in
 a value field — `FuelCurve.fuel_cost` and `MarketBidCost.incremental_offer_curves` in the
-corpus. PSY6 types these as scalars or curves, with no representation for "this comes from a
-time series."
+corpus. PSY6 names such a series by the integer id of its time series association instead.
+
+  - **`FuelCurve.fuel_cost`: converted.** The key becomes `fuel_cost_time_series`, the
+    association id of the series it names (same owner, name, kind, features and resolution).
+    The ids are minted by the sidecar's catalog, which is written after the components, so the
+    field is written as a placeholder during translation and filled in once the catalog exists
+    (`resolve_series_refs` in `src/convert.jl`).
+  - **`MarketBidCost` with time-series offer curves: not yet converted.** PSY6's counterpart,
+    `MarketBidTimeSeriesCost`, needs `minimum_energy_offer`, `start_up`, `shut_down` and both
+    offer curves as time series, where PSY5 holds scalars (or `nothing`). Carrying it means
+    creating series PSY5 never had; until that is decided, conversion throws.
 
 **Scalar operating costs, resolved.** `MarketBidCost.shut_down` and `no_load_cost` are typed as
 a concrete `InputOutputCurve`; PSY5 writes a bare `Float64`. The schema now sanctions this: its

@@ -77,9 +77,9 @@ type_mapping(psy5_type::AbstractString) =
 
 """
 A component field whose name or value form changed in PSY6. On the PSY6 record, `psy6_field`
-is renamed to `psy5_field` and its value passed through `to_psy5(value, system)` (`system`
-is the snapshot's system header, for the base power), which gives the value PSY5
-would have held. The values are then compared as usual, so a value with no PSY5 counterpart,
+is renamed to `psy5_field` and its value passed through `to_psy5(value, system, record)`
+(`system` is the snapshot's system header, for the base power; `record` the rest of the PSY6
+record, for a field-specific base), which gives the value PSY5 would have held. The values are then compared as usual, so a value with no PSY5 counterpart,
 or the wrong one, still fails. For each `psy6_field`, the first rule whose `psy5_type` glob
 matches applies.
 """
@@ -133,7 +133,17 @@ end
 as_flow_limits(v, _...) = v
 
 """A system-base per-unit power read back from PSY6, in the MW PSY5 stored."""
-per_unit_to_mw(v::Real, system::AbstractDict) = v * system["base_power"]
+per_unit_to_mw(v::Real, system::AbstractDict, _...) = v * system["base_power"]
+
+"""
+An impedance PSY6 stores in ohms, as the per unit PSY5 stored on the system base power and the
+voltage in `record[voltage_field]` (kV). Without a positive voltage the value is left as is.
+"""
+ohms_to_per_unit_on(voltage_field::AbstractString) =
+    (v, system, record) -> _ohms_to_per_unit(v, system["base_power"], get(record, voltage_field, nothing))
+_ohms_to_per_unit(v::Real, base_power::Real, kv::Real) =
+    kv > 0 ? v / (kv^2 / base_power) : v
+_ohms_to_per_unit(v, _, _) = v
 per_unit_to_mw(v, _...) = v
 
 """The value unchanged; for a rule that only renames."""
@@ -198,6 +208,46 @@ const FIELD_RULES = FieldRule[
         per_unit_to_mw,
     ),
     FieldRule("TwoTerminalLCCLine", "current_transfer_setpoint", "transfer_setpoint", same),
+    # LCC impedances: PSY5 per unit on the system base power and the voltage of the circuit
+    # they sit in (the DC line on `scheduled_dc_voltage`, each converter on its own AC base);
+    # PSY6 in ohms, with no unit-aware getter.
+    FieldRule("TwoTerminalLCCLine", "r", "r", ohms_to_per_unit_on("scheduled_dc_voltage")),
+    FieldRule(
+        "TwoTerminalLCCLine",
+        "rectifier_rc",
+        "rectifier_rc",
+        ohms_to_per_unit_on("rectifier_base_voltage"),
+    ),
+    FieldRule(
+        "TwoTerminalLCCLine",
+        "rectifier_xc",
+        "rectifier_xc",
+        ohms_to_per_unit_on("rectifier_base_voltage"),
+    ),
+    FieldRule(
+        "TwoTerminalLCCLine",
+        "rectifier_capacitor_reactance",
+        "rectifier_capacitor_reactance",
+        ohms_to_per_unit_on("rectifier_base_voltage"),
+    ),
+    FieldRule(
+        "TwoTerminalLCCLine",
+        "inverter_rc",
+        "inverter_rc",
+        ohms_to_per_unit_on("inverter_base_voltage"),
+    ),
+    FieldRule(
+        "TwoTerminalLCCLine",
+        "inverter_xc",
+        "inverter_xc",
+        ohms_to_per_unit_on("inverter_base_voltage"),
+    ),
+    FieldRule(
+        "TwoTerminalLCCLine",
+        "inverter_capacitor_reactance",
+        "inverter_capacitor_reactance",
+        ohms_to_per_unit_on("inverter_base_voltage"),
+    ),
     # VSC: each converter's single DC and AC setpoint became one field per controlled
     # quantity, selected by the control mode; all read back per unit, as PSY5 stored them.
     FieldRule("TwoTerminalVSCLine", "dc_power_setpoint_from", "dc_setpoint_from", same),
@@ -328,6 +378,21 @@ function import_export_cost_as_psy5(d::AbstractDict)
 end
 
 """
+PSY5's `FuelCurve.fuel_cost` held either a price or a time series key; PSY6 keeps the key in
+`fuel_cost_time_series`. The PSY6 snapshot records that key as the series it names, in PSY5's
+key shape, so it is compared as PSY5's `fuel_cost`.
+"""
+function fuel_cost_series_as_fuel_cost(d::AbstractDict)
+    if !startswith(string(get(d, "__type__", "")), "FuelCurve") ||
+       isnothing(get(d, "fuel_cost_time_series", nothing))
+        return d
+    end
+    aligned = Dict{String, Any}(k => v for (k, v) in d if k != "fuel_cost_time_series")
+    aligned["fuel_cost"] = d["fuel_cost_time_series"]
+    return aligned
+end
+
+"""
 Rewrites applied to every nested struct on the PSY6 side, innermost first, for changes that
 are not tied to one component field.
 """
@@ -336,6 +401,7 @@ const NESTED_ALIGNMENTS = (
     variable_cost_as_variable,
     loss_curve_as_value_curve,
     import_export_cost_as_psy5,
+    fuel_cost_series_as_fuel_cost,
 )
 
 """

@@ -63,11 +63,42 @@ _is_start_up_stages_shape(dict::AbstractDict) =
     Set(keys(dict)) == Set(("hot", "warm", "cold"))
 
 """
-PSY6 has no field type that can hold a live time-series reference, but PSY5 sometimes embeds
-one in a value field. Dropping it would yield a document that validates while having lost data
-nothing downstream could recover, so this errors instead.
+PSY5 sometimes embeds a time series key in a value field. Where PSY6 has a field that names
+the series instead (`SERIES_REF_FIELDS`), the key is carried across as that series'
+association id. Anywhere else, dropping it would yield a document that validates while having
+lost data nothing downstream could recover, so this errors instead.
 """
 const TIME_SERIES_POINTER_TYPES = Set(["ForecastKey", "StaticTimeSeriesKey"])
+
+"""
+PSY5 fields that may hold a time series key, by owner type, and the PSY6 field that names the
+series by association id in its place.
+"""
+const SERIES_REF_FIELDS = Dict{Tuple{String, String}, String}(
+    ("FuelCurve", "fuel_cost") => "fuel_cost_time_series",
+)
+
+"""
+`value` with each embedded time series key that PSY6 can name (`SERIES_REF_FIELDS`) moved to
+its PSY6 field as a placeholder association id, deferred on `ledger` until the catalog exists.
+"""
+function _defer_series_refs(
+    value::AbstractDict,
+    owner_type::Union{Nothing, AbstractString},
+    ledger::Ledger,
+)
+    deferred = value
+    for (key, v) in value
+        target = get(SERIES_REF_FIELDS, (something(owner_type, ""), key), nothing)
+        if isnothing(target) || isnothing(_time_series_pointer_type(v))
+            continue
+        end
+        deferred = deferred === value ? Dict{String, Any}(value) : deferred
+        delete!(deferred, key)
+        deferred[target] = defer_series_ref!(ledger, v)
+    end
+    return deferred
+end
 
 _time_series_pointer_type(::Any) = nothing
 function _time_series_pointer_type(value::AbstractDict)
@@ -100,7 +131,7 @@ function _check_no_time_series_pointers!(
             throw(
                 Psy5FormatError(
                     "$(_owner_label(owner_type)).$key holds an embedded $pointer_type; " *
-                    "PSY6 has no field type that can represent an embedded time-series reference",
+                    "the updater does not yet carry a time series reference in this field",
                 ),
             )
         end
@@ -322,6 +353,7 @@ function translate_value(value::AbstractDict, ledger::Ledger, report::Conversion
         return lookup_id(ledger, reference_uuid(value))
     end
     owner_type = _psy5_type_name(value)
+    value = _defer_series_refs(value, owner_type, ledger)
     _check_no_time_series_pointers!(value, owner_type)
     promoted = _promote_market_bid_cost_scalars(value, owner_type)
     promoted = _rename_variable_operation_cost(promoted, owner_type)
@@ -414,17 +446,19 @@ function _operational_state(status::Bool)
 end
 
 """
-Whether `value` is a transformer winding base voltage (`base_voltage_primary`, `_secondary`,
-...) no physical transformer has: PSY5 accepted `0.0` (a source that records none, e.g. some
-MATPOWER cases), PSY6 requires a positive base. The fields are optional in the schema, so the
-value is left unset (`build_kwargs`) and recorded on the report.
+Whether `value` is a base voltage no physical device has: a transformer winding's
+(`base_voltage_primary`, `_secondary`, ...) or a VSC line's `rated_dc_voltage`. PSY5 accepted
+`0.0` (a source that records none, e.g. some MATPOWER cases and `c_sys14_hvdc_vsc`); PSY6
+requires a positive base. The fields are optional in the schema, so the value is left unset
+(`build_kwargs`) and recorded on the report; a field PSY5 stored relative to it is left unset
+the same way (`NonPhysicalBase`).
 
 A bus's `base_voltage` is not included: PowerSystems 6's `Line` endpoint check subtracts the
 two buses' base voltages without allowing for an unset one, so a bus base of 0 is written as
 stored, which PSY6 accepts.
 """
 _non_physical_base(key::AbstractString, value::Real) =
-    startswith(key, "base_voltage_") && value <= 0
+    (startswith(key, "base_voltage_") || key == "rated_dc_voltage") && value <= 0
 _non_physical_base(::AbstractString, ::Any) = false
 
 _is_bool(::Bool) = true
@@ -535,12 +569,52 @@ function _settle(
     report::ConversionReport,
 ) where {T}
     record_unverified_unit!(report, units.psy5_type, key)
-    if _accepts_absent(fieldtype(T, field))
+    if _may_leave_unset(T, field, key)
         keep_unmapped!(ledger, key, value)
         return (nothing, false)
     end
     return (value, true)
 end
+
+"""
+A value whose PSY5 base is non-physical (`NonPhysicalBase`): a data problem in the source,
+reported under INVALID VALUES DROPPED. An optional field is left unset with the PSY5 value kept
+in `ext`; a required one is written as PSY5 stored it, so the document stays valid and PSY6
+reports the same data problem on import.
+"""
+function _settle(
+    ::NonPhysicalBase,
+    ::Type{T},
+    field::Symbol,
+    key::AbstractString,
+    value,
+    units::ComponentUnits,
+    ledger::Ledger,
+    report::ConversionReport,
+) where {T}
+    record_dropped_invalid_value!(report, units.psy5_type, key)
+    if _may_leave_unset(T, field, key)
+        keep_unmapped!(ledger, key, value)
+        return (nothing, false)
+    end
+    return (value, true)
+end
+
+"""
+Fields the schema requires only in some states, which their declared type cannot show: a VSC
+converter's setpoint is optional, but required for the quantity its control mode selects, and
+`_vsc_setpoints` writes only that one (`VSC_SETPOINT_FIELDS`).
+"""
+const CONDITIONALLY_REQUIRED_FIELDS = Set([
+    "dc_power_setpoint_from", "dc_power_setpoint_to",
+    "dc_voltage_setpoint_from", "dc_voltage_setpoint_to",
+    "ac_voltage_setpoint_from", "ac_voltage_setpoint_to",
+    "power_factor_setpoint_from", "power_factor_setpoint_to",
+])
+
+"""Whether a value that could not be converted may be left unset rather than written."""
+_may_leave_unset(::Type{T}, field::Symbol, key::AbstractString) where {T} =
+    _accepts_absent(fieldtype(T, field)) && !(key in CONDITIONALLY_REQUIRED_FIELDS)
 
 """
 Whether a model field may be left unset: the generator types optional fields as a union with

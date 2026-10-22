@@ -81,6 +81,48 @@ _length(row::IS.TimeSeriesMetadata) = row.length
 _forecast_field(::IS.TimeSeriesMetadata{<:IS.Forecast}, value) = value
 _forecast_field(::IS.TimeSeriesMetadata, _) = nothing
 
+"""
+Every series' catalog row in the system being snapshotted, by association id, so a
+`TimeSeriesKey` held in a field (`FuelCurve.fuel_cost_time_series`) can be recorded as the
+series it names rather than as a bare id. Filled by `index_series!` before the snapshot.
+"""
+const SERIES_BY_ASSOCIATION = Dict{Int, IS.TimeSeriesMetadata}()
+
+function index_series!(sys::PSY.System)
+    empty!(SERIES_BY_ASSOCIATION)
+    owners = Iterators.flatten((all_components(sys), supplemental_attributes(sys)))
+    for owner in owners, row in attempt(() -> list_series(owner))
+        key = IS.get_time_series_key(row)
+        SERIES_BY_ASSOCIATION[IS.get_association_id(key)] = row
+    end
+    return nothing
+end
+
+"""
+A key held in a field, recorded the way PSY5 records its `ForecastKey`/`StaticTimeSeriesKey`:
+the named series' type, name and window parameters. A key naming no indexed series keeps its id.
+"""
+function snapshot_value(key::IS.TimeSeriesKey)
+    id = IS.get_association_id(key)
+    if !haskey(SERIES_BY_ASSOCIATION, id)
+        return Dict{String, Any}("__type__" => "TimeSeriesKey", "association_id" => id)
+    end
+    row = SERIES_BY_ASSOCIATION[id]
+    forecast = !isnothing(_forecast_field(row, row.count))
+    record = Dict{String, Any}(
+        "__type__" => forecast ? "ForecastKey" : "StaticTimeSeriesKey",
+        "name" => series_name(row),
+        # PSY5's keys name the type without its element parameter.
+        "time_series_type" => string(nameof(series_type(row))),
+    )
+    for (k, v) in series_metadata(row)
+        if forecast ? k != "length" : !(k in ("horizon", "interval", "count"))
+            record[k] = snapshot_value(v)
+        end
+    end
+    return record
+end
+
 function series_metadata(row::IS.TimeSeriesMetadata)
     return Dict{String, Any}(
         "initial_timestamp" => row.initial_timestamp,
@@ -126,6 +168,7 @@ function main(args)
             # for any system with supplemental attributes: PSY6's loader writes their
             # associations into the time series store, which read-only rejects.
             sys = PSY.from_file(bundle)
+            index_series!(sys)
             write_snapshot(sys, dir, PSY6_SNAPSHOT, PSY6_VALUES)
         end
     end

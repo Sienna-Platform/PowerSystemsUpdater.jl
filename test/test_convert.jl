@@ -148,7 +148,8 @@ end
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     # c_sys5_hybrid/_uc/_ed also carry a MarketBidCost.incremental_offer_curves that is an
     # embedded time-series pointer, a distinct defect the scalar promotion above does not
-    # touch — PSY6 has no field type for that, so conversion now throws loudly
+    # touch — PSY6's `MarketBidTimeSeriesCost` needs every other cost field as a time series,
+    # which PSY5 holds as scalars, so conversion throws loudly
     # (KNOWN_CONVERSION_GAPS in test_corpus.jl documents this for the whole corpus sweep).
     for name in ("c_sys5_hybrid", "c_sys5_hybrid_uc", "c_sys5_hybrid_ed")
         path = joinpath(dir, name)
@@ -167,6 +168,42 @@ end
             report = PSU.convert_system(path, tmp).report
             @test isfile(joinpath(tmp, "system.json"))
             @test isempty(report.unmapped_types)
+        end
+    end
+end
+
+@testset "convert_system: FuelCurve.fuel_cost time series key" begin
+    @test PSU._milliseconds(Dict("value" => 1, "type" => "Hour")) == 3_600_000
+    @test PSU._milliseconds(Dict("value" => 3600000, "type" => "Millisecond")) == 3_600_000
+    @test PSU._milliseconds("PT1H") == 3_600_000
+    @test PSU._milliseconds("P1DT0.5S") == 86_400_500
+
+    # PSY5 holds the fuel price as a key into its time series; PSY6 names the same series by
+    # its association id in `fuel_cost_time_series`.
+    path = joinpath(@__DIR__, "..", "data", "PSITestSystems", "c_linear_fuel_test_ts.json")
+    if require_corpus_file(path)
+        mktempdir() do tmp
+            doc = PSU.convert_system(path, tmp; force = true).document
+            tree = PSU.PCOM.document_tree(doc)
+            fuel_rows =
+                filter(r -> r["name"] == "fuel_price", tree["time_series_associations"])
+            @test length(fuel_rows) == 1
+            curves = [
+                c.operation_cost.value.variable_operation_cost.value for
+                c in PSU.PCOM.get_components(doc, "ThermalStandard") if
+                c.operation_cost.value.variable_operation_cost.value isa
+                PSU.PCOM.FuelCurve &&
+                !isnothing(
+                    c.operation_cost.value.variable_operation_cost.value.fuel_cost_time_series,
+                )
+            ]
+            @test length(curves) == 1
+            @test only(curves).fuel_cost_time_series == only(fuel_rows)["association_id"]
+            @test only(curves).fuel_cost_time_series > 0
+            # The written document reads back with the id in place.
+            reread = PSU.PCOM.read_document(joinpath(tmp, "system.json"))
+            @test PSU.PCOM.document_tree(reread)["time_series_associations"] ==
+                  tree["time_series_associations"]
         end
     end
 end

@@ -315,6 +315,98 @@ function _record_time_series_skips!(
     return nothing
 end
 
+# ── Time series references in fields ──────────────────────────────────────────────
+
+"""PSY5 key types, by the association `time_series_type`s each can name."""
+const SERIES_KEY_TYPES = Dict(
+    "StaticTimeSeriesKey" => Set(["SingleTimeSeries"]),
+    "ForecastKey" => Set([
+        "Deterministic", "DeterministicSingleTimeSeries", "Probabilistic",
+        "Scenarios",
+    ]),
+)
+
+const ISO_DURATION =
+    r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$"
+
+"""Milliseconds in a PSY5 period (`{"value": 1, "type": "Hour"}`) or an ISO 8601 duration."""
+function _milliseconds(period::AbstractDict)
+    unit = getproperty(Dates, Symbol(period["type"]))
+    return Dates.value(Dates.Millisecond(unit(period["value"])))
+end
+function _milliseconds(iso::AbstractString)
+    m = match(ISO_DURATION, iso)
+    if isnothing(m)
+        throw(Psy5FormatError("unrecognized ISO 8601 duration $iso"))
+    end
+    parts = (something(x, "0") for x in m.captures)
+    days, hours, minutes, seconds = (parse(Float64, p) for p in parts)
+    return round(Int, ((days * 24 + hours) * 60 + minutes) * 60_000 + seconds * 1000)
+end
+_milliseconds(::Nothing) = nothing
+
+"""
+The association a deferred `SeriesRef` names among the document's association rows: same
+owner, name, kind (static or forecast) and features, and, where the key gives one, the same
+resolution. Exactly one must match.
+"""
+function _series_association_id(ref::SeriesRef, rows, ledger::Ledger)
+    key = ref.key
+    key_type = _psy5_type_name(key)
+    owner_id = lookup_id(ledger, ref.owner_uuid)
+    resolution = _milliseconds(get(key, "resolution", nothing))
+    matches = [
+        row for row in rows if row["owner_id"] == owner_id &&
+        row["name"] == key["name"] &&
+        row["time_series_type"] in SERIES_KEY_TYPES[key_type] &&
+        get(row, "features", Dict()) == get(key, "features", Dict()) &&
+        (isnothing(resolution) || _milliseconds(row["resolution"]) == resolution)
+    ]
+    if length(matches) != 1
+        throw(
+            Psy5FormatError(
+                "time series key $(key["name"]) ($key_type) on owner id $owner_id names " *
+                "$(length(matches)) associations in the converted sidecar, not one",
+            ),
+        )
+    end
+    return Int(only(matches)["association_id"])
+end
+
+_replace_placeholders!(x, ::AbstractDict{Int, Int}) = x
+_replace_placeholders!(x::AbstractVector, ids::AbstractDict{Int, Int}) =
+    foreach(v -> _replace_placeholders!(v, ids), x)
+function _replace_placeholders!(x::AbstractDict, ids::AbstractDict{Int, Int})
+    for (k, v) in x
+        if k in values(SERIES_REF_FIELDS) && haskey(ids, v)
+            x[k] = ids[v]
+        else
+            _replace_placeholders!(v, ids)
+        end
+    end
+    return x
+end
+
+"""
+`doc` with every time series reference deferred during translation (`SeriesRef`) replaced by
+the id of the association it names. The ids are minted by the sidecar's catalog, which is
+written after the components, so the placeholders are replaced in the document tree and the
+document is rebuilt from it, the same round trip as writing and reading it back.
+"""
+function resolve_series_refs(doc::PCOM.SystemDocument, ledger::Ledger)
+    if isempty(ledger.series_refs)
+        return doc
+    end
+    tree = PCOM.document_tree(doc)
+    rows = get(tree, "time_series_associations", Any[])
+    ids = Dict{Int, Int}(
+        ref.placeholder => _series_association_id(ref, rows, ledger) for
+        ref in ledger.series_refs
+    )
+    _replace_placeholders!(tree, ids)
+    return PCOM.document_from_json(tree)
+end
+
 """
 The result of one conversion: the assembled `PCOM.SystemDocument`, the `ConversionReport`
 of what could not be carried across, and the path to the rewritten time-series sidecar
@@ -363,6 +455,7 @@ function convert_system(
             PCOM.add_time_series_association!(doc, assoc)
         end
     end
+    doc = resolve_series_refs(doc, ledger)
     PCOM.write_document(doc, joinpath(out_dir, "system.json"); force = force)
     return ConversionResult(doc, report, time_series_file)
 end

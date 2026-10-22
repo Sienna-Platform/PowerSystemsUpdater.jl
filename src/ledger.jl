@@ -6,6 +6,18 @@ Base.showerror(io::IO, e::DanglingReferenceError) =
     print(io, "DanglingReferenceError: ", e.msg)
 
 """
+A PSY5 time series key embedded in a field (`FuelCurve.fuel_cost`), owned by the component
+`owner_uuid`. It is written as `placeholder`, a negative integer no association id can take,
+and replaced by the id of the association the key names once the catalog is written
+(`resolve_series_refs` in convert.jl).
+"""
+struct SeriesRef
+    placeholder::Int
+    owner_uuid::String
+    key::Dict{String, Any}
+end
+
+"""
 Maps PSY5 component UUIDs onto the document-wide unique integer ids PSY6 requires, and
 records components that were skipped so references to them can be detected rather than
 emitted as dangling integers.
@@ -13,6 +25,10 @@ emitted as dangling integers.
 It also keeps, per component, the PSY5 values that have no PSY6 field (`unmapped`, keyed by
 UUID), collected against `owner`, the component being translated (`translate_component`).
 They are written to the component's `ext` (`_carry_ext!` in convert.jl) rather than dropped.
+
+`series_refs` holds the time series references deferred during translation
+(`defer_series_ref!`): a field that names a time series by its association id, which exists
+only once the sidecar's catalog is written.
 """
 mutable struct Ledger
     ids::Dict{String, Int}
@@ -20,6 +36,7 @@ mutable struct Ledger
     counter::Int
     owner::Union{Nothing, String}
     unmapped::Dict{String, Dict{String, Any}}
+    series_refs::Vector{SeriesRef}
 end
 
 Ledger() = Ledger(
@@ -28,6 +45,7 @@ Ledger() = Ledger(
     0,
     nothing,
     Dict{String, Dict{String, Any}}(),
+    SeriesRef[],
 )
 
 """
@@ -97,6 +115,19 @@ function keep_unmapped!(ledger::Ledger, key::AbstractString, value)
     end
     get!(Dict{String, Any}, ledger.unmapped, ledger.owner)[String(key)] = value
     return nothing
+end
+
+"""
+Defer the time series `key` embedded in the component being translated, returning the
+placeholder to write in place of its association id.
+"""
+function defer_series_ref!(ledger::Ledger, key::AbstractDict)
+    if isnothing(ledger.owner)
+        throw(Psy5FormatError("a time series key outside any component cannot be resolved"))
+    end
+    placeholder = -(length(ledger.series_refs) + 1)
+    push!(ledger.series_refs, SeriesRef(placeholder, ledger.owner, Dict{String, Any}(key)))
+    return placeholder
 end
 
 unmapped_values(ledger::Ledger, uuid::AbstractString) =

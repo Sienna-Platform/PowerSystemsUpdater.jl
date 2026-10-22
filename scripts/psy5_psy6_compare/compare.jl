@@ -192,7 +192,7 @@ function apply_field_rules(
             continue
         end
         push!(applied, field)
-        value = rule.to_psy5(pop!(record, field), system)
+        value = rule.to_psy5(pop!(record, field), system, record)
         # Several PSY6 fields can fold into one PSY5 field (a setpoint per mode); only the one
         # the mode selected holds a value, so an empty one never overwrites it.
         if !isnothing(value) || !haskey(record, rule.psy5_field)
@@ -258,8 +258,10 @@ function diff_records!(
     moved::AbstractDict = Dict{String, Any}(),
 )
     for key in sort!(collect(union(keys(a), keys(b))))
-        if !haskey(b, key) && haskey(moved, key)
-            # Kept as PSY5 stored it, so its value is not compared against the getter's.
+        if haskey(moved, key) && (!haskey(b, key) || isnothing(b[key]))
+            # Kept as PSY5 stored it, so its value is not compared against the getter's. PSY6
+            # may have the field but leave it unset (a phase shifter's angle limits under an
+            # objective that does not use them).
             record!(out, site, "moved_to_ext", key, a[key], moved[key])
         elseif !haskey(b, key)
             record!(out, site, "missing_field", key, a[key], nothing)
@@ -706,7 +708,7 @@ function write_conversion_section(io, c::AbstractDict)
             get(c, "dropped_dynamic_models", Dict{String, Any}()),
         ),
         (
-            "Invalid values dropped (non-physical PSY5 value left unset)",
+            "Invalid values dropped (non-physical PSY5 value or base; data problem in the source)",
             get(c, "dropped_invalid_values", Dict{String, Any}()),
         ),
     )

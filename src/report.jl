@@ -90,8 +90,9 @@ function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
     )
     _show_section(
         io,
-        "INVALID VALUES DROPPED (non-physical PSY5 value left unset; kept in " *
-        "ext[\"psy5_unmapped\"])",
+        "INVALID VALUES DROPPED (a non-physical PSY5 value, or one on a non-physical base: " *
+        "left unset and kept in ext[\"psy5_unmapped\"], or written as stored where the " *
+        "schema requires it)",
         report.dropped_invalid_values;
         label = key -> "$(key[1]).$(key[2])",
     )
