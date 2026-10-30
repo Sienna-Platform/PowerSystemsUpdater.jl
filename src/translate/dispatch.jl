@@ -108,9 +108,10 @@ PSY5 type names that map onto an identically named PSY6 model. Everything else n
 bespoke `translate` method.
 """
 const DIRECT_TYPES = (
-    :ACBus, :Area, :AreaInterchange, :DCBus, :EnergyReservoirStorage,
-    :HybridSystem, :HydroDispatch,
-    :HydroTurbine, :InterruptiblePowerLoad, :Line, :LoadZone,
+    :ACBus, :Area, :AreaInterchange, :DCBus, :DiscreteControlledACBranch,
+    :EnergyReservoirStorage, :FACTSControlDevice, :HybridSystem, :HydroDispatch,
+    :HydroTurbine, :InterruptiblePowerLoad, :InterruptibleStandardLoad, :Line,
+    :LoadZone,
     :MotorLoad, :PowerLoad, :RenewableDispatch, :RenewableNonDispatch,
     :Source, :StandardLoad, :SynchronousCondenser, :ThermalMultiStart, :ThermalStandard,
 )
@@ -465,7 +466,8 @@ const TRANSLATED_TYPES = Set(
         [
             "Arc", "MonitoredLine", "ConstantReserve", "VariableReserve",
             "Transformer2W", "TapTransformer", "PhaseShiftingTransformer",
-            "Transformer3W", "HydroReservoir", "ExponentialLoad", "FixedAdmittance",
+            "Transformer3W", "PhaseShiftingTransformer3W", "HydroReservoir",
+            "ExponentialLoad", "FixedAdmittance",
             "TwoTerminalGenericHVDCLine", "TwoTerminalLCCLine", "TwoTerminalVSCLine",
             "InterconnectingConverter", "HydroPumpTurbine", "TModelHVDCLine",
         ],

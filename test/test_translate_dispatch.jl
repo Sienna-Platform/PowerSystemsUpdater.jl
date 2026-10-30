@@ -167,7 +167,7 @@
     end
 
     @testset "DIRECT_TYPES" begin
-        @test length(PSU.DIRECT_TYPES) == 20
+        @test length(PSU.DIRECT_TYPES) == 23
         @test !(:Arc in PSU.DIRECT_TYPES)
         # PSY6 folded MonitoredLine into Line; it has its own translator.
         @test !(:MonitoredLine in PSU.DIRECT_TYPES)

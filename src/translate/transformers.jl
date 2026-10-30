@@ -365,6 +365,7 @@ const THREE_WINDING_CONSUMED_FIELDS = Set{String}(
                     "reactive_power_flow_$suffix",
                     "base_voltage_$suffix",
                     "control_objective_$suffix",
+                    "α_$suffix",
                 ] for suffix in string.(THREE_WINDING_TERMINALS)
             ]...,
         ),
@@ -380,10 +381,15 @@ Record every PSY5 key on `raw` that is neither internal nor consumed by
 `rating_\$suffix`). Those two keys are genuinely redundant with the per-circuit data and are
 dropped; recording them keeps that finding visible instead of silent.
 """
-function _record_dropped_three_winding_fields!(raw::AbstractDict, ctx::TranslationContext)
+function _record_dropped_three_winding_fields!(
+    raw::AbstractDict,
+    ctx::TranslationContext,
+    consumed = String[],
+)
     type_name = component_type(raw)
     for key in keys(raw)
-        if key in PSY5_INTERNAL_FIELDS || key in THREE_WINDING_CONSUMED_FIELDS
+        if key in PSY5_INTERNAL_FIELDS || key in THREE_WINDING_CONSUMED_FIELDS ||
+           key in consumed
             continue
         end
         record_unmapped_field!(ctx.report, type_name, key)
@@ -419,7 +425,7 @@ function _winding_circuit(
     circuit_id = allocate_id!(ctx.ledger)
     base_power = base_power_for(raw, ctx.system_base)
     winding = findfirst(==(terminal), THREE_WINDING_TERMINALS)
-    objective, bands, _ =
+    objective, bands, consumed =
         _control_block(raw, "control_objective_$suffix", winding, base_power, ctx)
     # Built as a plain kwargs Dict and run through `_decode_kwargs`, the same as
     # `build_kwargs`'s output, rather than passed straight to the constructor: `power_units`
@@ -431,7 +437,7 @@ function _winding_circuit(
         :available => raw["available_$suffix"],
         :arc => lookup_id(ctx.ledger, reference_uuid(raw["$(suffix)_star_arc"])),
         :tap => raw["$(suffix)_turns_ratio"],
-        :alpha => winding_group_alpha(get(raw, "$(suffix)_group_number", "UNDEFINED")),
+        :alpha => _winding_alpha(raw, suffix),
         :r => raw["r_$suffix"],
         :x => raw["x_$suffix"],
         :rating => get(raw, "rating_$suffix", nothing),
@@ -444,8 +450,19 @@ function _winding_circuit(
         :control_objective => objective,
     )
     merge!(kwargs, bands)
-    return POOM.TransformerCircuit(; _decode_kwargs(POOM.TransformerCircuit, kwargs)...)
+    circuit = POOM.TransformerCircuit(; _decode_kwargs(POOM.TransformerCircuit, kwargs)...)
+    return circuit, consumed
 end
+
+"""
+A winding's phase shift: a `PhaseShiftingTransformer3W`'s own `α_\$suffix` (radians), else
+the angle of a `Transformer3W` winding's group number.
+"""
+_winding_alpha(raw::AbstractDict, suffix::AbstractString) = get(
+    raw,
+    "α_$suffix",
+    winding_group_alpha(get(raw, "$(suffix)_group_number", "UNDEFINED")),
+)
 
 """
 `_winding_circuit` fills each circuit's `available`/`rating` from `available_\$suffix`/
@@ -491,8 +508,9 @@ inverted. Note PSY5's 1-3 pair is PSY6's 3-1: the index order flips.
 """
 function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationContext)
     _check_transformer3w_top_level!(raw)
-    _record_dropped_three_winding_fields!(raw, ctx)
-    circuits = [_winding_circuit(raw, ctx, t) for t in THREE_WINDING_TERMINALS]
+    built = [_winding_circuit(raw, ctx, t) for t in THREE_WINDING_TERMINALS]
+    circuits = first.(built)
+    _record_dropped_three_winding_fields!(raw, ctx, reduce(vcat, last.(built)))
     transformer = POOM.ThreeWindingTransformer(;
         id = lookup_id(ctx.ledger, component_uuid(raw)),
         name = raw["name"],
@@ -523,3 +541,12 @@ function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationCon
     push!(models, transformer)
     return models
 end
+
+"""
+PSY6 has no separate phase-shifting three-winding type: every `TransformerCircuit` carries its
+own `alpha` and `phase_angle_limits`. A `PhaseShiftingTransformer3W` has `Transformer3W`'s
+fields, with a phase shift `α_\$suffix` per winding in place of a winding group number and one
+`phase_angle_limits`, so it is translated the same way (`_winding_alpha`, `_control_block`).
+"""
+translate(::Val{:PhaseShiftingTransformer3W}, raw::AbstractDict, ctx::TranslationContext) =
+    translate(Val(:Transformer3W), raw, ctx)

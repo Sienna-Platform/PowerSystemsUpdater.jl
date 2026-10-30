@@ -54,6 +54,7 @@ const TYPE_MAPPINGS = Dict{String, TypeMapping}(
     # Three circuits rather than one, so no single flatten lines it up; its per-winding
     # fields are compared as missing/extra until a dedicated mapping is written.
     "Transformer3W" => TypeMapping("ThreeWindingTransformer"),
+    "PhaseShiftingTransformer3W" => TypeMapping("ThreeWindingTransformer"),
     # PSY6 folded MonitoredLine into Line; `flow_limits` is compared through `FIELD_RULES`.
     "MonitoredLine" => TypeMapping("Line"),
     "ConstantReserve{ReserveUp}" => TypeMapping("OnlineReserve{ReserveUp, *}"),
@@ -441,6 +442,27 @@ const EXPECTED = Expected[
         "DynamicInverter*",
         "",
         "dynamic models are not in the 0.2 schema; reported as dropped",
+    ),
+    # Dynamic models with no 0.2 schema home, kept dropped for now: induction machines and the
+    # periodic source are dynamic injectors; `DynamicBranch` wraps a static `Line`, which is
+    # lost with it.
+    Expected(
+        "missing_component",
+        "*InductionMachine",
+        "",
+        "dynamic models are not in the 0.2 schema; dropped for now",
+    ),
+    Expected(
+        "missing_component",
+        "PeriodicVariableSource",
+        "",
+        "dynamic models are not in the 0.2 schema; dropped for now",
+    ),
+    Expected(
+        "missing_component",
+        "DynamicBranch",
+        "",
+        "dynamic models are not in the 0.2 schema; dropped for now (its static Line with it)",
     ),
     Expected(
         "value",

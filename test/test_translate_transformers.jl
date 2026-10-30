@@ -675,3 +675,16 @@ end
         @test !haskey(rep.unmapped_fields, ("TapTransformer", "control_objective"))
     end
 end
+
+@testset "PhaseShiftingTransformer3W: per-winding α becomes each circuit's alpha" begin
+    # A phase shifter's own angle (radians) wins over a group number it does not have.
+    @test PSU._winding_alpha(Dict{String, Any}("α_primary" => -0.5236), "primary") ==
+          -0.5236
+    # A Transformer3W winding has no α: its group number's angle, as before.
+    @test PSU._winding_alpha(
+        Dict{String, Any}("primary_group_number" => "UNDEFINED"),
+        "primary",
+    ) == PSU.winding_group_alpha("UNDEFINED")
+    @test PSU.has_translator("PhaseShiftingTransformer3W")
+    @test "α_secondary" in PSU.THREE_WINDING_CONSUMED_FIELDS
+end
