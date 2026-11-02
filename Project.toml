@@ -21,13 +21,13 @@ TimeZones = "f269a46b-ccf7-5d73-abea-4c690281aa53"
 
 [sources]
 # Branch pin until the psy6-line InfrastructureSystems is registered.
-InfrastructureSystems = {url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git", rev = "IS4"}
+InfrastructureSystems = {url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git", rev = "jd/sdk-0.3"}
 
 [compat]
-InfrastructureCoreOpenAPIModels = "0.2"
-InfrastructureTimeSeriesOpenAPIModels = "0.2"
-PowerCoreOpenAPIModels = "0.2"
-PowerOperationsOpenAPIModels = "0.2"
+InfrastructureCoreOpenAPIModels = "0.4"
+InfrastructureTimeSeriesOpenAPIModels = "0.4"
+PowerCoreOpenAPIModels = "0.4"
+PowerOperationsOpenAPIModels = "0.4"
 Dates = "1"
 DocStringExtensions = "~0.8, ~0.9"
 HDF5 = "0.17"
