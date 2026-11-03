@@ -12,7 +12,7 @@ const DIRECT_TYPES = (
     :ACBus, :Area, :AreaInterchange, :DCBus, :EnergyReservoirStorage,
     :HybridSystem, :HydroDispatch,
     :HydroTurbine, :InterruptiblePowerLoad, :Line, :LoadZone,
-    :MonitoredLine, :MotorLoad, :PowerLoad, :RenewableDispatch, :RenewableNonDispatch,
+    :MotorLoad, :PowerLoad, :RenewableDispatch, :RenewableNonDispatch,
     :Source, :StandardLoad, :SynchronousCondenser, :ThermalMultiStart, :ThermalStandard,
 )
 
@@ -201,6 +201,7 @@ const TRANSLATED_TYPES = Set(
             "Transformer3W", "HydroReservoir", "ExponentialLoad", "FixedAdmittance",
             "TwoTerminalGenericHVDCLine", "TwoTerminalLCCLine", "TwoTerminalVSCLine",
             "InterconnectingConverter", "HydroPumpTurbine", "TModelHVDCLine",
+            "MonitoredLine",
         ],
     ),
 )

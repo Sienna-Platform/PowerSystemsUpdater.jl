@@ -166,9 +166,10 @@
     end
 
     @testset "DIRECT_TYPES" begin
-        @test length(PSU.DIRECT_TYPES) == 21
+        @test length(PSU.DIRECT_TYPES) == 20
         @test !(:Arc in PSU.DIRECT_TYPES)
         @test !(:ExponentialLoad in PSU.DIRECT_TYPES)
+        @test !(:MonitoredLine in PSU.DIRECT_TYPES)
         @test !(:FixedAdmittance in PSU.DIRECT_TYPES)
         @test !(:TwoTerminalGenericHVDCLine in PSU.DIRECT_TYPES)
         @test !(:TwoTerminalLCCLine in PSU.DIRECT_TYPES)
