@@ -436,6 +436,58 @@ end
     @test tertiary.alpha ≈ pi / 6
 end
 
+@testset "Transformer3W: each circuit takes its winding's PSY5 pair base" begin
+    # PSY5 stores a winding's star-leg r/x, rating and flows per unit on its pair base
+    # (primary on base_power_12, secondary on 23, tertiary on 13); PSY6 reads circuit values on
+    # the circuit's own base_power, so the values copy unscaled only if the bases match.
+    led = PSU.Ledger()
+    rep = PSU.ConversionReport()
+    ctx = PSU.TranslationContext(led, rep, 100.0)
+    for uuid in ["uuid-3w-base", "uuid-star-base", "uuid-parc-base", "uuid-sarc-base",
+        "uuid-tarc-base"]
+        PSU.assign_id!(led, uuid)
+    end
+    raw = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "Transformer3W"),
+        "internal" => Dict("uuid" => Dict("value" => "uuid-3w-base")),
+        "name" => "base-test", "available" => true,
+        "star_bus" => Dict("value" => "uuid-star-base"),
+        "primary_star_arc" => Dict("value" => "uuid-parc-base"),
+        "secondary_star_arc" => Dict("value" => "uuid-sarc-base"),
+        "tertiary_star_arc" => Dict("value" => "uuid-tarc-base"),
+        "r_primary" => 0.01, "x_primary" => 0.02,
+        "r_secondary" => 0.03, "x_secondary" => 0.04,
+        "r_tertiary" => 0.05, "x_tertiary" => 0.06,
+        "r_12" => 0.07, "x_12" => 0.08,
+        "r_23" => 0.09, "x_23" => 0.10,
+        "r_13" => 0.11, "x_13" => 0.12,
+        "base_power_12" => 144.0, "base_power_23" => 50.0, "base_power_13" => 15.0,
+        "primary_turns_ratio" => 1.01, "secondary_turns_ratio" => 1.02,
+        "tertiary_turns_ratio" => 1.03,
+        "available_primary" => true, "available_secondary" => true,
+        "available_tertiary" => true,
+        "rating_primary" => 1.0, "rating_secondary" => 2.0, "rating_tertiary" => 3.0,
+        "base_voltage_primary" => 110.0, "base_voltage_secondary" => 22.0,
+        "base_voltage_tertiary" => 33.0,
+        "g" => 0.001, "b" => 0.002,
+    )
+
+    out = PSU.translate_component(raw, ctx)
+    circuits = filter(_is_circuit, out)
+    primary = only(c for c in circuits if c.tap == 1.01)
+    secondary = only(c for c in circuits if c.tap == 1.02)
+    tertiary = only(c for c in circuits if c.tap == 1.03)
+
+    @test primary.base_power == 144.0
+    @test secondary.base_power == 50.0
+    @test tertiary.base_power == 15.0
+    # Values are not rescaled: they are already on the base now recorded beside them.
+    @test (primary.r, primary.rating) == (0.01, 1.0)
+    @test (tertiary.x, tertiary.rating) == (0.06, 3.0)
+    tx = only(filter(_is_three_winding, out))
+    @test tx.base_power_31 == 15.0
+end
+
 @testset "Transformer3W: top-level available=false errors loudly" begin
     # available_$suffix's own PSY5 default is true, so a dropped top-level
     # available=false would otherwise be silently replaced by three available circuits.

@@ -416,6 +416,18 @@ function _physical_base_voltage(
     return value
 end
 
+"""
+The PSY5 pair base each winding's values are stored on (PSY5's `_get_winding_base_power`):
+star-leg `r`/`x`, `rating_\$suffix` and the flows of the primary winding are per unit on
+`base_power_12`, the secondary's on `base_power_23`, the tertiary's on `base_power_13`. Used as
+the circuit's own `base_power`, so the values copy across unscaled.
+"""
+const THREE_WINDING_BASE_POWER_KEY = Dict(
+    :primary => "base_power_12",
+    :secondary => "base_power_23",
+    :tertiary => "base_power_13",
+)
+
 function _winding_circuit(
     raw::AbstractDict,
     ctx::TranslationContext,
@@ -423,7 +435,7 @@ function _winding_circuit(
 )
     suffix = string(terminal)
     circuit_id = allocate_id!(ctx.ledger)
-    base_power = base_power_for(raw, ctx.system_base)
+    base_power = Float64(raw[THREE_WINDING_BASE_POWER_KEY[terminal]])
     winding = findfirst(==(terminal), THREE_WINDING_TERMINALS)
     objective, bands, consumed =
         _control_block(raw, "control_objective_$suffix", winding, base_power, ctx)
