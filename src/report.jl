@@ -20,6 +20,10 @@ Base.@kwdef mutable struct ConversionReport
     # written; the value is kept in ext.
     dropped_invalid_values::Dict{Tuple{String, String}, Int} =
         Dict{Tuple{String, String}, Int}()
+    # Fields written by a mapping known not to reproduce PSY5 for this component (e.g. a
+    # switched shunt's `solved_admittance`); each is also logged with the component's name.
+    approximate_mappings::Dict{Tuple{String, String}, Int} =
+        Dict{Tuple{String, String}, Int}()
     systems::Vector{String} = String[]
 end
 
@@ -55,13 +59,20 @@ record_dropped_invalid_value!(
     field::AbstractString,
 ) = _bump!(report.dropped_invalid_values, (String(type_name), String(field)))
 
+record_approximate_mapping!(
+    report::ConversionReport,
+    type_name::AbstractString,
+    field::AbstractString,
+) = _bump!(report.approximate_mappings, (String(type_name), String(field)))
+
 function has_findings(report::ConversionReport)
     return !isempty(report.unmapped_types) ||
            !isempty(report.cascaded_skips) ||
            !isempty(report.unmapped_fields) ||
            !isempty(report.unverified_units) ||
            !isempty(report.dropped_dynamic_models) ||
-           !isempty(report.dropped_invalid_values)
+           !isempty(report.dropped_invalid_values) ||
+           !isempty(report.approximate_mappings)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
@@ -94,6 +105,13 @@ function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
         "left unset and kept in ext[\"psy5_unmapped\"], or written as stored where the " *
         "schema requires it)",
         report.dropped_invalid_values;
+        label = key -> "$(key[1]).$(key[2])",
+    )
+    _show_section(
+        io,
+        "APPROXIMATE MAPPINGS (written, but known not to reproduce the PSY5 value or meaning " *
+        "for these components; see the log for their names)",
+        report.approximate_mappings;
         label = key -> "$(key[1]).$(key[2])",
     )
     if !has_findings(report)

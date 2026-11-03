@@ -26,6 +26,9 @@ function report_counts(report::ConversionReport)
         "dropped_invalid_values" => Dict(
             "$type.$field" => n for ((type, field), n) in report.dropped_invalid_values
         ),
+        "approximate_mappings" => Dict(
+            "$type.$field" => n for ((type, field), n) in report.approximate_mappings
+        ),
     )
 end
 

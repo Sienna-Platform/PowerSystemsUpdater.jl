@@ -711,6 +711,10 @@ function write_conversion_section(io, c::AbstractDict)
             "Invalid values dropped (non-physical PSY5 value or base; data problem in the source)",
             get(c, "dropped_invalid_values", Dict{String, Any}()),
         ),
+        (
+            "Approximate mappings (written, but known not to reproduce PSY5)",
+            get(c, "approximate_mappings", Dict{String, Any}()),
+        ),
     )
     if all(isempty(counts) for (_, counts) in sections)
         println(io, "No findings.\n")

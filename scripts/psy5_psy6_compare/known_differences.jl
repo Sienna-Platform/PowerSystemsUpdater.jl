@@ -151,6 +151,15 @@ per_unit_to_mw(v, _...) = v
 same(v, _...) = v
 
 """
+PSY6's `SwitchedAdmittance.solved_admittance` (a susceptance) as the complex `Y` PSY5 held.
+PSY6 documents it as PSS/E BINIT, the solved total; PSY5's PSS/E parser put BINIT in `Y` with a
+zero conductance. Unset means no solved value, which is PSY5's `Y = 0`.
+"""
+as_switched_admittance_y(v::Real, _...) = Dict{String, Any}("re" => 0.0, "im" => v)
+as_switched_admittance_y(::Nothing, _...) = Dict{String, Any}("re" => 0.0, "im" => 0.0)
+as_switched_admittance_y(v, _...) = v
+
+"""
 A phase-shift impedance correction curve read back in PSY6's radians, in the degrees PSY5
 stored (PSS/E's convention).
 """
@@ -170,6 +179,19 @@ end
 radians_to_degrees_x(curve, _...) = curve
 
 const FIELD_RULES = FieldRule[
+    # SwitchedAdmittance: PSY6 dropped the base `Y` for `solved_admittance` (PSS/E BINIT),
+    # renamed the per-block `initial_status` (PSS/E `Si`) to `number_engaged`, and split PSS/E's
+    # VSWLO/VSWHI band into a voltage band and a reactive-range band, one per control mode (the
+    # other is unset; FIXED uses neither).
+    FieldRule("SwitchedAdmittance", "solved_admittance", "Y", as_switched_admittance_y),
+    FieldRule("SwitchedAdmittance", "number_engaged", "initial_status", same),
+    FieldRule("SwitchedAdmittance", "voltage_limits", "admittance_limits", same),
+    FieldRule(
+        "SwitchedAdmittance",
+        "reactive_power_range_limits",
+        "admittance_limits",
+        same,
+    ),
     # `status` became an `OperationalStates` enum. PSY5's pump status distinguished GEN from
     # PUMP; PSY6's ONLINE does not, so only OFF has a counterpart and a running pump fails.
     FieldRule("HydroPumpTurbine", "status", "status", value_map("OFFLINE" => "OFF")),

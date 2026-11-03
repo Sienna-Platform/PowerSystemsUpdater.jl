@@ -76,6 +76,13 @@ const PSY5_STORAGE = Dict{Tuple{String, String}, Psy5Storage}(
     ("ConstantReserveGroup", "requirement") => SystemBasePU(),
     # "Fixed admittance in p.u. (SYSTEM_BASE)"; PSY6 declares MVAr (COMPONENT_MVAR).
     ("FixedAdmittance", "y") => SystemBasePU(),
+    # PSS/E BINIT and B1..B8, rescaled by PSY5's parser to system-base per unit
+    # (`parsers/pm_io/data.jl`); PSY6 declares MVAr (COMPONENT_MVAR).
+    ("SwitchedAdmittance", "solved_admittance") => SystemBasePU(),
+    ("SwitchedAdmittance", "y_increase") => SystemBasePU(),
+    # PSS/E VSWLO/VSWHI as read: per unit voltage, or a fraction of a reactive range.
+    ("SwitchedAdmittance", "voltage_limits") => Natural(),
+    ("SwitchedAdmittance", "reactive_power_range_limits") => Natural(),
     # "Initial level of the reservoir relative to the `storage_level_limits.max`" and level
     # targets "as a fraction of" it; PSY6 declares absolute levels.
     ("HydroReservoir", "initial_level") => RelativeTo(["storage_level_limits", "max"]),

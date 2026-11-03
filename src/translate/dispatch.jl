@@ -263,6 +263,92 @@ function translate(::Val{:FixedAdmittance}, raw::AbstractDict, ctx::TranslationC
     return direct_translate(POOM.FixedAdmittance, renamed, ctx)
 end
 
+"""
+The PSY6 band `SwitchedAdmittance.admittance_limits` (PSS/E VSWLO/VSWHI) lands in, by control
+mode: the schema's voltage modes use `voltage_limits`, its reactive modes
+`reactive_power_range_limits`. `FIXED` and `UNDEFINED` use neither, so their band is kept in
+ext.
+"""
+const SWITCHED_ADMITTANCE_LIMITS_FIELD = Dict{String, String}(
+    "DISCRETE_VOLTAGE" => "voltage_limits",
+    "CONTINUOUS_VOLTAGE" => "voltage_limits",
+    "DISCRETE_REACTIVE_PLANT" => "reactive_power_range_limits",
+    "DISCRETE_REACTIVE_VSC" => "reactive_power_range_limits",
+    "DISCRETE_ADMITTANCE_REMOTE" => "reactive_power_range_limits",
+    "DISCRETE_REACTIVE_FACTS" => "reactive_power_range_limits",
+)
+
+"""
+PSY5's `SwitchedAdmittance`, mapped as PowerFlowFileParser's PSS/E reader maps the same record
+(`PowerFlowFileParser.jl/src/openapi/shunt.jl`):
+
+  - `Y` (PSS/E BINIT, the solved total) → `solved_admittance`, its susceptance. Left unset when
+    `Y` is zero, so PSY6 sums the engaged blocks as PSY5 does.
+  - `initial_status` (PSS/E `Si`, a per-block in-service flag) → `number_engaged` (a per-block
+    step count).
+  - `Y_increase` → `y_increase`; `admittance_limits` (PSS/E VSWLO/VSWHI) → the band its control
+    mode uses (`SWITCHED_ADMITTANCE_LIMITS_FIELD`), else ext.
+
+Where this is known not to reproduce PSY5, the component is reported under approximate
+mappings (`_warn_switched_admittance_approximations`). A non-zero conductance (`real(Y)`) has no
+PSY6 field: `Y` is kept in ext whole.
+"""
+function translate(::Val{:SwitchedAdmittance}, raw::AbstractDict, ctx::TranslationContext)
+    _warn_switched_admittance_approximations(raw, ctx)
+    renamed = copy(raw)
+    y = pop!(renamed, "Y")
+    if !iszero(y["real"])
+        @warn "SwitchedAdmittance \"$(raw["name"])\": conductance real(Y) = $(y["real"]) " *
+              "has no PSY6 field; Y is kept in ext"
+        renamed["Y"] = y
+    end
+    if !iszero(y["imag"])
+        renamed["solved_admittance"] = y["imag"]
+    end
+    if haskey(renamed, "initial_status")
+        renamed["number_engaged"] = pop!(renamed, "initial_status")
+    end
+    renamed["y_increase"] = pop!(renamed, "Y_increase")
+    limits_field =
+        get(SWITCHED_ADMITTANCE_LIMITS_FIELD, get(raw, "control_mode", "FIXED"), nothing)
+    if !isnothing(limits_field)
+        renamed[limits_field] = pop!(renamed, "admittance_limits")
+    end
+    return direct_translate(POOM.SwitchedAdmittance, renamed, ctx)
+end
+
+"""
+Report (and log) the PSY5 `SwitchedAdmittance`s that the PowerFlowFileParser mapping does not
+reproduce:
+
+  - **`solved_admittance`:** `Y` is non-zero and some block is in service. PSY5's power flow
+    takes `Y + Σ initial_status · Y_increase`; PSY6 takes `solved_admittance` alone (`Y`). PSY5's
+    PSS/E parser zeroes `initial_status` for the modes where this would double count, but not for
+    the others, so PSY6's value (BINIT, the PSS/E solved total) differs from PSY5's.
+  - **`number_engaged`:** an in-service block has more than one step. `Si` says the block is in
+    service, not how many of its steps are engaged, so `number_engaged = 1` may be wrong.
+"""
+function _warn_switched_admittance_approximations(
+    raw::AbstractDict,
+    ctx::TranslationContext,
+)
+    name = raw["name"]
+    status = something(get(raw, "initial_status", nothing), Int[])
+    steps = something(get(raw, "number_of_steps", nothing), Int[])
+    if !iszero(raw["Y"]["imag"]) && any(>(0), status)
+        record_approximate_mapping!(ctx.report, "SwitchedAdmittance", "solved_admittance")
+        @warn "SwitchedAdmittance \"$name\": PSY5 adds the in-service blocks to Y " *
+              "(Y + Σ initial_status · Y_increase); PSY6 uses solved_admittance = Y alone, " *
+              "so the effective admittance differs"
+    end
+    if any(i -> status[i] > 0 && get(steps, i, 0) > 1, eachindex(status))
+        record_approximate_mapping!(ctx.report, "SwitchedAdmittance", "number_engaged")
+        @warn "SwitchedAdmittance \"$name\": initial_status is a per-block in-service " *
+              "flag; written as number_engaged, a step count, for a block with several steps"
+    end
+    return nothing
+end
+
 # PSY5 stores a device's loss coefficients as a bare curve (`InputOutputCurve` or
 # `IncrementalCurve`); PSY6 wraps it in a `LossCurve` (`power_units` + `value_curve`). PSY5
 # has no field for `power_units` here — the natural-units default the schema documents. The
@@ -467,7 +553,7 @@ const TRANSLATED_TYPES = Set(
             "Arc", "MonitoredLine", "ConstantReserve", "VariableReserve",
             "Transformer2W", "TapTransformer", "PhaseShiftingTransformer",
             "Transformer3W", "PhaseShiftingTransformer3W", "HydroReservoir",
-            "ExponentialLoad", "FixedAdmittance",
+            "ExponentialLoad", "FixedAdmittance", "SwitchedAdmittance",
             "TwoTerminalGenericHVDCLine", "TwoTerminalLCCLine", "TwoTerminalVSCLine",
             "InterconnectingConverter", "HydroPumpTurbine", "TModelHVDCLine",
         ],
