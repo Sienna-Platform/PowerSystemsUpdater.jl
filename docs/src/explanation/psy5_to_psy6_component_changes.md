@@ -103,7 +103,10 @@ Consequences worth knowing:
   - **The 1-3 winding pair becomes 3-1**: `r_13`/`x_13`/`base_power_13` → `r_31`/`x_31`/`base_power_31`.
     The 1-2 and 2-3 pairs keep their names. A silent-corruption trap.
   - **Availability and rating are circuit-level.** `Transformer3W`'s top-level `available` and
-    `rating` have no PSY6 home; each circuit carries its own.
+    `rating` have no PSY6 home; each circuit carries its own. A circuit is available only if
+    both the transformer and its winding are (`available && available_<winding>`), so a
+    transformer PSY5 marked out of service gets three unavailable circuits; the top-level value
+    is kept in `ext`.
   - **`g`/`b` become one `magnetizing_shunt`** (`ComplexNumber`). On a three-winding transformer
     it sits star-bus-to-ground, so `shunt_location = "STAR"` — unlike the two-winding case,
     whose `primary_shunt` genuinely is primary-side and takes the `"PRIMARY"` default.

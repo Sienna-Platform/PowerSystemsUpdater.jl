@@ -380,9 +380,9 @@ Record every PSY5 key on `raw` that is neither internal nor consumed by
 `translate(::Val{:Transformer3W}, ...)`. PSY5's `Transformer3W` carries a top-level
 `available` and a top-level `rating` alongside the per-winding fields; PSY6's
 `ThreeWindingTransformer` has neither, since availability and rating are circuit-level
-(each `TransformerCircuit` already carries its own, from `available_\$suffix`/
-`rating_\$suffix`). Those two keys are genuinely redundant with the per-circuit data and are
-dropped; recording them keeps that finding visible instead of silent.
+(each `TransformerCircuit` carries its own: `available` is the top-level flag AND
+`available_\$suffix`, see `_winding_available`; `rating` is `rating_\$suffix`). The two
+top-level keys are kept in ext; recording them keeps that visible instead of silent.
 """
 function _record_dropped_three_winding_fields!(
     raw::AbstractDict,
@@ -431,6 +431,15 @@ const THREE_WINDING_BASE_POWER_KEY = Dict(
     :tertiary => "base_power_13",
 )
 
+"""
+A winding's circuit availability: the transformer's top-level `available` AND the winding's
+own `available_\$suffix`. PSY6 derives the transformer's availability from its circuits, so a
+transformer PSY5 marked out of service gets three unavailable circuits, whatever its per-winding
+flags say (they default to `true`). The top-level value itself is kept in ext.
+"""
+_winding_available(raw::AbstractDict, suffix::AbstractString) =
+    get(raw, "available", true) && raw["available_$suffix"]
+
 function _winding_circuit(
     raw::AbstractDict,
     ctx::TranslationContext,
@@ -449,7 +458,7 @@ function _winding_circuit(
     # `TransformerCircuitControlObjective`) under the OpenAPI 1.1 generator.
     kwargs = Dict{Symbol, Any}(
         :id => circuit_id,
-        :available => raw["available_$suffix"],
+        :available => _winding_available(raw, suffix),
         :arc => lookup_id(ctx.ledger, reference_uuid(raw["$(suffix)_star_arc"])),
         :tap => raw["$(suffix)_turns_ratio"],
         :alpha => _winding_alpha(raw, suffix),
@@ -480,25 +489,15 @@ _winding_alpha(raw::AbstractDict, suffix::AbstractString) = get(
 )
 
 """
-`_winding_circuit` fills each circuit's `available`/`rating` from `available_\$suffix`/
-`rating_\$suffix`, whose PSY5 defaults are `true`/`0.0` — the same values a genuinely
-redundant top-level field would have. A real top-level `available=false` would be silently
-replaced by three available circuits, and a real top-level `rating` would be silently
-replaced by a zero-capacity one, if any per-winding rating is still at its default. Recording
-the drop (`_record_dropped_three_winding_fields!`) is not the same as not producing a wrong
-value, so both cases error instead.
+`_winding_circuit` fills each circuit's `rating` from `rating_\$suffix`, whose PSY5 default is
+`0.0`. A real top-level `rating` would be silently replaced by a zero-capacity one if any
+per-winding rating is still at its default. Recording the drop
+(`_record_dropped_three_winding_fields!`) is not the same as not producing a wrong value, so
+that case errors instead. (A top-level `available=false` needs no check: it is folded into
+every circuit's `available`, `_winding_available`.)
 """
 function _check_transformer3w_top_level!(raw::AbstractDict)
     name = get(raw, "name", "<unnamed>")
-    available = get(raw, "available", true)
-    if available === false
-        throw(
-            Psy5FormatError(
-                "Transformer3W \"$name\": top-level available=false would be silently " *
-                "replaced by available_\$suffix's default (true) on every TransformerCircuit",
-            ),
-        )
-    end
     rating = get(raw, "rating", 0.0)
     if !iszero(rating)
         for suffix in string.(THREE_WINDING_TERMINALS)

@@ -488,21 +488,61 @@ end
     @test tx.base_power_31 == 15.0
 end
 
-@testset "Transformer3W: top-level available=false errors loudly" begin
-    # available_$suffix's own PSY5 default is true, so a dropped top-level
-    # available=false would otherwise be silently replaced by three available circuits.
-    led = PSU.Ledger()
-    rep = PSU.ConversionReport()
-    ctx = PSU.TranslationContext(led, rep, 100.0)
+@testset "Transformer3W: top-level available is ANDed into every circuit" begin
+    # PSY6 derives the transformer's availability from its circuits, and available_$suffix
+    # defaults to true in PSY5, so the top-level flag must reach every circuit.
+    function _avail_circuits(available, primary, secondary, tertiary)
+        led = PSU.Ledger()
+        rep = PSU.ConversionReport()
+        ctx = PSU.TranslationContext(led, rep, 100.0)
+        for uuid in ["uuid-3w-av", "uuid-star-av", "uuid-parc-av", "uuid-sarc-av",
+            "uuid-tarc-av"]
+            PSU.assign_id!(led, uuid)
+        end
+        raw = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "Transformer3W"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-3w-av")),
+            "name" => "avail-test", "available" => available,
+            "star_bus" => Dict("value" => "uuid-star-av"),
+            "primary_star_arc" => Dict("value" => "uuid-parc-av"),
+            "secondary_star_arc" => Dict("value" => "uuid-sarc-av"),
+            "tertiary_star_arc" => Dict("value" => "uuid-tarc-av"),
+            "r_primary" => 0.01, "x_primary" => 0.02,
+            "r_secondary" => 0.03, "x_secondary" => 0.04,
+            "r_tertiary" => 0.05, "x_tertiary" => 0.06,
+            "r_12" => 0.07, "x_12" => 0.08, "r_23" => 0.09, "x_23" => 0.10,
+            "r_13" => 0.11, "x_13" => 0.12,
+            "base_power_12" => 100.0, "base_power_23" => 100.0,
+            "base_power_13" => 100.0,
+            "primary_turns_ratio" => 1.01, "secondary_turns_ratio" => 1.02,
+            "tertiary_turns_ratio" => 1.03,
+            "available_primary" => primary, "available_secondary" => secondary,
+            "available_tertiary" => tertiary,
+            "rating_primary" => 1.0, "rating_secondary" => 2.0,
+            "rating_tertiary" => 3.0,
+            "base_voltage_primary" => 110.0, "base_voltage_secondary" => 22.0,
+            "base_voltage_tertiary" => 33.0,
+            "g" => 0.0, "b" => 0.0,
+        )
+        out = PSU.translate_component(raw, ctx)
+        circuits = filter(_is_circuit, out)
+        by_tap = Dict(c.tap => c.available for c in circuits)
+        return (by_tap[1.01], by_tap[1.02], by_tap[1.03]), rep, led
+    end
 
-    raw = Dict{String, Any}(
-        "__metadata__" => Dict("type" => "Transformer3W"),
-        "internal" => Dict("uuid" => Dict("value" => "uuid-3w-unavailable")),
-        "name" => "unavailable-3w",
-        "available" => false,
-    )
+    # Out of service at both levels: converts, three unavailable circuits.
+    flags, rep, led = _avail_circuits(false, false, false, false)
+    @test flags == (false, false, false)
+    @test rep.unmapped_fields[("Transformer3W", "available")] == 1
+    @test PSU.unmapped_values(led, "uuid-3w-av")["available"] === false
 
-    @test_throws PSU.Psy5FormatError PSU.translate(Val(:Transformer3W), raw, ctx)
+    # Out of service at the top, windings at their default: still all unavailable.
+    flags, _, _ = _avail_circuits(false, true, false, true)
+    @test flags == (false, false, false)
+
+    # In service: each winding keeps its own flag.
+    flags, _, _ = _avail_circuits(true, true, false, true)
+    @test flags == (true, false, true)
 end
 
 @testset "Transformer3W: non-zero top-level rating with a zero per-winding rating errors loudly" begin
