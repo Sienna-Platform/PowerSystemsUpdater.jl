@@ -130,6 +130,12 @@ const TAP_MOVING_OBJECTIVES = Set([
 const DEFAULT_TAP_RATIO_LIMITS = (0.9, 1.1)
 
 """
+PSY5's default `TapTransformer.voltage_setpoint` (1.0 pu). Files from PSY5 versions before the
+field existed omit it; current PSY5 fills this default when it loads one.
+"""
+const PSY5_DEFAULT_VOLTAGE_SETPOINT = 1.0
+
+"""
 PSY5's `TransformerControlObjective` values are PSS/E's `COD` codes. A PSS/E `ext` row's
 bands are only used when its `COD` agrees with the objective, so they describe that control.
 """
@@ -167,6 +173,25 @@ function _band_from_fields(raw::AbstractDict, band::Symbol)
         return (_min_max(limits["min"], limits["max"]), "phase_angle_limits")
     end
     return nothing
+end
+
+"""
+The band PSY5's own default gives, for a field an older PSY5 file omits, or `nothing`: a
+`TapTransformer` with no `voltage_setpoint` holds `PSY5_DEFAULT_VOLTAGE_SETPOINT` once current
+PSY5 loads it, so its voltage band is that setpoint. Tried after the PSY5 fields and PSS/E
+`ext`, and recorded under PSY5 DEFAULTS FILLED.
+"""
+function _band_from_psy5_default(
+    raw::AbstractDict,
+    band::Symbol,
+    ctx::TranslationContext,
+)
+    if band !== :controlled_voltage_limits || component_type(raw) != "TapTransformer" ||
+       haskey(raw, "voltage_setpoint")
+        return nothing
+    end
+    record_psy5_default!(ctx.report, "TapTransformer", "voltage_setpoint")
+    return _min_max(PSY5_DEFAULT_VOLTAGE_SETPOINT, PSY5_DEFAULT_VOLTAGE_SETPOINT)
 end
 
 _ext_number(ext::AbstractDict, key::AbstractString) = _ext_number(get(ext, key, nothing))
@@ -214,7 +239,8 @@ Schema 0.2 requires, for each objective other than `UNDEFINED`, the bands in
 `CONTROL_OBJECTIVE_BANDS`; tap-moving objectives also get `tap_ratio_limits` (see
 `TAP_MOVING_OBJECTIVES`). Each band is taken from the PSY5 transformer's own fields where it
 has one (`_band_from_fields`), else from PSS/E columns in its `ext`
-(`_band_from_psse_ext`). If a required band is in neither, the circuit is written with
+(`_band_from_psse_ext`), else from PSY5's default for a field an older file omits
+(`_band_from_psy5_default`). If a required band is in none of these, the circuit is written with
 `UNDEFINED` (no control block) so the document stays valid; the PSY5 objective is recorded
 against `objective_key` in the report and kept in the component's `ext`.
 """
@@ -243,6 +269,9 @@ function _control_block(
             continue
         end
         from_ext = _band_from_psse_ext(ext, band, winding, objective, base_power)
+        if isnothing(from_ext)
+            from_ext = _band_from_psy5_default(raw, band, ctx)
+        end
         if isnothing(from_ext)
             record_unmapped_field!(ctx.report, component_type(raw), objective_key)
             keep_unmapped!(ctx.ledger, objective_key, objective)

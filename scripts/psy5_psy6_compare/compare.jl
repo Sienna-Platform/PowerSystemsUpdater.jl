@@ -203,6 +203,24 @@ function apply_field_rules(
 end
 
 """
+Lift one winding's circuit (`circuit_key` on the PSY6 record) onto `lifted`, each field under
+its PSY5 per-winding name (`WINDING_FIELDS`), or `<field>@<circuit_key>` when PSY5 has none.
+A value that is not a nested circuit is kept under its own key.
+"""
+function lift_winding!(lifted, circuit_key, winding, circuit::AbstractDict)
+    for (inner_key, inner_value) in circuit
+        inner_key == "__type__" && continue
+        template = get(WINDING_FIELDS, inner_key, nothing)
+        name =
+            isnothing(template) ? "$(inner_key)@$(circuit_key)" :
+            replace(template, "{w}" => winding)
+        lifted[name] = inner_value
+    end
+    return lifted
+end
+lift_winding!(lifted, circuit_key, _, value) = (lifted[circuit_key] = value; lifted)
+
+"""
 The PSY6 record reshaped to line up with the PSY5 one: nested structs named in
 `mapping.flatten` are lifted to the top level, fields are renamed to their PSY5 names, then
 `FIELD_RULES` and `NESTED_ALIGNMENTS` translate the forms PSY6 changed.
@@ -215,7 +233,9 @@ function align(
 )
     lifted = Dict{String, Any}()
     for (key, value) in record
-        if key in mapping.flatten
+        if haskey(mapping.windings, key)
+            lift_winding!(lifted, key, mapping.windings[key], value)
+        elseif key in mapping.flatten
             for (inner_key, inner_value) in value
                 if inner_key != "__type__"
                     lifted[inner_key] = inner_value
@@ -226,7 +246,8 @@ function align(
         end
     end
     renamed = Dict{String, Any}(get(mapping.renames, k, k) => v for (k, v) in lifted)
-    return align_nested(apply_field_rules(renamed, psy5_type, system))
+    reshaped = mapping.reshape(renamed)
+    return align_nested(apply_field_rules(reshaped, psy5_type, system))
 end
 
 """
@@ -718,6 +739,10 @@ function write_conversion_section(io, c::AbstractDict)
         (
             "Schema defaults written (no PSY5 value; PSY6 requires the field)",
             get(c, "schema_defaults", Dict{String, Any}()),
+        ),
+        (
+            "PSY5 defaults filled (field absent from an older PSY5 file)",
+            get(c, "psy5_defaults", Dict{String, Any}()),
         ),
     )
     if all(isempty(counts) for (_, counts) in sections)

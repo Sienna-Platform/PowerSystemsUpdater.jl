@@ -691,6 +691,27 @@ end
         @test !haskey(rep.unmapped_fields, ("TapTransformer", "voltage_setpoint"))
     end
 
+    @testset "older PSY5 file: no voltage_setpoint, so PSY5's default (flagged)" begin
+        for objective in ("FIXED", "VOLTAGE")
+            circuit, rep = _controlled("TapTransformer", objective)
+            @test string(circuit.control_objective) == objective
+            @test _band(circuit.controlled_voltage_limits) == (1.0, 1.0)
+            @test rep.psy5_defaults[("TapTransformer", "voltage_setpoint")] == 1
+            @test !haskey(rep.unmapped_fields, ("TapTransformer", "control_objective"))
+        end
+        # A matching PSS/E band is real data, so it wins over the default.
+        circuit, rep = _controlled("TapTransformer", "FIXED";
+            extra = Dict{String, Any}(
+                "ext" => Dict{String, Any}("COD1" => 0, "VMA1" => 1.1, "VMI1" => 0.9),
+            ))
+        @test _band(circuit.controlled_voltage_limits) == (0.9, 1.1)
+        @test isempty(rep.psy5_defaults)
+        # Present setpoint: no default.
+        _, rep = _controlled("TapTransformer", "VOLTAGE";
+            extra = Dict{String, Any}("voltage_setpoint" => 1.02))
+        @test isempty(rep.psy5_defaults)
+    end
+
     @testset "tier 1 then 2: phase angle from the field, flow band from ext" begin
         circuit, rep = _controlled("PhaseShiftingTransformer", "ACTIVE_POWER_FLOW";
             extra = Dict{String, Any}(

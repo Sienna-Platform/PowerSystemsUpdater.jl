@@ -27,6 +27,9 @@ Base.@kwdef mutable struct ConversionReport
     # Fields PSY5 has no value for, written with the schema's documented default only because
     # PowerSystems' importer requires them instead of applying that default.
     schema_defaults::Dict{Tuple{String, String}, Int} = Dict{Tuple{String, String}, Int}()
+    # Fields absent from a file written by an older PSY5, filled with PSY5's own default (what
+    # current PSY5 holds after loading that file).
+    psy5_defaults::Dict{Tuple{String, String}, Int} = Dict{Tuple{String, String}, Int}()
     systems::Vector{String} = String[]
 end
 
@@ -74,6 +77,12 @@ record_schema_default!(
     field::AbstractString,
 ) = _bump!(report.schema_defaults, (String(type_name), String(field)))
 
+record_psy5_default!(
+    report::ConversionReport,
+    type_name::AbstractString,
+    field::AbstractString,
+) = _bump!(report.psy5_defaults, (String(type_name), String(field)))
+
 function has_findings(report::ConversionReport)
     return !isempty(report.unmapped_types) ||
            !isempty(report.cascaded_skips) ||
@@ -82,7 +91,8 @@ function has_findings(report::ConversionReport)
            !isempty(report.dropped_dynamic_models) ||
            !isempty(report.dropped_invalid_values) ||
            !isempty(report.approximate_mappings) ||
-           !isempty(report.schema_defaults)
+           !isempty(report.schema_defaults) ||
+           !isempty(report.psy5_defaults)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
@@ -129,6 +139,13 @@ function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
         "SCHEMA DEFAULTS WRITTEN (no PSY5 value; the schema's documented default written " *
         "because PowerSystems requires the field instead of applying it)",
         report.schema_defaults;
+        label = key -> "$(key[1]).$(key[2])",
+    )
+    _show_section(
+        io,
+        "PSY5 DEFAULTS FILLED (field absent from the file, as an older PSY5 wrote it; PSY5's " *
+        "own default used)",
+        report.psy5_defaults;
         label = key -> "$(key[1]).$(key[2])",
     )
     if !has_findings(report)

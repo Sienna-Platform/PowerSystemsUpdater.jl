@@ -32,6 +32,9 @@ function report_counts(report::ConversionReport)
         "schema_defaults" => Dict(
             "$type.$field" => n for ((type, field), n) in report.schema_defaults
         ),
+        "psy5_defaults" => Dict(
+            "$type.$field" => n for ((type, field), n) in report.psy5_defaults
+        ),
     )
 end
 

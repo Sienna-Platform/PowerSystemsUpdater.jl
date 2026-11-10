@@ -26,20 +26,80 @@ Where a PSY5 type lives in PSY6.
   - `flatten`: PSY6 fields holding a nested struct whose fields are lifted to the top level
     before comparing (e.g. a transformer's `circuit`).
   - `renames`: PSY6 field name => the PSY5 field name it is compared against.
+  - `windings`: PSY6 fields holding one nested circuit per winding => the winding's name in
+    PSY5's field names. Each circuit field is lifted under its PSY5 per-winding name
+    (`WINDING_FIELDS`, with `{w}` replaced by the winding), or as `<field>@<circuit>` when PSY5
+    has no counterpart, so it shows as a new PSY6 field.
+  - `reshape`: a final `record -> record` step for a change no rename expresses (one PSY6
+    field that was two in PSY5).
 """
-struct TypeMapping
+struct TypeMapping{F <: Function}
     psy6_type::String
     flatten::Vector{String}
     renames::Dict{String, String}
+    windings::Dict{String, String}
+    reshape::F
 end
 
 function TypeMapping(
     psy6_type::String;
     flatten = String[],
     renames = Dict{String, String}(),
+    windings = Dict{String, String}(),
+    reshape = identity,
 )
-    return TypeMapping(psy6_type, flatten, renames)
+    return TypeMapping(psy6_type, flatten, renames, windings, reshape)
 end
+
+"""
+A three-winding transformer's circuit fields => the PSY5 per-winding field each is compared
+against, `{w}` standing for `primary`/`secondary`/`tertiary`. PSY5 kept every winding's data
+flat on the transformer; PSY6 moved it into one `TransformerCircuit` per winding. A
+`Transformer3W` has no `α_{w}` (its angle came from `{w}_group_number`, which PSY6 drops), so
+there the circuit's `α` is a new field; a `PhaseShiftingTransformer3W` compares it.
+"""
+const WINDING_FIELDS = Dict(
+    "arc" => "{w}_star_arc",
+    "tap" => "{w}_turns_ratio",
+    "α" => "α_{w}",
+    "r" => "r_{w}",
+    "x" => "x_{w}",
+    "rating" => "rating_{w}",
+    "available" => "available_{w}",
+    "active_power_flow" => "active_power_flow_{w}",
+    "reactive_power_flow" => "reactive_power_flow_{w}",
+    "control_objective" => "control_objective_{w}",
+    "base_voltage_primary" => "base_voltage_{w}",
+)
+
+"""
+PSY6's three-winding `magnetizing_shunt` (a complex number, star bus to ground) as the `g`/`b`
+pair PSY5 held.
+"""
+split_magnetizing_shunt(record::Dict{String, Any}) =
+    _split_shunt!(record, get(record, "magnetizing_shunt", nothing))
+
+function _split_shunt!(record::Dict{String, Any}, shunt::AbstractDict)
+    if haskey(shunt, "re") && haskey(shunt, "im")
+        delete!(record, "magnetizing_shunt")
+        record["g"] = shunt["re"]
+        record["b"] = shunt["im"]
+    end
+    return record
+end
+_split_shunt!(record::Dict{String, Any}, _) = record
+
+const THREE_WINDING = TypeMapping(
+    "ThreeWindingTransformer";
+    windings = Dict(
+        "primary_circuit" => "primary",
+        "secondary_circuit" => "secondary",
+        "tertiary_circuit" => "tertiary",
+    ),
+    # PSY5's 1-3 pair is PSY6's 3-1.
+    renames = Dict("r_31" => "r_13", "x_31" => "x_13", "base_power_31" => "base_power_13"),
+    reshape = split_magnetizing_shunt,
+)
 
 const TWO_WINDING = TypeMapping(
     "TwoWindingTransformer";
@@ -51,10 +111,9 @@ const TYPE_MAPPINGS = Dict{String, TypeMapping}(
     "Transformer2W" => TWO_WINDING,
     "TapTransformer" => TWO_WINDING,
     "PhaseShiftingTransformer" => TWO_WINDING,
-    # Three circuits rather than one, so no single flatten lines it up; its per-winding
-    # fields are compared as missing/extra until a dedicated mapping is written.
-    "Transformer3W" => TypeMapping("ThreeWindingTransformer"),
-    "PhaseShiftingTransformer3W" => TypeMapping("ThreeWindingTransformer"),
+    # One circuit per winding, each lifted under PSY5's per-winding names.
+    "Transformer3W" => THREE_WINDING,
+    "PhaseShiftingTransformer3W" => THREE_WINDING,
     # PSY6 folded MonitoredLine into Line; `flow_limits` is compared through `FIELD_RULES`.
     "MonitoredLine" => TypeMapping("Line"),
     "ConstantReserve{ReserveUp}" => TypeMapping("OnlineReserve{ReserveUp, *}"),
@@ -528,8 +587,22 @@ const EXPECTED = Expected[
     Expected(
         "missing_field",
         "Transformer3W",
+        "*_group_number",
+        "PSY6 drops WindingGroupNumber; the angle survives as each circuit's α",
+    ),
+    Expected(
+        "missing_field",
+        "Transformer3W",
         "available",
         "Transformer3W availability is per-circuit in PSY6",
+    ),
+    Expected(
+        "value",
+        "*Transformer3W",
+        "available_*",
+        "transformer out of service at the top level: each circuit is available only if the " *
+        "transformer and its winding both are",
+        (psy5, psy6) -> psy5 === true && psy6 === false,
     ),
     Expected(
         "missing_field",
