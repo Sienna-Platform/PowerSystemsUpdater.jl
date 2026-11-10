@@ -29,6 +29,9 @@ function report_counts(report::ConversionReport)
         "approximate_mappings" => Dict(
             "$type.$field" => n for ((type, field), n) in report.approximate_mappings
         ),
+        "schema_defaults" => Dict(
+            "$type.$field" => n for ((type, field), n) in report.schema_defaults
+        ),
     )
 end
 

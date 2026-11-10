@@ -333,6 +333,15 @@
         # is not a MarketBidCost fieldname (that field is minimum_energy_offer), so nothing
         # downstream needs to record it again.
         @test scalar_rep.unmapped_fields[("MarketBidCost", "no_load_cost")] == 1
+        # PSY5 has no slope/style fields: the schema defaults are written, and flagged.
+        @test translated["incremental_slope"] === false
+        @test translated["decremental_slope"] === false
+        @test translated["curve_style"] == 0
+        @test translated["curve_multistep"] == 0
+        for field in
+            ("incremental_slope", "decremental_slope", "curve_style", "curve_multistep")
+            @test scalar_rep.schema_defaults[("MarketBidCost", field)] == 1
+        end
 
         # actually constructs: ICOM.decode (from_json's OpenAPI 1.1 replacement) is what
         # PCOM.read_document uses to turn a JSON dict into a typed model, and this is the

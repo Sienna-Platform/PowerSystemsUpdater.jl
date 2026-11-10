@@ -696,8 +696,9 @@ end
             ))
         @test _band(circuit.tap_ratio_limits) == (0.8, 1.2)
         @test !haskey(rep.unmapped_fields, ("TapTransformer", "tap_limits"))
+        @test isempty(rep.schema_defaults)
 
-        circuit, _ = _controlled("PhaseShiftingTransformer", "FIXED";
+        circuit, rep = _controlled("PhaseShiftingTransformer", "FIXED";
             extra = Dict{String, Any}(
                 "ext" => Dict{String, Any}(
                     "COD1" => 0, "VMA1" => 1.1, "VMI1" => 0.9,
@@ -705,10 +706,13 @@ end
                 ),
             ))
         @test _band(circuit.tap_ratio_limits) == (0.75, 1.25)
+        @test isempty(rep.schema_defaults)
 
-        circuit, _ = _controlled("TapTransformer", "VOLTAGE";
+        # Neither source: the schema default, flagged.
+        circuit, rep = _controlled("TapTransformer", "VOLTAGE";
             extra = Dict{String, Any}("voltage_setpoint" => 1.0))
         @test _band(circuit.tap_ratio_limits) == (0.9, 1.1)
+        @test rep.schema_defaults[("TapTransformer", "tap_ratio_limits")] == 1
 
         # Phase-moving objectives get no tap band.
         circuit, _ = _controlled("PhaseShiftingTransformer", "ACTIVE_POWER_FLOW";

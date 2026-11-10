@@ -22,8 +22,8 @@ const KNOWN_ROUNDTRIP_GAPS = Dict{String, String}()
 # holds as scalars, so the updater does not carry it yet. (`FuelCurve.fuel_cost` pointers are
 # carried, as `fuel_cost_time_series`.)
 #
-# The two `TModelHVDCLine` entries: PSY6 per-unitizes that type against a required
-# `base_current` (A) which PSY5 does not record and the schema gives no default for. See the
+# The two `TModelHVDCLine` entries: PSY6 requires a `base_current` (informational; no field is
+# per-unit on it) which PSY5 does not record and the schema gives no default for. See the
 # `translate(::Val{:TModelHVDCLine}, ...)` header in src/translate/dispatch.jl.
 const KNOWN_CONVERSION_GAPS = Dict(
     "c_market_bid_cost" => "MarketBidCost.incremental_offer_curves is a time-series pointer",

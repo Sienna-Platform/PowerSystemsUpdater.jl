@@ -215,6 +215,13 @@ const MARKET_BID_COST_DEFAULTED_FIELDS = Dict{String, Function}(
     "minimum_energy_offer" => _zero_cost_curve,
     "incremental_offer_curves" => _zero_offer_curve,
     "decremental_offer_curves" => _zero_offer_curve,
+    # Schema-optional with a documented `default` (`false`, `false`, 0 = VARIABLE,
+    # 0 = SINGLE_STEP), and PSY5 has no such fields. Written only because PowerSystems'
+    # importer requires all four instead of applying the defaults (findings 10, 22).
+    "incremental_slope" => () -> false,
+    "decremental_slope" => () -> false,
+    "curve_style" => () -> 0,
+    "curve_multistep" => () -> 0,
 )
 
 function _promote_market_bid_cost_scalar(scalar::Real)
@@ -232,6 +239,7 @@ end
 function _promote_market_bid_cost_scalars(
     value::AbstractDict,
     owner_type::Union{Nothing, AbstractString},
+    report::ConversionReport,
 )
     if owner_type != "MarketBidCost"
         return value
@@ -252,6 +260,7 @@ function _promote_market_bid_cost_scalars(
                 promoted = copy(value)
             end
             promoted[field] = zero_value()
+            record_schema_default!(report, "MarketBidCost", field)
         end
     end
     return promoted
@@ -355,7 +364,7 @@ function translate_value(value::AbstractDict, ledger::Ledger, report::Conversion
     owner_type = _psy5_type_name(value)
     value = _defer_series_refs(value, owner_type, ledger)
     _check_no_time_series_pointers!(value, owner_type)
-    promoted = _promote_market_bid_cost_scalars(value, owner_type)
+    promoted = _promote_market_bid_cost_scalars(value, owner_type, report)
     promoted = _rename_variable_operation_cost(promoted, owner_type)
     translated = Dict{String, Any}(
         key => translate_value(v, ledger, report) for

@@ -715,6 +715,10 @@ function write_conversion_section(io, c::AbstractDict)
             "Approximate mappings (written, but known not to reproduce PSY5)",
             get(c, "approximate_mappings", Dict{String, Any}()),
         ),
+        (
+            "Schema defaults written (no PSY5 value; PSY6 requires the field)",
+            get(c, "schema_defaults", Dict{String, Any}()),
+        ),
     )
     if all(isempty(counts) for (_, counts) in sections)
         println(io, "No findings.\n")

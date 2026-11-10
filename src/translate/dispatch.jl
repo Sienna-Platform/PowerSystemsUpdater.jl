@@ -201,19 +201,20 @@ for name in DIRECT_TYPES
     end
 end
 
-# The cable exception, and the one type this translator cannot convert. PSY6 anchors
-# TModelHVDCLine's per-unit `r`/`l`/`c` on a required `base_current` (A) and gives it no
-# `base_power` at all; PSY5 records no current base anywhere on the type, and
-# `Operations/Branch/TModelHVDCLine.json` documents no default to fall back on. Nothing here
-# can be derived from the owning system either — the system base is a power, not a current.
-# Stamping a placeholder would mis-scale every per-unit field on the cable with no error, so
-# this throws instead. `KNOWN_CONVERSION_GAPS` in test/test_corpus.jl records the corpus
-# systems this takes out.
+# The cable exception, and the one type this translator cannot convert. PSY6 stores
+# TModelHVDCLine's `r`/`l`/`c` in ohm, H and F, and documents its required `base_current` as
+# informational: "No field of this component is per-unit on it" (PowerSystems 404b0d571). PSY5
+# records no current base anywhere on the type, the schema gives no default, and the system
+# base is a power, not a current, so the required field has nothing to fill it. (The schema
+# says kA, PowerSystems' docstring says A.) Converting `l`/`c` from PSY5's system-base per unit
+# would also need a time-base convention PSY5 does not document. Until the schema makes
+# `base_current` optional or a convention is agreed, this throws rather than invent a value.
+# `KNOWN_CONVERSION_GAPS` in test/test_corpus.jl records the corpus systems this takes out.
 function translate(::Val{:TModelHVDCLine}, raw::AbstractDict, ::TranslationContext)
     throw(
         Psy5FormatError(
             "TModelHVDCLine $(get(raw, "name", "<unnamed>")) has no base_current; PSY6 " *
-            "requires one (A) to per-unitize r/l/c and PSY5 records no current base",
+            "requires one (informational only) and PSY5 records no current base",
         ),
     )
 end

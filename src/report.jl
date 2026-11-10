@@ -24,6 +24,9 @@ Base.@kwdef mutable struct ConversionReport
     # switched shunt's `solved_admittance`); each is also logged with the component's name.
     approximate_mappings::Dict{Tuple{String, String}, Int} =
         Dict{Tuple{String, String}, Int}()
+    # Fields PSY5 has no value for, written with the schema's documented default only because
+    # PowerSystems' importer requires them instead of applying that default.
+    schema_defaults::Dict{Tuple{String, String}, Int} = Dict{Tuple{String, String}, Int}()
     systems::Vector{String} = String[]
 end
 
@@ -65,6 +68,12 @@ record_approximate_mapping!(
     field::AbstractString,
 ) = _bump!(report.approximate_mappings, (String(type_name), String(field)))
 
+record_schema_default!(
+    report::ConversionReport,
+    type_name::AbstractString,
+    field::AbstractString,
+) = _bump!(report.schema_defaults, (String(type_name), String(field)))
+
 function has_findings(report::ConversionReport)
     return !isempty(report.unmapped_types) ||
            !isempty(report.cascaded_skips) ||
@@ -72,7 +81,8 @@ function has_findings(report::ConversionReport)
            !isempty(report.unverified_units) ||
            !isempty(report.dropped_dynamic_models) ||
            !isempty(report.dropped_invalid_values) ||
-           !isempty(report.approximate_mappings)
+           !isempty(report.approximate_mappings) ||
+           !isempty(report.schema_defaults)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
@@ -112,6 +122,13 @@ function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
         "APPROXIMATE MAPPINGS (written, but known not to reproduce the PSY5 value or meaning " *
         "for these components; see the log for their names)",
         report.approximate_mappings;
+        label = key -> "$(key[1]).$(key[2])",
+    )
+    _show_section(
+        io,
+        "SCHEMA DEFAULTS WRITTEN (no PSY5 value; the schema's documented default written " *
+        "because PowerSystems requires the field instead of applying it)",
+        report.schema_defaults;
         label = key -> "$(key[1]).$(key[2])",
     )
     if !has_findings(report)

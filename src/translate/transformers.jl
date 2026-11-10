@@ -256,10 +256,13 @@ function _control_block(
             bands[:tap_ratio_limits], key = from_fields
             push!(consumed, key)
         else
-            bands[:tap_ratio_limits] = something(
-                _band_from_psse_ext(ext, :tap_ratio_limits, winding, objective, base_power),
-                _min_max(DEFAULT_TAP_RATIO_LIMITS...),
-            )
+            from_ext =
+                _band_from_psse_ext(ext, :tap_ratio_limits, winding, objective, base_power)
+            if isnothing(from_ext)
+                from_ext = _min_max(DEFAULT_TAP_RATIO_LIMITS...)
+                record_schema_default!(ctx.report, component_type(raw), "tap_ratio_limits")
+            end
+            bands[:tap_ratio_limits] = from_ext
         end
     end
     return (objective, bands, consumed)
