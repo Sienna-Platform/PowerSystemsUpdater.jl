@@ -32,12 +32,48 @@ const CIRCUIT_FIELDS = Set([
     "regulated_bus_number", "number_of_tap_positions", "available",
 ])
 
+"""
+PSY6 `TransformerCircuit` names its regulated bus by id (`regulated_bus`) and states the tap
+direction in `regulated_bus_orientation`. PSY5 stores a bus number whose sign is the
+direction. Zero means no regulated bus and maps to the schema defaults. A non-zero number
+needs a bus-number lookup this package does not have, so it raises an error.
+"""
+function _check_no_regulated_bus!(raw::AbstractDict)
+    number = get(raw, "regulated_bus_number", 0)
+    if !iszero(number)
+        throw(
+            Psy5FormatError(
+                "transformer \"$(get(raw, "name", "<unnamed>"))\": regulated_bus_number=" *
+                "$number has no conversion to TransformerCircuit.regulated_bus",
+            ),
+        )
+    end
+    return nothing
+end
+
+"""
+PSY6 requires `controlled_voltage_limits` when `control_objective` is `FIXED`. PSY5 has no such
+band, so a `FIXED` circuit has no control block to carry and becomes `UNDEFINED`.
+"""
+_circuit_control_objective(value) = value
+
+function _circuit_control_objective(value::AbstractString)
+    if value == "FIXED"
+        return "UNDEFINED"
+    end
+    return value
+end
+
 function _circuit_source(raw::AbstractDict)
     source = Dict{String, Any}("__metadata__" => raw["__metadata__"])
     for (key, value) in raw
-        if key in CIRCUIT_FIELDS
+        if key in CIRCUIT_FIELDS && key != "regulated_bus_number"
             source[key] = value
         end
+    end
+    if haskey(source, "control_objective")
+        source["control_objective"] =
+            _circuit_control_objective(source["control_objective"])
     end
     return source
 end
@@ -96,6 +132,7 @@ the winding group otherwise. The two never coexist on the same PSY5 type, so not
 summed.
 """
 function _build_circuit(raw::AbstractDict, ctx::TranslationContext, alpha::Float64)
+    _check_no_regulated_bus!(raw)
     circuit_id = allocate_id!(ctx.ledger)
     extra = Dict{Symbol, Any}(
         :id => circuit_id,
@@ -229,7 +266,8 @@ function _winding_circuit(
         :base_power => base_power_for(raw, ctx.system_base),
         :power_units => "COMPONENT_BASE",
         :base_voltage_primary => get(raw, "base_voltage_$suffix", nothing),
-        :control_objective => get(raw, "control_objective_$suffix", nothing),
+        :control_objective =>
+            _circuit_control_objective(get(raw, "control_objective_$suffix", nothing)),
     )
     return POOM.TransformerCircuit(; _decode_kwargs(POOM.TransformerCircuit, kwargs)...)
 end

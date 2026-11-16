@@ -155,6 +155,113 @@ function _wrap_loss_curves(raw::AbstractDict)
     return renamed
 end
 
+"""
+PSY6 requires `rating` on the generic and LCC HVDC lines and has no `active_power_limits_from`
+or `active_power_limits_to`. PSY5 has the limits only, so `rating` becomes the largest
+absolute limit at either end. `TwoTerminalVSCLine` already carries `rating` in PSY5.
+"""
+_with_transfer_rating(::Val, raw::AbstractDict) = raw
+
+function _transfer_rating(raw::AbstractDict)
+    return maximum(
+        abs(raw[field][bound]) for
+        field in ("active_power_limits_from", "active_power_limits_to")
+        for bound in ("min", "max")
+    )
+end
+
+for name in (:TwoTerminalGenericHVDCLine, :TwoTerminalLCCLine)
+    @eval function _with_transfer_rating(::Val{$(QuoteNode(name))}, raw::AbstractDict)
+        rated = copy(raw)
+        rated["rating"] = _transfer_rating(raw)
+        return rated
+    end
+end
+
+const CONVERTER_DC_SETPOINT_FIELDS = Dict(
+    "DC_POWER" => "dc_power_setpoint",
+    "DC_VOLTAGE" => "dc_voltage_setpoint",
+    "DC_VOLTAGE_DROOP" => "dc_voltage_setpoint",
+)
+
+const CONVERTER_AC_SETPOINT_FIELDS = Dict("AC_REACTIVE_POWER" => "power_factor_setpoint")
+
+function _setpoint_field(table::AbstractDict, control::AbstractString, name::AbstractString)
+    if !haskey(table, control)
+        throw(
+            Psy5FormatError(
+                "converter \"$name\": no setpoint field for control mode $control",
+            ),
+        )
+    end
+    return table[control]
+end
+
+_dc_setpoint_value(::Val{:dc_power_setpoint}, value, ::Real, ::AbstractString) = value
+
+function _dc_setpoint_value(
+    ::Val{:dc_voltage_setpoint},
+    value,
+    rated_dc_voltage::Real,
+    name::AbstractString,
+)
+    if iszero(rated_dc_voltage)
+        throw(
+            Psy5FormatError(
+                "converter \"$name\": dc_setpoint is per unit of rated_dc_voltage, which is 0.0",
+            ),
+        )
+    end
+    return value * rated_dc_voltage
+end
+
+"""
+PSY5 holds one `dc_setpoint` and one `ac_setpoint` per converter side, read according to the
+control mode. PSY6 has one field per controlled quantity. The DC voltage setpoint is per unit
+of `rated_dc_voltage` in PSY5 and kV in PSY6. `suffix` is `"_from"` or `"_to"`.
+
+`remote_bus_control` is a bus number in PSY5 and a bus id in PSY6. Only zero converts. An
+`AC_VOLTAGE` setpoint belongs to `ACBus.voltage_setpoint` in PSY6, so it raises an error.
+"""
+function _split_converter_setpoints(raw::AbstractDict, suffix::AbstractString)
+    name = string(get(raw, "name", "<unnamed>"))
+    converted = copy(raw)
+    dc_field = _setpoint_field(
+        CONVERTER_DC_SETPOINT_FIELDS,
+        raw["dc_control$suffix"],
+        name,
+    )
+    dc_value = pop!(converted, "dc_setpoint$suffix")
+    converted[dc_field * suffix] = _dc_setpoint_value(
+        Val(Symbol(dc_field)),
+        dc_value,
+        get(raw, "rated_dc_voltage", 0.0),
+        name,
+    )
+    ac_field = _setpoint_field(
+        CONVERTER_AC_SETPOINT_FIELDS,
+        raw["ac_control$suffix"],
+        name,
+    )
+    converted[ac_field * suffix] = pop!(converted, "ac_setpoint$suffix")
+    remote = pop!(converted, "remote_bus_control$suffix", 0)
+    if !iszero(remote)
+        throw(
+            Psy5FormatError(
+                "converter \"$name\": remote_bus_control$suffix=$remote has no conversion " *
+                "to remote_regulated_bus$suffix",
+            ),
+        )
+    end
+    return converted
+end
+
+_with_converter_setpoints(::Val, raw::AbstractDict) = raw
+
+function _with_converter_setpoints(::Val{:TwoTerminalVSCLine}, raw::AbstractDict)
+    return _split_converter_setpoints(_split_converter_setpoints(raw, "_from"), "_to")
+end
+
 for name in
     (:TwoTerminalGenericHVDCLine, :TwoTerminalLCCLine, :TwoTerminalVSCLine,
     :InterconnectingConverter)
@@ -163,7 +270,14 @@ for name in
         raw::AbstractDict,
         ctx::TranslationContext,
     )
-        return direct_translate($(openapi_type(name)), _wrap_loss_curves(raw), ctx)
+        return direct_translate(
+            $(openapi_type(name)),
+            _with_converter_setpoints(
+                Val($(QuoteNode(name))),
+                _with_transfer_rating(Val($(QuoteNode(name))), _wrap_loss_curves(raw)),
+            ),
+            ctx,
+        )
     end
 end
 
