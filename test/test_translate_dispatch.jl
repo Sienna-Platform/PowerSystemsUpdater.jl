@@ -240,3 +240,32 @@
         @test isempty(rep6.unmapped_fields)
     end
 end
+
+@testset "translate HVDC setpoints and rating" begin
+    limits = Dict("min" => -3.0, "max" => 2.0)
+    line = Dict{String, Any}(
+        "active_power_limits_from" => limits, "active_power_limits_to" => limits,
+    )
+    rated = PSU._with_transfer_rating(Val(:TwoTerminalGenericHVDCLine), line)
+    @test rated["rating"] == 3.0
+    @test !haskey(PSU._with_transfer_rating(Val(:TwoTerminalVSCLine), line), "rating")
+
+    vsc = Dict{String, Any}(
+        "name" => "vsc", "rated_dc_voltage" => 400.0,
+        "dc_control_from" => "DC_VOLTAGE", "dc_setpoint_from" => 1.05,
+        "ac_control_from" => "AC_REACTIVE_POWER", "ac_setpoint_from" => 0.9,
+        "remote_bus_control_from" => 0,
+        "dc_control_to" => "DC_POWER", "dc_setpoint_to" => 0.4,
+        "ac_control_to" => "AC_REACTIVE_POWER", "ac_setpoint_to" => 1.0,
+        "remote_bus_control_to" => 0,
+    )
+    split = PSU._with_converter_setpoints(Val(:TwoTerminalVSCLine), vsc)
+    @test split["dc_voltage_setpoint_from"] ≈ 420.0
+    @test split["power_factor_setpoint_from"] == 0.9
+    @test split["dc_power_setpoint_to"] == 0.4
+    @test !haskey(split, "dc_setpoint_from")
+    @test_throws PSU.Psy5FormatError PSU._with_converter_setpoints(
+        Val(:TwoTerminalVSCLine),
+        merge(vsc, Dict("rated_dc_voltage" => 0.0)),
+    )
+end

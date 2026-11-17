@@ -240,6 +240,21 @@ function _rename_variable_operation_cost(
     return renamed
 end
 
+"""
+PSY5 `FuelCurve` has no `fuel_units`: its y axis is MMBTU per hour by PSY5 convention. PSY6
+requires the field, so a `FuelCurve` without it gets `"MMBTU"`.
+"""
+const PSY5_FUEL_UNITS = "MMBTU"
+
+function _supply_fuel_units(value::AbstractDict, owner_type::Union{Nothing, AbstractString})
+    if owner_type != "FuelCurve" || haskey(value, "fuel_units")
+        return value
+    end
+    supplied = copy(value)
+    supplied["fuel_units"] = PSY5_FUEL_UNITS
+    return supplied
+end
+
 translate_value(value, ::Ledger, ::ConversionReport) = value
 
 """
@@ -312,6 +327,7 @@ function translate_value(value::AbstractDict, ledger::Ledger, report::Conversion
     _check_no_time_series_pointers!(value, owner_type)
     promoted = _promote_market_bid_cost_scalars(value, owner_type)
     promoted = _rename_variable_operation_cost(promoted, owner_type)
+    promoted = _supply_fuel_units(promoted, owner_type)
     translated = Dict{String, Any}(
         key => translate_value(v, ledger, report) for
         (key, v) in promoted if !isnothing(v)
