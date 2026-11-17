@@ -1,12 +1,10 @@
-# Step 1 of the PSY5 -> PSY6 comparison: deserialize each PSY5 case with PowerSystems 5 and
-# write its snapshot to `<work_dir>/<case>/psy5_snapshot.json`, with its time series values
-# in `psy5_values.h5`.
+# Step 1 of the PSY5 -> PSY6 comparison: load each PSY5 case with PowerSystems 5 and snapshot
+# it to `<work_dir>/<case>/psy5_snapshot.json` and `psy5_values.h5`.
 #
 #   julia --project=scripts/psy5_psy6_compare/psy5_env \
 #       scripts/psy5_psy6_compare/psy5_env/snapshot_psy5.jl <work_dir> <case.json>...
 #
-# Values are read in SYSTEM_BASE: PSY6 dropped it from the document but still offers it at
-# every accessor (`SU`), so it is the one unit system both versions can be read in.
+# Values are read in SYSTEM_BASE, the one unit system both versions can be read in.
 
 using PowerSystems
 const PSY = PowerSystems
@@ -21,8 +19,8 @@ function getter_for(field::Symbol)
 end
 
 """
-PSY5 getters convert through the system's units setting, so a getter with a one-argument
-method is the unit-converted read. Fields without one are read raw.
+PSY5 getters convert through the system's units setting; a field without a one-argument
+getter is read raw.
 """
 function read_field(x::T, field::Symbol) where {T}
     getter = getter_for(field)
@@ -34,9 +32,7 @@ end
 
 snapshot_value(x::PSY.Component) = component_ref(type_label(typeof(x)), PSY.get_name(x))
 
-# IS3's `@scoped_enum` gives each enum its own struct inside a `<Name>Module`, with no common
-# supertype to dispatch on, so register a method per enum. Each prints as its bare label,
-# matching PSY6's EnumX enums.
+# IS3's `@scoped_enum` types share no supertype to dispatch on, so register a method per enum.
 for mod in (PSY, IS), sym in names(mod; all = true)
     label = string(sym)
     if !endswith(label, "Module") || label == "Module"
@@ -59,17 +55,15 @@ end
 services_of(component::PSY.Device) = PSY.get_services(component)
 services_of(::PSY.Component) = ()
 
-# Time series catalog: IS3 lists one key per series, carrying its stored type and window
-# parameters.
+# Time series catalog: IS3 lists one key per series.
 list_series(owner) = IS.get_time_series_keys(owner)
 series_type(key::IS.TimeSeriesKey) = key.time_series_type
 series_name(key::IS.TimeSeriesKey) = key.name
 read_series(owner, key::IS.TimeSeriesKey) = IS.get_time_series(owner, key)
 
 """
-The factor that takes a series' stored values to natural units: its scaling-factor
-multiplier's value on the owner, read in natural units (MW, MWh, ...), or 1.0 for a series
-without one.
+The factor taking a series' stored values to natural units: its scaling-factor multiplier on
+the owner in natural units, or 1.0 without one.
 """
 natural_scale(owner, key::IS.TimeSeriesKey) =
     _natural_scale(owner, IS.get_scaling_factor_multiplier(read_series(owner, key)))

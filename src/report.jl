@@ -1,34 +1,32 @@
 """
-Aggregated findings from one or more conversions. Root skips (a type with no PSY6 model) are
-counted separately from cascaded skips (a component dropped only because something it
-references was dropped), so one missing type does not read as many independent failures.
+Aggregated findings from one or more conversions. Root skips (`unmapped_types`) are counted
+apart from `cascaded_skips`, which are components dropped only because something they
+reference was dropped, so one missing type does not read as many failures.
+
+Counts are by type or `(type, field)`:
+
+  - `unmapped_fields`: PSY5 fields with no PSY6 counterpart, kept in the component's `ext`.
+  - `unverified_units`: a PSY5 value that could not be converted to the physical unit PSY6
+    declares; written as stored if required, else kept in `ext`.
+  - `dropped_dynamic_models`: static devices kept without their dynamic model.
+  - `dropped_invalid_values`: non-physical PSY5 values (such as a base voltage of 0), left unset.
+  - `approximate_mappings`: written, but known not to reproduce PSY5 exactly.
+  - `schema_defaults`: schema defaults written where PowerSystems requires the field.
+  - `psy5_defaults`: PSY5's own defaults filled for fields an older file omits.
 """
 Base.@kwdef mutable struct ConversionReport
     unmapped_types::Dict{String, Int} = Dict{String, Int}()
     cascaded_skips::Dict{String, Int} = Dict{String, Int}()
     unmapped_fields::Dict{Tuple{String, String}, Int} =
         Dict{Tuple{String, String}, Int}()
-    # Fields whose PSY6 unit is physical and whose PSY5 value could not be converted into it
-    # (`convert_units` in translate/units.jl): written as PSY5 stored them if required, else
-    # kept in ext. Each is a value that may be in the wrong unit.
     unverified_units::Dict{Tuple{String, String}, Int} =
         Dict{Tuple{String, String}, Int}()
-    # Static devices kept without their dynamic model, by static type. The dynamic models
-    # themselves are counted under `unmapped_types`.
     dropped_dynamic_models::Dict{String, Int} = Dict{String, Int}()
-    # Fields whose PSY5 value is non-physical (a base voltage of 0), left unset rather than
-    # written; the value is kept in ext.
     dropped_invalid_values::Dict{Tuple{String, String}, Int} =
         Dict{Tuple{String, String}, Int}()
-    # Fields written by a mapping known not to reproduce PSY5 for this component (e.g. a
-    # switched shunt's `solved_admittance`); each is also logged with the component's name.
     approximate_mappings::Dict{Tuple{String, String}, Int} =
         Dict{Tuple{String, String}, Int}()
-    # Fields PSY5 has no value for, written with the schema's documented default only because
-    # PowerSystems' importer requires them instead of applying that default.
     schema_defaults::Dict{Tuple{String, String}, Int} = Dict{Tuple{String, String}, Int}()
-    # Fields absent from a file written by an older PSY5, filled with PSY5's own default (what
-    # current PSY5 holds after loading that file).
     psy5_defaults::Dict{Tuple{String, String}, Int} = Dict{Tuple{String, String}, Int}()
     systems::Vector{String} = String[]
 end
@@ -83,89 +81,42 @@ record_psy5_default!(
     field::AbstractString,
 ) = _bump!(report.psy5_defaults, (String(type_name), String(field)))
 
+"""Report fields in display order, with each one's section title."""
+const REPORT_SECTIONS = (
+    (:unmapped_types, "UNMAPPED TYPES (skipped, no PSY6 model)"),
+    (:cascaded_skips, "CASCADED SKIPS (skipped, reference a skipped component)"),
+    (:unmapped_fields, "UNMAPPED FIELDS (no PSY6 field, kept in ext)"),
+    (:unverified_units, "UNVERIFIED UNITS (PSY5 unit unknown, not converted)"),
+    (:dropped_dynamic_models, "DYNAMIC MODELS DROPPED (static device kept)"),
+    (:dropped_invalid_values, "INVALID VALUES DROPPED (non-physical, left unset)"),
+    (:approximate_mappings, "APPROXIMATE MAPPINGS (written, see log for components)"),
+    (:schema_defaults, "SCHEMA DEFAULTS WRITTEN (no PSY5 value)"),
+    (:psy5_defaults, "PSY5 DEFAULTS FILLED (field missing from an older file)"),
+)
+
+const REPORT_SECTIONS_FIELDS = first.(REPORT_SECTIONS)
+
 function has_findings(report::ConversionReport)
-    return !isempty(report.unmapped_types) ||
-           !isempty(report.cascaded_skips) ||
-           !isempty(report.unmapped_fields) ||
-           !isempty(report.unverified_units) ||
-           !isempty(report.dropped_dynamic_models) ||
-           !isempty(report.dropped_invalid_values) ||
-           !isempty(report.approximate_mappings) ||
-           !isempty(report.schema_defaults) ||
-           !isempty(report.psy5_defaults)
+    return any(!isempty(getfield(report, name)) for name in REPORT_SECTIONS_FIELDS)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
     println(io, "ConversionReport over $(length(report.systems)) system(s)")
-    _show_section(io, "UNMAPPED TYPES (root skips)", report.unmapped_types)
-    _show_section(io, "CASCADED SKIPS", report.cascaded_skips)
-    _show_section(
-        io,
-        "UNMAPPED FIELDS (values kept in the component's ext[\"psy5_unmapped\"], " *
-        "except on a skipped component or one with no ext)",
-        report.unmapped_fields;
-        label = key -> "$(key[1]).$(key[2])",
-    )
-    _show_section(
-        io,
-        "UNVERIFIED UNITS (PSY5 value could not be converted to the PSY6 unit: written as " *
-        "stored if required, else kept in ext[\"psy5_unmapped\"])",
-        report.unverified_units;
-        label = key -> "$(key[1]).$(key[2])",
-    )
-    _show_section(
-        io,
-        "DYNAMIC MODELS DROPPED (static device kept; its dynamic model has no PSY6 schema " *
-        "home and is lost)",
-        report.dropped_dynamic_models,
-    )
-    _show_section(
-        io,
-        "INVALID VALUES DROPPED (a non-physical PSY5 value, or one on a non-physical base: " *
-        "left unset and kept in ext[\"psy5_unmapped\"], or written as stored where the " *
-        "schema requires it)",
-        report.dropped_invalid_values;
-        label = key -> "$(key[1]).$(key[2])",
-    )
-    _show_section(
-        io,
-        "APPROXIMATE MAPPINGS (written, but known not to reproduce the PSY5 value or meaning " *
-        "for these components; see the log for their names)",
-        report.approximate_mappings;
-        label = key -> "$(key[1]).$(key[2])",
-    )
-    _show_section(
-        io,
-        "SCHEMA DEFAULTS WRITTEN (no PSY5 value; the schema's documented default written " *
-        "because PowerSystems requires the field instead of applying it)",
-        report.schema_defaults;
-        label = key -> "$(key[1]).$(key[2])",
-    )
-    _show_section(
-        io,
-        "PSY5 DEFAULTS FILLED (field absent from the file, as an older PSY5 wrote it; PSY5's " *
-        "own default used)",
-        report.psy5_defaults;
-        label = key -> "$(key[1]).$(key[2])",
-    )
+    for (name, title) in REPORT_SECTIONS
+        counts = getfield(report, name)
+        if isempty(counts)
+            continue
+        end
+        println(io, "  $title")
+        for (key, count) in sort(collect(counts); by = first)
+            println(io, "    $(_finding_label(key))  x$count")
+        end
+    end
     if !has_findings(report)
         println(io, "  no findings")
     end
     return nothing
 end
 
-function _show_section(
-    io::IO,
-    title::AbstractString,
-    counts::AbstractDict;
-    label = string,
-)
-    if isempty(counts)
-        return nothing
-    end
-    println(io, "  $title")
-    for (key, count) in sort(collect(counts); by = first)
-        println(io, "    $(label(key))  x$count")
-    end
-    return nothing
-end
+_finding_label(type_name::AbstractString) = type_name
+_finding_label(key::Tuple{String, String}) = "$(key[1]).$(key[2])"

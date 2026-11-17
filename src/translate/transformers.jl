@@ -1,9 +1,6 @@
 """
-PSY6 drops `WindingGroupNumber` and keeps only the angle, in `TransformerCircuit.alpha`
-(radians).
-
-A literal table, deliberately not `-n * pi / 6`: the enum is sparse, and its sign is
-inverted relative to the obvious reading — `GROUP_1` is -30 degrees, not +30.
+PSY5 `WindingGroupNumber` as the angle PSY6 keeps in `TransformerCircuit.alpha` (radians).
+A literal table, not `-n * pi / 6`: the enum is sparse and `GROUP_1` is -30 degrees.
 """
 const WINDING_GROUP_ALPHA = Dict{String, Float64}(
     "GROUP_0" => 0.0,
@@ -12,7 +9,6 @@ const WINDING_GROUP_ALPHA = Dict{String, Float64}(
     "GROUP_6" => pi,
     "GROUP_7" => 5pi / 6,
     "GROUP_11" => pi / 6,
-    # "not specified" takes PSY6's own schema default for alpha, not an invented angle.
     "UNDEFINED" => 0.0,
 )
 
@@ -24,7 +20,7 @@ function winding_group_alpha(group::AbstractString)
     return WINDING_GROUP_ALPHA[key]
 end
 
-# Fields consumed by the circuit rather than the transformer container.
+# Fields that go to the `TransformerCircuit` rather than the transformer.
 const CIRCUIT_FIELDS = Set([
     "arc", "tap", "r", "x", "rating", "rating_b", "rating_c",
     "active_power_flow", "reactive_power_flow", "base_power",
@@ -32,22 +28,16 @@ const CIRCUIT_FIELDS = Set([
     "regulated_bus_number", "number_of_tap_positions", "available",
 ])
 
-"""
-Objectives under which a `TransformerCircuit` states the bus its tap regulates; under any
-other the schema leaves `regulated_bus` unset.
-"""
+"""Objectives under which a `TransformerCircuit` names the bus its tap regulates."""
 const REGULATED_BUS_OBJECTIVES = Set(["VOLTAGE", "VOLTAGE_DISABLED"])
 
 """
-PSY5's `regulated_bus_number` (PSS/E CONT) in PSY6's form. PSY6 names the bus by id
-(`regulated_bus`) and gives the tap direction in `regulated_bus_orientation`, which PSY5 holds
-in the number's sign: following PSS/E, a positive CONT adjusts the tap as if the bus were on
-the winding-two side (`TO`), a negative one on the winding-one side (`FROM`). The orientation
-is stated only for a remote bus; for an end of the arc it is `UNDEFINED`, as the schema
-requires.
+PSY5 `regulated_bus_number` (PSS/E CONT) as `regulated_bus` (an id) and
+`regulated_bus_orientation`. PSS/E holds the orientation in the sign: positive is `TO`
+(winding two side), negative `FROM`. It is stated only for a bus off the arc, else `UNDEFINED`.
 
-0 means no regulated bus. Under an objective that does not regulate a bus
-(`REGULATED_BUS_OBJECTIVES`) the number has no PSY6 field, so it is kept in ext and reported.
+0 means none. Under an objective outside `REGULATED_BUS_OBJECTIVES` the number has no PSY6
+field, so it is kept in ext and reported.
 """
 function _regulated_bus_fields(
     raw::AbstractDict,
@@ -93,28 +83,23 @@ function _circuit_source(raw::AbstractDict)
     return source
 end
 
-"""
-Fields consumed directly by the `TwoWindingTransformer` container rather than by
-`_circuit_source`'s allow-list or `build_kwargs`.
-"""
-const TRANSFORMER_CONSUMED_FIELDS =
-    Set(["name", "primary_shunt", "winding_group_number", "α"])
+# Fields the two-winding transformer consumes itself, with `CIRCUIT_FIELDS`.
+const TWO_WINDING_KNOWN_FIELDS =
+    union(CIRCUIT_FIELDS, ["name", "primary_shunt", "winding_group_number", "α"])
 
 """
-Record every PSY5 key on `raw` that is neither internal, nor routed to the circuit via
-`CIRCUIT_FIELDS`, nor consumed directly by the transformer container. `_circuit_source`'s
-allow-list means such keys never reach `build_kwargs`, so without this they would vanish
-with no trace in `ConversionReport` — exactly the silent loss this package exists to catch.
+Report and keep in ext every PSY5 key of `raw` that is not internal, in `known`, or in
+`consumed`. Translation reads only the keys it knows, so without this the rest would vanish.
 """
 function _record_dropped_fields!(
     raw::AbstractDict,
     ctx::TranslationContext,
-    consumed::AbstractVector{String} = String[],
+    known::AbstractSet{String},
+    consumed::AbstractVector{String},
 )
     type_name = component_type(raw)
     for key in keys(raw)
-        if key in PSY5_INTERNAL_FIELDS || key in CIRCUIT_FIELDS ||
-           key in TRANSFORMER_CONSUMED_FIELDS || key in consumed
+        if key in PSY5_INTERNAL_FIELDS || key in known || key in consumed
             continue
         end
         record_unmapped_field!(ctx.report, type_name, key)
@@ -123,16 +108,7 @@ function _record_dropped_fields!(
     return nothing
 end
 
-"""
-PSY5's `primary_shunt` serializes a `Complex{Float64}` with keys `real`/`imag`, matching
-PSY6's `TwoWindingTransformer.magnetizing_shunt` schema
-(`SiennaSchemas/Operations/Branch/TwoWindingTransformer.json`) exactly. Built explicitly
-rather than forwarding the raw dict so construction does not depend on the two shapes
-coinciding.
-
-`magnetizing_shunt` `\$ref`s `Core/common.json#/\$defs/ComplexNumber` and generates as the
-shared `ComplexNumber` type, so that is what is built here.
-"""
+"""PSY5 `primary_shunt` (`real`/`imag`) as PSY6's `magnetizing_shunt` `ComplexNumber`."""
 function _magnetizing_shunt(raw::AbstractDict)
     shunt = get(raw, "primary_shunt", nothing)
     if isnothing(shunt)
@@ -144,10 +120,7 @@ function _magnetizing_shunt(raw::AbstractDict)
     )
 end
 
-"""
-The bands each schema-0.2 `control_objective` requires on a `TransformerCircuit` (its
-conditional `allOf` blocks). `UNDEFINED`, "no control block", requires none.
-"""
+"""The bands the schema requires on a `TransformerCircuit` for each `control_objective`."""
 const CONTROL_OBJECTIVE_BANDS = Dict{String, Tuple{Vararg{Symbol}}}(
     "FIXED" => (:controlled_voltage_limits,),
     "VOLTAGE" => (:controlled_voltage_limits,),
@@ -166,11 +139,9 @@ const CONTROL_OBJECTIVE_BANDS = Dict{String, Tuple{Vararg{Symbol}}}(
 )
 
 """
-Objectives that move the tap rather than the phase angle. Schema 0.2 lets their actuator band,
-`tap_ratio_limits`, be omitted ("defaults to 0.9 to 1.1, PSS/E's own RMI/RMA defaults"), but
-PowerSystems 6 rejects a circuit with one of these objectives and no `tap_ratio_limits`
-(`branchdata_checks.jl`), so it is always written: from the PSY5 fields or PSS/E `ext` like the
-required bands, else the schema's documented default.
+Objectives that move the tap. The schema lets `tap_ratio_limits` default to 0.9-1.1, but
+PowerSystems 6 rejects such a circuit without them (`branchdata_checks.jl`), so they are always
+written.
 """
 const TAP_MOVING_OBJECTIVES = Set([
     "FIXED", "VOLTAGE", "VOLTAGE_DISABLED",
@@ -180,16 +151,10 @@ const TAP_MOVING_OBJECTIVES = Set([
 
 const DEFAULT_TAP_RATIO_LIMITS = (0.9, 1.1)
 
-"""
-PSY5's default `TapTransformer.voltage_setpoint` (1.0 pu). Files from PSY5 versions before the
-field existed omit it; current PSY5 fills this default when it loads one.
-"""
+"""PSY5's default `TapTransformer.voltage_setpoint`, filled in for older files that omit it."""
 const PSY5_DEFAULT_VOLTAGE_SETPOINT = 1.0
 
-"""
-PSY5's `TransformerControlObjective` values are PSS/E's `COD` codes. A PSS/E `ext` row's
-bands are only used when its `COD` agrees with the objective, so they describe that control.
-"""
+"""PSS/E `COD` code of each PSY5 `TransformerControlObjective`."""
 const PSSE_CONTROL_CODE = Dict{String, Int}(
     "FIXED" => 0,
     "VOLTAGE" => 1,
@@ -207,10 +172,9 @@ const PSSE_CONTROL_CODE = Dict{String, Int}(
 _min_max(lo::Real, hi::Real) = Dict{String, Any}("min" => Float64(lo), "max" => Float64(hi))
 
 """
-A band from the PSY5 transformer's own fields, with the PSY5 key it came from, or `nothing`.
-Tried first: any PSY5 system has these, whatever it was built from. `TapTransformer`'s single
-`voltage_setpoint` becomes a zero-width voltage band and its `tap_limits` the tap-ratio band;
-`PhaseShiftingTransformer`'s `phase_angle_limits` (radians) carries straight across.
+A band from the transformer's own fields, with the PSY5 key it came from, or `nothing`:
+`voltage_setpoint` becomes a zero-width voltage band, `tap_limits` the tap-ratio band, and
+`phase_angle_limits` (radians) carries across.
 """
 function _band_from_fields(raw::AbstractDict, band::Symbol)
     if band === :controlled_voltage_limits && haskey(raw, "voltage_setpoint")
@@ -227,10 +191,8 @@ function _band_from_fields(raw::AbstractDict, band::Symbol)
 end
 
 """
-The band PSY5's own default gives, for a field an older PSY5 file omits, or `nothing`: a
-`TapTransformer` with no `voltage_setpoint` holds `PSY5_DEFAULT_VOLTAGE_SETPOINT` once current
-PSY5 loads it, so its voltage band is that setpoint. Tried after the PSY5 fields and PSS/E
-`ext`, and recorded under PSY5 DEFAULTS FILLED.
+The voltage band of a `TapTransformer` whose older file omits `voltage_setpoint`, from
+PSY5's own default, or `nothing`. Recorded as a PSY5 default.
 """
 function _band_from_psy5_default(
     raw::AbstractDict,
@@ -250,14 +212,12 @@ _ext_number(value::Real) = Float64(value)
 _ext_number(::Any) = nothing
 
 """
-A band from the PSS/E columns a PSS/E-sourced PSY5 system keeps in `ext`, for winding
-`winding` (1 for a two-winding transformer, 1-3 for a three-winding one), or `nothing` when
-they are absent or describe a different control (`COD` disagreeing with the objective).
+A band from the PSS/E columns kept in `ext`, for winding `winding`, or `nothing` when they are
+absent or their `COD` disagrees with the objective.
 
-PSS/E's `VMA`/`VMI` are the target band: per unit voltage for the voltage objectives, MVAr or
-MW for the flow objectives, converted here to per unit on the circuit's own base. `RMA`/`RMI`
-are the actuator band: the tap ratio for the tap-moving objectives, a phase shifter's angle
-limits (degrees) for the others.
+`VMI`/`VMA` are the target band: per unit voltage, or MVAr/MW converted to per unit on
+`base_power`. `RMI`/`RMA` are the actuator band: tap ratio, or a phase shifter's angle limits in
+degrees.
 """
 function _band_from_psse_ext(
     ext::AbstractDict,
@@ -284,16 +244,12 @@ function _band_from_psse_ext(
 end
 
 """
-The `control_objective` and bands to write on one circuit, and the PSY5 keys used for them.
+The `control_objective`, its bands, and the PSY5 keys used, for one circuit.
 
-Schema 0.2 requires, for each objective other than `UNDEFINED`, the bands in
-`CONTROL_OBJECTIVE_BANDS`; tap-moving objectives also get `tap_ratio_limits` (see
-`TAP_MOVING_OBJECTIVES`). Each band is taken from the PSY5 transformer's own fields where it
-has one (`_band_from_fields`), else from PSS/E columns in its `ext`
-(`_band_from_psse_ext`), else from PSY5's default for a field an older file omits
-(`_band_from_psy5_default`). If a required band is in none of these, the circuit is written with
-`UNDEFINED` (no control block) so the document stays valid; the PSY5 objective is recorded
-against `objective_key` in the report and kept in the component's `ext`.
+Each band in `CONTROL_OBJECTIVE_BANDS` (and `tap_ratio_limits` for `TAP_MOVING_OBJECTIVES`) is
+taken from the PSY5 fields (`_band_from_fields`), else PSS/E `ext` (`_band_from_psse_ext`), else
+PSY5's default (`_band_from_psy5_default`). If a required band is in none, the circuit gets
+`UNDEFINED` so the document stays valid, and the objective is reported and kept in ext.
 """
 function _control_block(
     raw::AbstractDict,
@@ -348,15 +304,7 @@ function _control_block(
     return (objective, bands, consumed)
 end
 
-"""
-Build the `TransformerCircuit` for a two-winding transformer.
-
-`alpha` comes from `α` when the PSY5 type carries one (`PhaseShiftingTransformer`) and from
-the winding group otherwise. The two never coexist on the same PSY5 type, so nothing is
-summed.
-
-Returns the circuit and the PSY5 keys its control block consumed (see `_control_block`).
-"""
+"""Build a two-winding transformer's `TransformerCircuit`, and the PSY5 keys its bands used."""
 function _build_circuit(raw::AbstractDict, ctx::TranslationContext, alpha::Float64)
     circuit_id = allocate_id!(ctx.ledger)
     base_power = base_power_for(raw, ctx.system_base)
@@ -394,7 +342,7 @@ function _translate_two_winding(
     alpha::Float64,
 )
     circuit, consumed = _build_circuit(raw, ctx, alpha)
-    _record_dropped_fields!(raw, ctx, consumed)
+    _record_dropped_fields!(raw, ctx, TWO_WINDING_KNOWN_FIELDS, consumed)
     transformer = POOM.TwoWindingTransformer(;
         id = lookup_id(ctx.ledger, component_uuid(raw)),
         name = raw["name"],
@@ -404,10 +352,8 @@ function _translate_two_winding(
     return ICOM.APIModel[circuit, transformer]
 end
 
-function _group_alpha(raw::AbstractDict)
-    group = get(raw, "winding_group_number", "GROUP_0")
-    return winding_group_alpha(group)
-end
+_group_alpha(raw::AbstractDict) =
+    winding_group_alpha(get(raw, "winding_group_number", "GROUP_0"))
 
 function translate(::Val{:Transformer2W}, raw::AbstractDict, ctx::TranslationContext)
     return _translate_two_winding(raw, ctx, _group_alpha(raw))
@@ -427,8 +373,7 @@ end
 
 const THREE_WINDING_TERMINALS = (:primary, :secondary, :tertiary)
 
-# Fields consumed by `translate(::Val{:Transformer3W}, ...)` and `_winding_circuit`,
-# mirroring their exact key-name construction so this stays in lockstep with the reader.
+# Keys `translate(::Val{:Transformer3W}, ...)` and `_winding_circuit` read.
 const THREE_WINDING_CONSUMED_FIELDS = Set{String}(
     vcat(
         [
@@ -457,34 +402,8 @@ const THREE_WINDING_CONSUMED_FIELDS = Set{String}(
 )
 
 """
-Record every PSY5 key on `raw` that is neither internal nor consumed by
-`translate(::Val{:Transformer3W}, ...)`. PSY5's `Transformer3W` carries a top-level
-`available` and a top-level `rating` alongside the per-winding fields; PSY6's
-`ThreeWindingTransformer` has neither, since availability and rating are circuit-level
-(each `TransformerCircuit` carries its own: `available` is the top-level flag AND
-`available_\$suffix`, see `_winding_available`; `rating` is `rating_\$suffix`). The two
-top-level keys are kept in ext; recording them keeps that visible instead of silent.
-"""
-function _record_dropped_three_winding_fields!(
-    raw::AbstractDict,
-    ctx::TranslationContext,
-    consumed = String[],
-)
-    type_name = component_type(raw)
-    for key in keys(raw)
-        if key in PSY5_INTERNAL_FIELDS || key in THREE_WINDING_CONSUMED_FIELDS ||
-           key in consumed
-            continue
-        end
-        record_unmapped_field!(ctx.report, type_name, key)
-        keep_unmapped!(ctx.ledger, key, raw[key])
-    end
-    return nothing
-end
-
-"""
-`raw[key]` if it is a usable base voltage; a non-physical one (`_non_physical_base`) is left
-unset, recorded and kept in `ext`, as `build_kwargs` does for the fields it copies.
+`raw[key]` if it is a physical base voltage; otherwise `nothing`, reported and kept in ext
+as `build_kwargs` does (`_non_physical_base`).
 """
 function _physical_base_voltage(
     raw::AbstractDict,
@@ -501,10 +420,8 @@ function _physical_base_voltage(
 end
 
 """
-The PSY5 pair base each winding's values are stored on (PSY5's `_get_winding_base_power`):
-star-leg `r`/`x`, `rating_\$suffix` and the flows of the primary winding are per unit on
-`base_power_12`, the secondary's on `base_power_23`, the tertiary's on `base_power_13`. Used as
-the circuit's own `base_power`, so the values copy across unscaled.
+The pair base each winding's values are stored on (PSY5 `_get_winding_base_power`), used as the
+circuit's `base_power` so the values are not scaled.
 """
 const THREE_WINDING_BASE_POWER_KEY = Dict(
     :primary => "base_power_12",
@@ -513,10 +430,8 @@ const THREE_WINDING_BASE_POWER_KEY = Dict(
 )
 
 """
-A winding's circuit availability: the transformer's top-level `available` AND the winding's
-own `available_\$suffix`. PSY6 derives the transformer's availability from its circuits, so a
-transformer PSY5 marked out of service gets three unavailable circuits, whatever its per-winding
-flags say (they default to `true`). The top-level value itself is kept in ext.
+A winding circuit's availability: the transformer's `available` AND `available_\$suffix`. PSY6
+derives the transformer's availability from its circuits.
 """
 _winding_available(raw::AbstractDict, suffix::AbstractString) =
     get(raw, "available", true) && raw["available_$suffix"]
@@ -532,11 +447,7 @@ function _winding_circuit(
     winding = findfirst(==(terminal), THREE_WINDING_TERMINALS)
     objective, bands, consumed =
         _control_block(raw, "control_objective_$suffix", winding, base_power, ctx)
-    # Built as a plain kwargs Dict and run through `_decode_kwargs`, the same as
-    # `build_kwargs`'s output, rather than passed straight to the constructor: `power_units`
-    # and `control_objective` are bare `String`s here (a schema enum spelling), and
-    # `TransformerCircuit`'s fields are strictly typed (`UnitSystem`,
-    # `TransformerCircuitControlObjective`) under the OpenAPI 1.1 generator.
+    # `_decode_kwargs` turns the enum strings into the strictly typed fields.
     kwargs = Dict{Symbol, Any}(
         :id => circuit_id,
         :available => _winding_available(raw, suffix),
@@ -559,10 +470,7 @@ function _winding_circuit(
     return circuit, consumed
 end
 
-"""
-A winding's phase shift: a `PhaseShiftingTransformer3W`'s own `α_\$suffix` (radians), else
-the angle of a `Transformer3W` winding's group number.
-"""
+"""A winding's phase shift: `α_\$suffix` (radians) if present, else its group number's angle."""
 _winding_alpha(raw::AbstractDict, suffix::AbstractString) = get(
     raw,
     "α_$suffix",
@@ -570,12 +478,9 @@ _winding_alpha(raw::AbstractDict, suffix::AbstractString) = get(
 )
 
 """
-`_winding_circuit` fills each circuit's `rating` from `rating_\$suffix`, whose PSY5 default is
-`0.0`. A real top-level `rating` would be silently replaced by a zero-capacity one if any
-per-winding rating is still at its default. Recording the drop
-(`_record_dropped_three_winding_fields!`) is not the same as not producing a wrong value, so
-that case errors instead. (A top-level `available=false` needs no check: it is folded into
-every circuit's `available`, `_winding_available`.)
+Circuits take `rating` from `rating_\$suffix` (PSY5 default `0.0`) and the top-level `rating`
+is dropped, so a non-zero top-level rating with a zero winding rating would silently give a
+zero-capacity circuit: error instead.
 """
 function _check_transformer3w_top_level!(raw::AbstractDict)
     name = get(raw, "name", "<unnamed>")
@@ -598,14 +503,19 @@ function _check_transformer3w_top_level!(raw::AbstractDict)
 end
 
 """
-PSY5 stores both the pairwise-measured and the star-equivalent forms, so nothing is
-inverted. Note PSY5's 1-3 pair is PSY6's 3-1: the index order flips.
+PSY5 stores both the pairwise and the star-equivalent forms, so nothing is inverted. PSY5's
+1-3 pair is PSY6's 3-1.
 """
 function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationContext)
     _check_transformer3w_top_level!(raw)
     built = [_winding_circuit(raw, ctx, t) for t in THREE_WINDING_TERMINALS]
     circuits = first.(built)
-    _record_dropped_three_winding_fields!(raw, ctx, reduce(vcat, last.(built)))
+    _record_dropped_fields!(
+        raw,
+        ctx,
+        THREE_WINDING_CONSUMED_FIELDS,
+        reduce(vcat, last.(built)),
+    )
     transformer = POOM.ThreeWindingTransformer(;
         id = lookup_id(ctx.ledger, component_uuid(raw)),
         name = raw["name"],
@@ -622,14 +532,12 @@ function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationCon
         base_power_12 = raw["base_power_12"],
         base_power_23 = raw["base_power_23"],
         base_power_31 = raw["base_power_13"],
-        # PSY5 stores the star-to-ground magnetizing shunt as two floats (g, b); PSY6
-        # stores it as one shared ComplexNumber (see _magnetizing_shunt above).
+        # PSY5's star-to-ground shunt is two floats (g, b).
         magnetizing_shunt = ICOM.ComplexNumber(;
             real = Float64(raw["g"]),
             imag = Float64(raw["b"]),
         ),
-        # PSY5's g/b are star-bus-to-ground, not primary-side, so
-        # the schema's PRIMARY default is wrong here — unlike the two-winding path.
+        # g/b sit at the star bus, unlike the schema's PRIMARY default.
         shunt_location = POOM.ThreeWindingTransformerShuntLocation("STAR"),
     )
     models = ICOM.APIModel[c for c in circuits]
@@ -638,10 +546,9 @@ function translate(::Val{:Transformer3W}, raw::AbstractDict, ctx::TranslationCon
 end
 
 """
-PSY6 has no separate phase-shifting three-winding type: every `TransformerCircuit` carries its
-own `alpha` and `phase_angle_limits`. A `PhaseShiftingTransformer3W` has `Transformer3W`'s
-fields, with a phase shift `α_\$suffix` per winding in place of a winding group number and one
-`phase_angle_limits`, so it is translated the same way (`_winding_alpha`, `_control_block`).
+PSY6 has no phase-shifting three-winding type: each circuit carries its own `alpha`. A
+`PhaseShiftingTransformer3W` differs only by `α_\$suffix` per winding, so it translates as a
+`Transformer3W`.
 """
 translate(::Val{:PhaseShiftingTransformer3W}, raw::AbstractDict, ctx::TranslationContext) =
     translate(Val(:Transformer3W), raw, ctx)

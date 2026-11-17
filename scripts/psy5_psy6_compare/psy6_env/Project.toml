@@ -14,16 +14,11 @@ PowerSystemsUpdater = "11b707e9-e006-4f7c-8f76-be36cb0f20e4"
 
 [sources]
 PowerSystemsUpdater = {path = "../../.."}
-# The rest mirror PowerSystems' own psy6 `[sources]`: Pkg honours `[sources]` only in the
-# active project, never a dependency's, so every unregistered package PSY6 pulls in must be
-# pinned again here. Swap any `url` for `path = "..."` to compare against a local checkout.
-# Local checkout, a sibling of this repository: whatever branch is checked out there is what
-# the comparison loads with (currently jp/updater_fixes). For the published branch use
-# `{url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "psy6"}`.
-PowerSystems = {path = "../../../../PowerSystems.jl"}
+# Pkg honours `[sources]` only in the active project, so the unregistered packages PSY6 needs
+# are pinned again here. To compare against a local PowerSystems checkout instead, use
+# `PowerSystems = {path = "../../../../PowerSystems.jl"}`.
+PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "psy6"}
 InfrastructureSystems = {url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git", rev = "IS4"}
-# The OpenAPI model packages resolve to their registered releases (0.5, the compat both
-# PowerSystems and PowerSystemsUpdater declare), so they need no pin here.
 
 [compat]
 HDF5 = "0.17"

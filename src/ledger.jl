@@ -6,10 +6,9 @@ Base.showerror(io::IO, e::DanglingReferenceError) =
     print(io, "DanglingReferenceError: ", e.msg)
 
 """
-A PSY5 time series key embedded in a field (`FuelCurve.fuel_cost`), owned by the component
-`owner_uuid`. It is written as `placeholder`, a negative integer no association id can take,
-and replaced by the id of the association the key names once the catalog is written
-(`resolve_series_refs` in convert.jl).
+A PSY5 time series key embedded in a field (`FuelCurve.fuel_cost`) of `owner_uuid`. Written
+as `placeholder`, a negative integer, until `resolve_series_refs` replaces it with the id of
+the association the key names.
 """
 struct SeriesRef
     placeholder::Int
@@ -18,22 +17,16 @@ struct SeriesRef
 end
 
 """
-Maps PSY5 component UUIDs onto the document-wide unique integer ids PSY6 requires, and
-records components that were skipped so references to them can be detected rather than
-emitted as dangling integers.
+Maps PSY5 component UUIDs onto PSY6's document-wide integer ids, and records skipped
+components so references to them are detected rather than emitted dangling.
 
-It also keeps, per component, the PSY5 values that have no PSY6 field (`unmapped`, keyed by
-UUID), collected against `owner`, the component being translated (`translate_component`).
-They are written to the component's `ext` (`_carry_ext!` in convert.jl) rather than dropped.
-
-`series_refs` holds the time series references deferred during translation
-(`defer_series_ref!`): a field that names a time series by its association id, which exists
-only once the sidecar's catalog is written.
-
-`bus_voltage_setpoints` holds, by bus UUID, the voltage setpoint a device elsewhere gives the
-bus it regulates (a VSC converter's AC setpoint becomes the regulated bus's
-`voltage_setpoint`), written onto the buses once every component is translated
-(`_apply_bus_voltage_setpoints` in convert.jl).
+  - `owner`: the component being translated (`translate_component`).
+  - `unmapped`: per component UUID, the PSY5 values with no PSY6 field, written to its `ext`
+    (`_carry_ext!`).
+  - `series_refs`: time series references deferred until the catalog assigns association ids
+    (`defer_series_ref!`).
+  - `bus_voltage_setpoints`: by bus UUID, the setpoint a device gives the bus it regulates,
+    written onto the buses at the end (`_apply_bus_voltage_setpoints`).
 """
 mutable struct Ledger
     ids::Dict{String, Int}
@@ -55,9 +48,7 @@ Ledger() = Ledger(
     Dict{String, Float64}(),
 )
 
-"""
-Assign an id to `uuid`, or return the one already assigned. Idempotent.
-"""
+"""Assign an id to `uuid`, or return the one already assigned."""
 function assign_id!(ledger::Ledger, uuid::AbstractString)
     key = String(uuid)
     if haskey(ledger.ids, key)
@@ -68,10 +59,7 @@ function assign_id!(ledger::Ledger, uuid::AbstractString)
     return ledger.counter
 end
 
-"""
-Reserve an id for a component that translation synthesizes and that has no PSY5 UUID —
-transformer circuits, for instance.
-"""
+"""Reserve an id for a component translation synthesizes, such as a transformer circuit."""
 function allocate_id!(ledger::Ledger)
     ledger.counter += 1
     return ledger.counter
@@ -80,13 +68,8 @@ end
 has_id(ledger::Ledger, uuid::AbstractString) = haskey(ledger.ids, String(uuid))
 
 """
-Resolve `uuid` to its assigned id.
-
-This is the single funnel every reference resolution passes through — `translate_value`
-calls it at every nesting depth, not just the top level. Throwing here when `uuid` is
-skipped is the backstop for `references_skipped`, whose own check is shallow and can be
-evaluated before a same-pass referent is marked skipped; whatever misses that fast path
-still aborts loudly here instead of emitting a dangling integer.
+Resolve `uuid` to its id; every reference resolution goes through here. Throws for a skipped
+or unknown `uuid`, backstopping `references_skipped`, whose check is shallow.
 """
 function lookup_id(ledger::Ledger, uuid::AbstractString)
     key = String(uuid)
@@ -111,10 +94,9 @@ end
 is_skipped(ledger::Ledger, uuid::AbstractString) = haskey(ledger.skipped, String(uuid))
 
 """
-Keep `value`, a PSY5 value with no PSY6 field, for the component being translated, under
-`key` (the field name, or `Type.field` for a field of a nested struct). Every caller also
-records the field on the `ConversionReport`; this is what keeps the value itself. A `nothing`
-value has nothing to keep, and outside `translate_component` there is no owner to keep it on.
+Keep `value`, a PSY5 value with no PSY6 field, on the component being translated under `key`
+(the field name, or `Type.field` for a nested struct). Callers also record the field on the
+report. A `nothing` value, or no owner outside `translate_component`, keeps nothing.
 """
 function keep_unmapped!(ledger::Ledger, key::AbstractString, value)
     if isnothing(ledger.owner) || isnothing(value)
@@ -124,10 +106,7 @@ function keep_unmapped!(ledger::Ledger, key::AbstractString, value)
     return nothing
 end
 
-"""
-Defer the time series `key` embedded in the component being translated, returning the
-placeholder to write in place of its association id.
-"""
+"""Defer an embedded time series `key`, returning the placeholder to write in its place."""
 function defer_series_ref!(ledger::Ledger, key::AbstractDict)
     if isnothing(ledger.owner)
         throw(Psy5FormatError("a time series key outside any component cannot be resolved"))

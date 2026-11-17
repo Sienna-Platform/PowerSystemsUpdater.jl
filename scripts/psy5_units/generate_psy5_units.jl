@@ -4,10 +4,9 @@
 #   julia --project=scripts/psy5_units -e 'using Pkg; Pkg.instantiate()'
 #   julia --project=scripts/psy5_units scripts/psy5_units/generate_psy5_units.jl
 #
-# The updater never depends on PowerSystems; this script is how it learns PSY5's storage
-# conventions anyway. Fields PSY5 stores some other way and never annotated (system-base per
-# unit, fractions, natural units) are listed by hand in `PSY5_STORAGE`
-# (`src/translate/units.jl`), not here.
+# The updater never depends on PowerSystems; this script is how it learns PSY5's conventions.
+# Fields PSY5 stores otherwise and never annotated are listed by hand in `PSY5_STORAGE`
+# (`src/translate/units.jl`).
 
 using PowerSystems
 import JSON

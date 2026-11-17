@@ -1,6 +1,6 @@
 # Build every PowerSystemCaseBuilder system with PowerSystems 5 and serialize each to
 # `<out>/<Category>/<case>.json` (with its `_time_series_storage.h5`): the PSY5 corpus for the
-# corpus test tier and for `scripts/psy5_psy6_compare`.
+# tests and for `scripts/psy5_psy6_compare`.
 #
 #   julia --project=scripts/psy5_case_generator \
 #       scripts/psy5_case_generator/psb_case_generator.jl [options]
@@ -10,16 +10,12 @@
 #   --systems a,b      only these system names
 #   --variants         also build each non-default value of every boolean argument, one at a
 #                      time (e.g. `c_sys5_uc__add_reserves_true`)
-#   --skip-existing    keep a case whose JSON is already present instead of rebuilding it, to
-#                      resume an interrupted run
+#   --skip-existing    keep a case whose JSON exists, to resume an interrupted run
 #   --out DIR          default: data/
 #
-# A system with a required argument (e.g. `psid_psse_test_avr`'s `avr_type`) is built once per
-# allowed value, named `<system>__<argument>_<value>`.
-#
-# A system that fails to build is recorded and the run moves on. `<out>/psb_build_report.md`
-# lists every case's outcome; full errors go to `<out>/psb_build_errors/`. A case's previous
-# output is removed before it is rebuilt, so a failed build never leaves an old one behind.
+# A system with a required argument is built once per allowed value, named
+# `<system>__<argument>_<value>`. A system that fails to build is recorded and the run moves on:
+# `<out>/psb_build_report.md` lists every outcome, full errors go to `<out>/psb_build_errors/`.
 
 using PowerSystems
 using PowerSystemCaseBuilder
@@ -66,10 +62,6 @@ function parse_options(args)
     return Options(categories, systems, variants, skip_existing, out)
 end
 
-"""
-One system to build: the PSB system, the arguments to build it with, and the case name its
-output is written under.
-"""
 struct Case
     category::Type{<:PSB.SystemCategory}
     system::String
@@ -84,9 +76,8 @@ end
 category_name(c::Case) = string(nameof(c.category))
 
 """
-The builds for one system: one per allowed value of each required argument (there is at most
-one per system in PSB), then with `variants`, one per non-default value of each boolean
-argument on top of the first of those.
+The builds for one system: one per allowed value of each required argument, then with
+`variants`, one per non-default argument value on top of the first of those.
 """
 function cases_for(descriptor, variants::Bool)
     required = [a for a in descriptor.supported_arguments if isnothing(a.default)]
@@ -135,9 +126,6 @@ function selected_cases(options::Options)
     return cases
 end
 
-"""
-The files `to_json` writes for a case.
-"""
 function case_files(dir::AbstractString, name::AbstractString)
     return [
         joinpath(dir, "$name.json"),
@@ -218,13 +206,16 @@ function main(args)
     mkpath(options.out)
     for c in cases
         push!(outcomes, build_case(c, options))
-        # Rewritten after every case, so an interrupted run still says how far it got.
+        # After every case, so an interrupted run shows how far it got.
         write_report(report, outcomes)
     end
     failed = count(o -> o.status == "FAILED", outcomes)
     @info "done" built = count(o -> o.status == "built", outcomes) kept =
         count(o -> o.status == "kept", outcomes) failed report
-    return failed == 0 ? 0 : 1
+    if failed == 0
+        return 0
+    end
+    return 1
 end
 
 exit(main(ARGS))

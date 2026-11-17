@@ -1,8 +1,6 @@
 """
-Assemble a PSY6 `SystemDocument` from a PSY5 case.
-
-Two passes: the first assigns every component an id so references resolve regardless of the
-order PSY5 wrote them; the second translates.
+Assemble a PSY6 `SystemDocument` from a PSY5 case: first assign every component an id so
+references resolve in any order, then translate.
 """
 function build_document(case::Psy5Case, report::ConversionReport)
     ledger = Ledger()
@@ -35,15 +33,13 @@ function build_document(case::Psy5Case, report::ConversionReport)
         system_base_power(case),
         BusIndex(vcat(own_components, masked)),
     )
-    # Masked sub-units translate before the HybridSystem that references them, so a
-    # sub-unit's skip is known to references_skipped by the time its owner is checked.
+    # Masked sub-units go first so their skips are known when their HybridSystem is checked.
     for raw in masked
         _add_translated!(doc, raw, ctx)
     end
     for raw in own_components
         _add_translated!(doc, raw, ctx)
     end
-    # allocate_id! may have advanced past the ids reserved above
     PCOM.reserve_ids!(doc, ledger.counter)
 
     _add_supplemental_attributes!(doc, case, ctx)
@@ -55,10 +51,9 @@ function build_document(case::Psy5Case, report::ConversionReport)
 end
 
 """
-`doc` with each bus's `voltage_setpoint` set from the setpoints devices elsewhere recorded for
-it during translation (`record_bus_voltage_setpoint!`): a bus is translated before the
-converter that regulates it, so its setpoint is filled in afterwards, through the document
-tree, the same round trip `resolve_series_refs` makes.
+`doc` with each bus's `voltage_setpoint` set from the setpoints recorded during translation
+(`record_bus_voltage_setpoint!`). Buses are translated before the converters that regulate
+them, so this runs afterwards through the document tree, as `resolve_series_refs` does.
 """
 function _apply_bus_voltage_setpoints(doc::PCOM.SystemDocument, ledger::Ledger)
     if isempty(ledger.bus_voltage_setpoints)
@@ -76,10 +71,7 @@ function _apply_bus_voltage_setpoints(doc::PCOM.SystemDocument, ledger::Ledger)
     return PCOM.document_from_json(tree)
 end
 
-"""
-Translate `raw` and add the resulting models to `doc`, carrying its `ext` across unless it was
-skipped.
-"""
+"""Translate `raw`, add the models to `doc`, and carry its `ext` across unless skipped."""
 function _add_translated!(
     doc::PCOM.SystemDocument,
     raw::AbstractDict,
@@ -95,28 +87,19 @@ function _add_translated!(
     return nothing
 end
 
-"""
-PSY5 types whose PSY6 model has no `ext`. PowerSystems' importer ignores a `doc.ext` entry for
-them (`_merge_doc_ext!` in its `import_document.jl`), so an `ext` on one is recorded as dropped
-rather than written where nothing reads it.
-"""
+"""PSY5 types whose PSY6 model has no `ext`; PowerSystems' importer ignores their entries."""
 const TYPES_WITHOUT_EXT = Set(["Arc", "TransmissionInterface"])
 
 """
-The `ext` key under which a component keeps the PSY5 values that have no PSY6 field, as
-`Dict(field => value)`. A field of a nested struct is keyed `Type.field` (e.g.
-`ImportExportCost.ancillary_service_offers`). Values are as PSY5 stored them, including its
-per-unit basis; each one is also listed in the `ConversionReport`.
+The `ext` key holding a component's PSY5 values with no PSY6 field, as `field => value` (a
+nested struct's field is `Type.field`), as PSY5 stored them.
 """
 const UNMAPPED_EXT_KEY = "psy5_unmapped"
 
 """
-Carry `raw`'s PSY5 `ext`, and the PSY5 values its translation kept because they have no PSY6
-field (`keep_unmapped!`, under `UNMAPPED_EXT_KEY`), into `doc.ext`, keyed by the PSY6 id of the
-component translated from it; PSY6's importer merges each entry into that component's `ext`.
-A transformer's entry is keyed by the id its PSY5 UUID maps to, the
-`TwoWindingTransformer`/`ThreeWindingTransformer` container, not one of its circuits (which,
-like `Arc`, have no `ext` in PSY6).
+Carry `raw`'s PSY5 `ext`, plus the values translation kept (`keep_unmapped!`, under
+`UNMAPPED_EXT_KEY`), into `doc.ext` by PSY6 id. A transformer's entry goes on the transformer,
+not its circuits, which have no `ext`.
 """
 function _carry_ext!(doc::PCOM.SystemDocument, raw::AbstractDict, ctx::TranslationContext)
     uuid = component_uuid(raw)
@@ -128,7 +111,6 @@ function _carry_ext!(doc::PCOM.SystemDocument, raw::AbstractDict, ctx::Translati
     end
     type_name = component_type(raw)
     if type_name in TYPES_WITHOUT_EXT
-        # Nowhere to put either; the unmapped fields are already on the report.
         if !isempty(ext)
             record_unmapped_field!(ctx.report, type_name, "ext")
         end
@@ -150,9 +132,8 @@ function _carry_ext!(doc::PCOM.SystemDocument, raw::AbstractDict, ctx::Translati
 end
 
 """
-PSY5's `ImpedanceCorrectionData` holds one `impedance_correction_curve`, interpreted by
-`transformer_control_mode`; PSY6 holds the same curve in one of two fields named for that
-mode. A phase-shift curve's x axis is PSS/E's degrees in PSY5 and radians in PSY6.
+PSY5 `ImpedanceCorrectionData.impedance_correction_curve` becomes the PSY6 field named for its
+`transformer_control_mode`. A phase-shift curve's x axis is degrees in PSY5, radians in PSY6.
 """
 function _impedance_correction_curve(raw::AbstractDict)
     curve = get(raw, "impedance_correction_curve", nothing)
@@ -184,13 +165,9 @@ _derive_attribute_fields(type_name::AbstractString, raw::AbstractDict) =
     get(ATTRIBUTE_DERIVATIONS, type_name, identity)(raw)
 
 """
-Push only the association row for an attribute already added under a different owner. IS
-supports one attribute shared by many components, and `assign_id!` is idempotent, so a naive
-repeat would push the same model twice under one id and `validate_document` would reject it.
-
-Both type names are the PSY6 ones, taken from the document as `add_supplemental_attribute!`
-does for the first owner: the owner's from the component the document holds under `owner_id`
-(PSY5's `Transformer3W` is `ThreeWindingTransformer`), the attribute's from its model type.
+Add only the association row for an attribute already added under another owner (IS shares one
+attribute among components); adding the model again would fail `validate_document`. Type names
+are PSY6's.
 """
 function _add_supplemental_association!(
     doc::PCOM.SystemDocument,
@@ -218,15 +195,8 @@ function _add_supplemental_association!(
 end
 
 """
-`raw`'s `services` list (PSY5's `Device.services`, also carried by branches and by
-`GroupReserve` for nested membership) names, per entry, a service this entity contributes
-to. PSY6 has no such field on the entity itself: the membership becomes one
-`ServiceAssociation` row per (service, entity) pair, mirroring how
-`_add_supplemental_attributes!` turns PSY5's attribute manager into association rows.
-
-Silently returns when either side was skipped, recording a cascaded skip for the dropped
-membership, since the entity or the service not making it into the document is already
-recorded once at its own root.
+Turn `raw`'s `services` list into one `ServiceAssociation` row per (service, entity). A
+skipped service is recorded as a cascaded skip; a skipped entity is already on the report.
 """
 function _add_service_associations_for!(
     doc::PCOM.SystemDocument,
@@ -317,11 +287,8 @@ function _add_supplemental_attributes!(
 end
 
 """
-Owners that were skipped take their time series with them. This records that loss in
-`report` without touching the document: the association rows themselves come from
-[`convert_time_series`](@ref) reading back what it actually wrote to the InfraStore
-sidecar, not from a document-side re-derivation of the PSY5 rows, so a mismatch between
-what the document claims and what the sidecar holds cannot arise.
+Record on `report` the time series lost with skipped owners. The document's association rows
+come from [`convert_time_series`](@ref) reading back the sidecar, not from here.
 """
 function _record_time_series_skips!(
     case::Psy5Case,
@@ -338,8 +305,6 @@ function _record_time_series_skips!(
     end
     return nothing
 end
-
-# ── Time series references in fields ──────────────────────────────────────────────
 
 """PSY5 key types, by the association `time_series_type`s each can name."""
 const SERIES_KEY_TYPES = Dict(
@@ -370,9 +335,8 @@ end
 _milliseconds(::Nothing) = nothing
 
 """
-The association a deferred `SeriesRef` names among the document's association rows: same
-owner, name, kind (static or forecast) and features, and, where the key gives one, the same
-resolution. Exactly one must match.
+The id of the one association row matching a deferred `SeriesRef`: same owner, name, kind,
+features and, if the key gives one, resolution.
 """
 function _series_association_id(ref::SeriesRef, rows, ledger::Ledger)
     key = ref.key
@@ -412,10 +376,8 @@ function _replace_placeholders!(x::AbstractDict, ids::AbstractDict{Int, Int})
 end
 
 """
-`doc` with every time series reference deferred during translation (`SeriesRef`) replaced by
-the id of the association it names. The ids are minted by the sidecar's catalog, which is
-written after the components, so the placeholders are replaced in the document tree and the
-document is rebuilt from it, the same round trip as writing and reading it back.
+`doc` with each deferred `SeriesRef` placeholder replaced by its association id. The catalog
+that mints the ids is written after the components, so the document is rebuilt from its tree.
 """
 function resolve_series_refs(doc::PCOM.SystemDocument, ledger::Ledger)
     if isempty(ledger.series_refs)
@@ -432,11 +394,9 @@ function resolve_series_refs(doc::PCOM.SystemDocument, ledger::Ledger)
 end
 
 """
-The result of one conversion: the assembled `PCOM.SystemDocument`, the `ConversionReport`
-of what could not be carried across, and the path to the rewritten time-series sidecar
-(`nothing` when the source had none). The sidecar named here is the `.h5` half of the
-InfraStore pair [`convert_time_series`](@ref) writes; its `.sqlite` catalog sits beside it
-and the two only mean anything together.
+The result of one conversion: the `PCOM.SystemDocument`, the `ConversionReport`, and the
+time series `.h5` sidecar path (`nothing` without time series); its `.sqlite` catalog sits
+beside it.
 """
 struct ConversionResult
     document::PCOM.SystemDocument
@@ -445,19 +405,13 @@ struct ConversionResult
 end
 
 """
-Convert one PSY5 case into `out_dir/system.json` plus, when the source has time series, the
-`out_dir/time_series.h5` + `out_dir/time_series.h5.sqlite` InfraStore pair. The catalog
-also holds the document's supplemental attribute associations, so PSY6 can adopt it under
-`time_series_read_only` without writing to it.
+Convert one PSY5 case into `out_dir/system.json` plus, with time series, the InfraStore pair
+`out_dir/time_series.h5` and `out_dir/time_series.h5.sqlite`. The catalog also holds the
+supplemental attribute associations, so PSY6 can adopt it read-only.
 
-The document's time series association rows are the ones [`convert_time_series`](@ref)
-reads back from the sidecar it just wrote, not a re-derivation from the PSY5 rows: the
-sidecar's catalog is the only source for `uri`/`data_hash`/`element_type`/`element_shape`,
-which a document-side guess could not reproduce, and PSY6's importer validates document
-rows against that same catalog.
-
-Passing the same `report` into repeated calls accumulates findings across systems; the
-returned `ConversionResult` wraps that same report.
+The document's time series association rows are read back from the sidecar
+([`convert_time_series`](@ref)), since only its catalog has the `uri`/`data_hash`/etc. PSY6
+validates. Passing the same `report` to repeated calls accumulates findings across systems.
 """
 function convert_system(
     src::AbstractString,

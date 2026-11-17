@@ -1,41 +1,31 @@
-# Version-neutral half of the system snapshot. Included by both `psy5_env/snapshot_psy5.jl`
-# and `psy6_env/snapshot_psy6.jl`, so it must not reference PowerSystems: PSY5 and PSY6 share
-# a package UUID and can never be loaded in the same process, which is why the comparison goes
-# through a JSON snapshot at all.
+# Version-neutral half of the system snapshot, included by both snapshot scripts. It must not
+# reference PowerSystems: PSY5 and PSY6 share a package UUID and cannot be loaded in one
+# process, which is why the comparison goes through a JSON snapshot.
 #
-# Each includer must define, for its own PowerSystems version, before including this file:
-#   - `const IS`: that version's InfrastructureSystems module.
-# and, anywhere in the file, the time series catalog adapter (IS3 lists keys, IS4 metadata
-# rows; a "handle" is whichever one the version uses):
-#   - `list_series(owner)`: a handle per time series attached to `owner`.
-#   - `series_type(handle)`: the *stored* type. IS4 reads a derived forecast back as a plain
-#     `Deterministic`, so the type must come from the catalog, not from the read series.
-#   - `series_name(handle)`, `series_metadata(handle)`: name, and a `Dict` of
-#     `initial_timestamp`, `resolution`, `horizon`, `interval`, `count`, `length` and
-#     `features`, `nothing` where one does not apply.
-#   - `read_series(owner, handle)`: the series itself.
-# and:
-#   - `read_field(x, field::Symbol)`: the field's value, read through its getter in system
-#     base units where the getter is unit-aware.
-#   - `snapshot_value(x::PowerSystems.Component)`: a reference record (see `component_ref`).
-#   - `all_components(sys)`: every component, including masked ones.
-#   - `services_of(component)`: the services the component contributes to.
-#   - `supplemental_attributes(sys)`, `associated_components(sys, attribute)`.
-#   - `system_header(sys)`: system-level values as a `Dict`.
+# Each includer defines `const IS` (its InfrastructureSystems) before including this file, and
+# these functions for its PowerSystems version:
+#   - `list_series(owner)`: a handle per time series on `owner` (IS3: a key, IS4: a metadata row).
+#   - `series_type(handle)`: the *stored* type; IS4 reads a derived forecast back as a plain
+#     `Deterministic`, so it must come from the catalog.
+#   - `series_name(handle)`, `series_metadata(handle)` (a `Dict` of `initial_timestamp`,
+#     `resolution`, `horizon`, `interval`, `count`, `length`, `features`; `nothing` where one
+#     does not apply), `read_series(owner, handle)`, `natural_scale(owner, handle)`.
+#   - `read_field(x, field::Symbol)`: the value through its getter, in system base units.
+#   - `snapshot_value(x::PowerSystems.Component)`: a reference record (`component_ref`).
+#   - `all_components(sys)` (including masked), `services_of(component)`,
+#     `supplemental_attributes(sys)`, `associated_components(sys, attribute)`,
+#     `system_header(sys)`.
 
 import Dates
 import HDF5
 import JSON
 
-"""
-Fields that hold bookkeeping rather than data, and are never compared.
-"""
+# Bookkeeping fields, never compared.
 const SKIPPED_FIELDS =
     (:internal, :time_series_container, :supplemental_attributes_container)
 
 """
-The type's name with every module qualifier removed, so `PowerSystems.VariableReserve{
-PowerSystems.ReserveUp}` and the same type printed from another module context agree.
+The type's name without module qualifiers.
 """
 type_label(::Type{T}) where {T} =
     replace(string(T), r"(?:[A-Za-z_][A-Za-z0-9_]*\.)+(?=[A-Za-z_])" => "")
@@ -48,7 +38,7 @@ enum_label(x::Enum) = last(split(string(x), '.'))
 snapshot_value(::Nothing) = nothing
 snapshot_value(x::Bool) = x
 snapshot_value(x::Integer) = Int(x)
-# JSON cannot hold NaN/Inf; keep them as strings so they still compare equal to themselves.
+# JSON cannot hold NaN/Inf; strings still compare equal to themselves.
 snapshot_value(x::AbstractFloat) = isfinite(x) ? Float64(x) : string(x)
 snapshot_value(x::Complex) =
     Dict{String, Any}("re" => snapshot_value(real(x)), "im" => snapshot_value(imag(x)))
@@ -68,8 +58,7 @@ snapshot_value(x::AbstractDict) =
     Dict{String, Any}(string(k) => snapshot_value(v) for (k, v) in x)
 
 """
-Fallback for any other struct (cost curves, transformer circuits, ...): its fields, tagged
-with its type.
+Any other struct (cost curves, transformer circuits, ...): its fields, tagged with its type.
 """
 function snapshot_value(x)
     record = struct_record(x)
@@ -92,8 +81,8 @@ component_ref(type_name::AbstractString, name::AbstractString) =
     Dict{String, Any}("__ref__" => type_name, "name" => name)
 
 """
-Run `f`, returning an `__error__` record in place of a thrown exception so that one
-unreadable field does not lose the rest of the snapshot.
+Run `f`, returning an `__error__` record instead of throwing, so one unreadable value does not
+lose the rest of the snapshot.
 """
 function attempt(f)
     try
@@ -104,10 +93,8 @@ function attempt(f)
 end
 
 """
-The HDF5 file beside a snapshot that holds every time series' values, one dataset per series,
-so the comparison can check them element by element without putting arrays in the JSON. The
-snapshot records each series' dataset path; numbering is per file, so the two sides' paths
-need not agree.
+The HDF5 file holding every time series' values, one dataset per series, so the comparison
+can check them element by element without putting arrays in the JSON.
 """
 mutable struct ValuesWriter
     file::HDF5.File
@@ -124,8 +111,7 @@ end
 write_dataset!(writer::ValuesWriter, values::AbstractArray{<:Real}) =
     _write_dataset!(writer, Float64.(values))
 
-# Non-scalar elements (e.g. PiecewiseStepData) are stored as their snapshot JSON, one string
-# per element, and compared exactly.
+# Non-scalar elements (e.g. PiecewiseStepData) are stored as snapshot JSON strings.
 write_dataset!(writer::ValuesWriter, values::AbstractArray) =
     _write_dataset!(writer, map(v -> JSON.json(snapshot_value(v)), values))
 
@@ -136,8 +122,8 @@ function _write_dataset!(writer::ValuesWriter, values::AbstractArray)
 end
 
 """
-Where a series' values went, and their shape. A forecast is stored as a horizon × window
-matrix with the start of each window, so a mismatch can be reported as a timestamp.
+Where a series' values went, and their shape. A forecast is a horizon × window matrix, with
+each window's start so a mismatch can be reported as a timestamp.
 """
 function values_record(writer::ValuesWriter, ts)
     values, window_starts = time_series_values(ts)
@@ -149,18 +135,14 @@ function values_record(writer::ValuesWriter, ts)
 end
 
 """
-Metadata for one time series, from its catalog entry rather than its data, with its values
-written to `writer`. Values are written raw, as stored; `natural_scale` (defined by each
-environment's snapshot script) is the factor that takes them to natural units — a PSY5
-scaling-factor multiplier's value on the owner, or PSY6's own read factor for the series'
-units labels — so the comparison checks the physical series even where the updater rescales
-what it stores.
+Metadata for one time series from its catalog entry, with its values written raw to `writer`.
+`natural_scale` takes the stored values to natural units, so the comparison checks the
+physical series even where the updater rescales what it stores.
 """
 function time_series_record(writer::ValuesWriter, owner, handle)
     T = series_type(handle)
     record = Dict{String, Any}(
-        # Bare name: PSY6 prints the element type parameters (`Deterministic{Float64, 1}`)
-        # that PSY5 leaves off, and the values themselves are compared below.
+        # Bare name: PSY6 adds element type parameters (`Deterministic{Float64, 1}`).
         "type" => string(nameof(T)),
         "name" => series_name(handle),
     )
@@ -173,9 +155,8 @@ function time_series_record(writer::ValuesWriter, owner, handle)
 end
 
 """
-A `DeterministicSingleTimeSeries` stores no data of its own: its windows are overlapping views
-of the `SingleTimeSeries` of the same name and resolution, which is snapshotted and compared
-element by element on its own.
+A `DeterministicSingleTimeSeries` stores no data: it views the `SingleTimeSeries` of the same
+name and resolution, which is compared on its own.
 """
 function values_record(
     ::ValuesWriter,
@@ -196,7 +177,7 @@ values_record(writer::ValuesWriter, ::Type, owner, handle) =
     values_record(writer, read_series(owner, handle))
 
 """
-The series' values and the start of each forecast window (`nothing` for a static series).
+The series' values and each forecast window's start (`nothing` for a static series).
 """
 time_series_values(ts::IS.StaticTimeSeries) =
     (IS.TimeSeries.values(IS.get_data(ts)), nothing)
@@ -211,7 +192,7 @@ function time_series_values(ts::IS.Forecast)
 end
 
 """
-Every time series attached to `owner`, sorted so the snapshot is deterministic.
+Every time series on `owner`, sorted.
 """
 function time_series_records(writer::ValuesWriter, owner)
     if !IS.supports_time_series(owner)
@@ -226,8 +207,7 @@ ref_sort_key(r) = (r["__ref__"], r["name"])
 
 function component_record(component)
     record = struct_record(component)
-    # `services` is a field in PSY5 and an association in PSY6; read it the same way on both
-    # sides.
+    # A field in PSY5 and an association in PSY6; read the same way on both sides.
     delete!(record, "services")
     record["services"] = attempt(
         () -> sort!(
@@ -252,8 +232,7 @@ function supplemental_attribute_record(writer::ValuesWriter, sys, attribute)
 end
 
 """
-Attributes have no name, so they are listed rather than keyed, in an order fixed by their
-content.
+Attributes have no name, so they are listed, ordered by content.
 """
 function supplemental_attribute_records(writer::ValuesWriter, sys)
     records = Any[
@@ -264,8 +243,8 @@ function supplemental_attribute_records(writer::ValuesWriter, sys)
 end
 
 """
-The full snapshot of `sys`: every component keyed by type then name, the time series of each,
-and the supplemental attributes. Time series values go to `writer`.
+The snapshot of `sys`: components keyed by type then name, their time series, and the
+supplemental attributes. Time series values go to `writer`.
 """
 function snapshot_system(sys, writer::ValuesWriter)
     components = Dict{String, Dict{String, Any}}()
@@ -289,8 +268,7 @@ function snapshot_system(sys, writer::ValuesWriter)
 end
 
 """
-Snapshot `sys` into `dir`: the JSON snapshot at `snapshot_file` and its time series values in
-`values_file` beside it.
+Write the JSON snapshot of `sys` and its time series values into `dir`.
 """
 function write_snapshot(sys, dir::AbstractString, snapshot_file, values_file)
     snapshot = HDF5.h5open(joinpath(dir, values_file), "w") do file
@@ -301,6 +279,6 @@ function write_snapshot(sys, dir::AbstractString, snapshot_file, values_file)
     end
 end
 
-# An `attempt` error record always counts as an entry, so a failure is never dropped.
+# An `attempt` error record counts as an entry, so a failure is never dropped.
 has_entries(x::AbstractVector) = !isempty(x)
 has_entries(::AbstractDict) = true

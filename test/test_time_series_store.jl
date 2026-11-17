@@ -232,9 +232,8 @@ end
         end
     end
 
-    # The catalog holds the document's supplemental attribute associations too. PSY6 opens a
-    # catalog in place under `time_series_read_only` and *writes* any association it lacks, so
-    # a catalog missing them cannot be loaded read-only.
+    # The catalog must hold the supplemental attribute associations, or PSY6 cannot load it
+    # read-only.
     outage = joinpath(
         @__DIR__,
         "..",
@@ -265,8 +264,7 @@ end
         end
     end
 
-    # PSY5 derives forecasts for components only: an outage attribute's probability series
-    # has no derived forecast, and must not gain one while every component series keeps its.
+    # Only components get derived forecasts, not an outage attribute's series.
     ts_outage = joinpath(
         @__DIR__,
         "..",
@@ -300,10 +298,8 @@ end
         end
     end
 
-    # A sidecar whose derived forecasts cover only some of an owner category's
-    # SingleTimeSeries at a resolution cannot be reproduced: InfraStore derives from every
-    # series of a category at a resolution or none. Dropping one static row from the corpus's row set makes the derived set
-    # over-cover, and that must abort rather than write a store with extra forecasts.
+    # InfraStore derives from every series of a category at a resolution or none, so a partial
+    # set must abort.
     if isfile(path)
         case = PSU.read_psy5(path)
         rows = PSU.read_associations(case.time_series_path)

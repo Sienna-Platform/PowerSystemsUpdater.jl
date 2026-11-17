@@ -388,10 +388,8 @@
     end
 
     @testset "embedded time-series pointers: carried where PSY6 names a series" begin
-        # PSY5 sometimes embeds a live time-series reference directly in a value field
-        # instead of a literal value. `FuelCurve.fuel_cost` has a PSY6 counterpart that names
-        # the series (`fuel_cost_time_series`): the key is deferred, written as a placeholder
-        # id, and resolved once the catalog exists (`resolve_series_refs`).
+        # `FuelCurve.fuel_cost` has a PSY6 field naming the series: the key is deferred as a
+        # placeholder id until the catalog exists (`resolve_series_refs`).
         key = Dict{String, Any}(
             "__metadata__" => Dict("type" => "ForecastKey"),
             "name" => "fuel_cost",

@@ -1,18 +1,13 @@
 """
-PSY5 keys that never become PSY6 properties on the entity itself. `services` is carried
-separately as `ServiceAssociation` rows (`_add_service_associations!` in convert.jl), not as
-a field on the component; `ext` is carried in the document's own `ext` table, keyed by
-component id (`_carry_ext!` in convert.jl), which is also where any PSY5 field with no PSY6
-counterpart is kept (under `UNMAPPED_EXT_KEY`); `internal` and `__metadata__` are
-serialization scaffolding.
+PSY5 keys that never become PSY6 properties on the entity. `services` becomes
+`ServiceAssociation` rows (`_add_service_associations!`) and `ext` goes to the document's `ext`
+table (`_carry_ext!`); `internal` and `__metadata__` are serialization scaffolding.
 """
 const PSY5_INTERNAL_FIELDS = Set(["__metadata__", "internal", "services", "ext"])
 
 """
-PSY5 fields linking a static device to its dynamic model (`DynamicGenerator`,
-`DynamicInverter`, ...). The 0.2 schema has no dynamic models, so the updater skips them; the
-link is dropped and the static device kept, rather than the device being skipped with its
-model. Each dropped link is recorded on the report (`record_dropped_dynamic_model!`).
+PSY5 fields linking a static device to its dynamic model. The schema has no dynamic models, so
+the link is dropped (and reported) and the static device kept.
 """
 const DYNAMIC_REFERENCE_FIELDS = Set(["dynamic_injector"])
 
@@ -63,24 +58,22 @@ _is_start_up_stages_shape(dict::AbstractDict) =
     Set(keys(dict)) == Set(("hot", "warm", "cold"))
 
 """
-PSY5 sometimes embeds a time series key in a value field. Where PSY6 has a field that names
-the series instead (`SERIES_REF_FIELDS`), the key is carried across as that series'
-association id. Anywhere else, dropping it would yield a document that validates while having
-lost data nothing downstream could recover, so this errors instead.
+PSY5 sometimes embeds a time series key in a value field. Where PSY6 names the series by
+association id (`SERIES_REF_FIELDS`) the key is carried across as that id; anywhere else
+dropping it would silently lose data, so it is an error.
 """
 const TIME_SERIES_POINTER_TYPES = Set(["ForecastKey", "StaticTimeSeriesKey"])
 
 """
-PSY5 fields that may hold a time series key, by owner type, and the PSY6 field that names the
-series by association id in its place.
+PSY5 fields that may hold a time series key, by owner type, and the PSY6 field that replaces it.
 """
 const SERIES_REF_FIELDS = Dict{Tuple{String, String}, String}(
     ("FuelCurve", "fuel_cost") => "fuel_cost_time_series",
 )
 
 """
-`value` with each embedded time series key that PSY6 can name (`SERIES_REF_FIELDS`) moved to
-its PSY6 field as a placeholder association id, deferred on `ledger` until the catalog exists.
+`value` with each embedded series key in `SERIES_REF_FIELDS` moved to its PSY6 field as a
+placeholder, resolved once the catalog exists (`resolve_series_refs`).
 """
 function _defer_series_refs(
     value::AbstractDict,
@@ -93,7 +86,9 @@ function _defer_series_refs(
         if isnothing(target) || isnothing(_time_series_pointer_type(v))
             continue
         end
-        deferred = deferred === value ? Dict{String, Any}(value) : deferred
+        if deferred === value
+            deferred = Dict{String, Any}(value)
+        end
         delete!(deferred, key)
         deferred[target] = defer_series_ref!(ledger, v)
     end
@@ -215,9 +210,7 @@ const MARKET_BID_COST_DEFAULTED_FIELDS = Dict{String, Function}(
     "minimum_energy_offer" => _zero_cost_curve,
     "incremental_offer_curves" => _zero_offer_curve,
     "decremental_offer_curves" => _zero_offer_curve,
-    # Schema-optional with a documented `default` (`false`, `false`, 0 = VARIABLE,
-    # 0 = SINGLE_STEP), and PSY5 has no such fields. Written only because PowerSystems'
-    # importer requires all four instead of applying the defaults (findings 10, 22).
+    # Schema-optional with defaults, written because PowerSystems' importer requires them.
     "incremental_slope" => () -> false,
     "decremental_slope" => () -> false,
     "curve_style" => () -> 0,
@@ -310,8 +303,8 @@ translate_value(value, ::Ledger, ::ConversionReport) = value
 """
 Record every key on a resolved nested composite (`type_name` from `__metadata__.type`, or
 `"StartUpStages"` for the untagged shape) that is not one of `ICOM.model_type(type_name)`'s
-fieldnames — the nested analogue of `build_kwargs`'s unmapped-field guard. The value is kept
-for the owning component's `ext` as `Type.field` (`keep_unmapped!`).
+fieldnames — the nested analogue of `build_kwargs`'s unmapped-field guard. The value is kept in
+the owner's `ext` as `Type.field`.
 
 Only fires when `type_name` resolves to a registered PSY6 model; an unresolved nested dict
 (no `__metadata__.type`, or a PSY5 type with no PSY6 counterpart) is forwarded unchanged, as
@@ -406,11 +399,9 @@ function translate_value(value::AbstractVector, ledger::Ledger, report::Conversi
 end
 
 """
-True when any reference on `raw` points at a component that was skipped. Such a component
-must itself be skipped: `validate_document` does not check ordinary component references,
-so a dangling integer would otherwise reach the output. A link to a dynamic model
-(`DYNAMIC_REFERENCE_FIELDS`) is not such a reference: it is never written, so the device
-does not depend on its model.
+True when any reference on `raw` points at a skipped component, which must then be skipped
+too (`validate_document` does not check references). Dynamic model links are never written,
+so they do not count.
 """
 function references_skipped(raw::AbstractDict, ledger::Ledger)
     for (key, value) in raw
@@ -471,16 +462,11 @@ function _operational_state(status::Bool)
 end
 
 """
-Whether `value` is a base voltage no physical device has: a transformer winding's
-(`base_voltage_primary`, `_secondary`, ...) or a VSC line's `rated_dc_voltage`. PSY5 accepted
-`0.0` (a source that records none, e.g. some MATPOWER cases and `c_sys14_hvdc_vsc`); PSY6
-requires a positive base. The fields are optional in the schema, so the value is left unset
-(`build_kwargs`) and recorded on the report; a field PSY5 stored relative to it is left unset
-the same way (`NonPhysicalBase`).
+Whether `value` is a non-physical base voltage for a transformer winding
+(`base_voltage_*`) or VSC `rated_dc_voltage`. PSY5 accepts `0.0`, PSY6 needs a positive base;
+`build_kwargs` leaves such a value unset and reports it.
 
-A bus's `base_voltage` is not included: PowerSystems 6's `Line` endpoint check subtracts the
-two buses' base voltages without allowing for an unset one, so a bus base of 0 is written as
-stored, which PSY6 accepts.
+A bus `base_voltage` is excluded: PowerSystems 6's `Line` check cannot handle an unset one.
 """
 _non_physical_base(key::AbstractString, value::Real) =
     (startswith(key, "base_voltage_") || key == "rated_dc_voltage") && value <= 0
@@ -496,10 +482,9 @@ Copies by name for every field `T` declares, resolving UUID references to intege
 keys with no counterpart on `T` are recorded on `report` rather than dropped silently — an
 unmapped field is a finding about the schemas.
 
-With `units`, each value is first converted from how PSY5 stored it into the unit the schema
-declares for it (`convert_units` in translate/units.jl), and any unit-basis field the
-conversion chose is written (`admittance_units = COMPONENT_MVAR`, ...). Without it, values are
-copied as stored.
+With `units`, each value is first converted to the unit the schema declares
+(`convert_units`) and the chosen unit-basis field is written (`admittance_units`, ...).
+Without it, values are copied as stored.
 """
 function build_kwargs(
     ::Type{T},
@@ -517,7 +502,6 @@ function build_kwargs(
             continue
         end
         if key in DYNAMIC_REFERENCE_FIELDS
-            # The dynamic model is skipped (no 0.2 schema home); never write a link to it.
             if !isnothing(value)
                 record_dropped_dynamic_model!(report, type_name)
             end
@@ -557,10 +541,9 @@ _in_declared_units(::Type, ::Symbol, ::AbstractString, value, ::Nothing, args...
     (value, true)
 
 """
-`value` converted into the unit `T` declares for `field`, and whether to write it. A unit
-basis the conversion chose is written into `kwargs`. A value that could not be converted is
-reported; an optional field is then left unset with the PSY5 value kept in `ext`, while a
-required one is written as PSY5 stored it.
+`(value, write)`: `value` converted to the unit `T` declares for `field`, and whether to write
+it. The chosen unit basis goes into `kwargs`. A value that could not be converted is reported;
+an optional field is then left unset (PSY5 value kept in ext), a required one written as stored.
 """
 function _in_declared_units(
     ::Type{T},
@@ -594,19 +577,10 @@ function _settle(
     report::ConversionReport,
 ) where {T}
     record_unverified_unit!(report, units.psy5_type, key)
-    if _may_leave_unset(T, field, key)
-        keep_unmapped!(ledger, key, value)
-        return (nothing, false)
-    end
-    return (value, true)
+    return _unset_or_as_stored(T, field, key, value, ledger)
 end
 
-"""
-A value whose PSY5 base is non-physical (`NonPhysicalBase`): a data problem in the source,
-reported under INVALID VALUES DROPPED. An optional field is left unset with the PSY5 value kept
-in `ext`; a required one is written as PSY5 stored it, so the document stays valid and PSY6
-reports the same data problem on import.
-"""
+"""A value on a non-physical base is reported as an invalid value; handled like `UnverifiedUnit`."""
 function _settle(
     ::NonPhysicalBase,
     ::Type{T},
@@ -618,6 +592,16 @@ function _settle(
     report::ConversionReport,
 ) where {T}
     record_dropped_invalid_value!(report, units.psy5_type, key)
+    return _unset_or_as_stored(T, field, key, value, ledger)
+end
+
+function _unset_or_as_stored(
+    ::Type{T},
+    field::Symbol,
+    key::AbstractString,
+    value,
+    ledger::Ledger,
+) where {T}
     if _may_leave_unset(T, field, key)
         keep_unmapped!(ledger, key, value)
         return (nothing, false)
@@ -626,9 +610,8 @@ function _settle(
 end
 
 """
-Fields the schema requires only in some states, which their declared type cannot show: a VSC
-converter's setpoint is optional, but required for the quantity its control mode selects, and
-`_vsc_setpoints` writes only that one (`VSC_SETPOINT_FIELDS`).
+VSC setpoints the schema requires only for the quantity the control mode selects, which their
+optional type does not show (`VSC_SETPOINT_FIELDS`).
 """
 const CONDITIONALLY_REQUIRED_FIELDS = Set([
     "dc_power_setpoint_from", "dc_power_setpoint_to",
@@ -641,8 +624,7 @@ _may_leave_unset(::Type{T}, field::Symbol, key::AbstractString) where {T} =
     _accepts_absent(fieldtype(T, field)) && !(key in CONDITIONALLY_REQUIRED_FIELDS)
 
 """
-Whether a model field may be left unset: the generator types optional fields as a union with
-`Absent`. A query on the field's declared type, not on a value.
+Whether a model field is optional: the generator types it as a union with `Absent`.
 """
 _accepts_absent(field_type::Type) =
     typeintersect(field_type, OpenAPI.Runtime.Absent) !== Union{}

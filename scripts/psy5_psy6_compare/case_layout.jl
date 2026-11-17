@@ -1,20 +1,19 @@
-# Where each step of the comparison reads and writes, shared by every step script and the
-# driver. Every case gets its own directory under the work directory:
+# Where each step reads and writes, shared by the step scripts and the driver:
 #
 #   <work_dir>/
-#       run.log                  everything each run.jl printed, appended per run
-#       summary.md               step 4, one row per case
+#       run.log                   full output of each run.jl run
+#       summary.md                step 4, totals and one row per case
 #       <case>/
-#           psy5_snapshot.json     step 1, PSY5 env
-#           psy5_values.h5         step 1, every time series' values, one dataset per series
-#           psy6_bundle/           step 2, the updater's output (system.json + time_series.h5)
-#           conversion_report.txt  step 2, the updater's ConversionReport, as it prints
-#           conversion_report.json step 2, the same counts, for the comparison report
-#           psy6_snapshot.json     step 3, PSY6 env
-#           psy6_values.h5         step 3, as psy5_values.h5
-#           comparison.md          step 4, human-readable diff
-#           diffs.json             step 4, every difference, machine-readable
-#           <step>_error.txt       written instead when a step throws for this case
+#           psy5_snapshot.json    step 1
+#           psy5_values.h5        step 1, time series values, one dataset per series
+#           psy6_bundle/          step 2, the updater's output
+#           conversion_report.txt step 2, the updater's ConversionReport as it prints
+#           conversion_report.json step 2, its counts, for comparison.md
+#           psy6_snapshot.json    step 3
+#           psy6_values.h5        step 3
+#           comparison.md         step 4, human-readable diff
+#           diffs.json            step 4, every classified difference
+#           <step>_error.txt      written instead when a step throws for this case
 
 const PSY5_SNAPSHOT = "psy5_snapshot.json"
 const PSY5_VALUES = "psy5_values.h5"
@@ -28,9 +27,6 @@ const COMPARISON_DIFFS = "diffs.json"
 const RUN_LOG = "run.log"
 const SUMMARY = "summary.md"
 
-"""
-What each step writes into a case directory.
-"""
 const STEP_OUTPUTS = Dict(
     "psy5_snapshot" => [PSY5_SNAPSHOT, PSY5_VALUES],
     "convert" => [PSY6_BUNDLE, CONVERSION_REPORT, CONVERSION_REPORT_JSON],
@@ -38,9 +34,7 @@ const STEP_OUTPUTS = Dict(
     "compare" => [COMPARISON_REPORT, COMPARISON_DIFFS],
 )
 
-"""
-The steps whose outputs are built from each step's, and so go stale when it re-runs.
-"""
+# The steps whose outputs go stale when a step re-runs.
 const STEP_DEPENDENTS = Dict(
     "psy5_snapshot" => ["compare"],
     "convert" => ["psy6_snapshot", "compare"],
@@ -61,9 +55,8 @@ function parse_step_args(args)
 end
 
 """
-Remove what `step` and every step downstream of it left in `dir` on an earlier run, outputs
-and error files alike. Without this, a step that fails this run leaves the last run's outputs
-in place, and the steps after it would read them as current.
+Remove the outputs and error files `step` and its dependents left in `dir` on an earlier run,
+so a step that fails now cannot leave stale outputs for the next step to read.
 """
 function clear_step!(dir::AbstractString, step::AbstractString)
     for s in (step, STEP_DEPENDENTS[step]...)
@@ -74,8 +67,8 @@ function clear_step!(dir::AbstractString, step::AbstractString)
 end
 
 """
-Run one step for one case in that case's directory. A failure is written to
-`<step>_error.txt` and logged, and the batch moves on to the next case.
+Run one step for one case in its directory. A failure goes to `<step>_error.txt` and the batch
+moves on.
 """
 function run_case_step(
     f,
@@ -95,7 +88,16 @@ function run_case_step(
         open(err, "w") do io
             showerror(io, e, catch_backtrace())
         end
-        @error "$step failed" case = case_name(case) details = err
+        println(stderr, "ERROR $step $(case_name(case)): ", first_error_line(err))
         return false
     end
+end
+
+function first_error_line(path::AbstractString)
+    for line in eachline(path)
+        if !isempty(strip(line))
+            return first(strip(line), 200)
+        end
+    end
+    return "(empty error file)"
 end

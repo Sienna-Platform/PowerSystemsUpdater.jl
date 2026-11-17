@@ -120,8 +120,7 @@ end
 end
 
 @testset "LCC impedances: system-base pu to ohm on the circuit's own voltage" begin
-    # The PSS/E case's values: PSY5's parser divides RDC by VSCHD^2 / baseMVA and each
-    # converter's RC/XC/XCAP by its EBAS^2 / baseMVA, whatever the buses' base voltages.
+    # PSY5's parser uses the circuit's own voltages, whatever the buses' base voltages.
     function _lcc(ctx; extra...)
         raw = Dict{String, Any}(
             "__metadata__" => Dict("type" => "TwoTerminalLCCLine"),

@@ -1,7 +1,6 @@
-# Step 4 of the PSY5 -> PSY6 comparison: diff each case's PSY5 and PSY6 snapshots, classify
-# every difference against `known_differences.jl`, and write `comparison.md` and `diffs.json`
-# per case plus `summary.md` for the whole run. Exits non-zero if any case has an unexpected
-# difference or a failed step.
+# Step 4 of the PSY5 -> PSY6 comparison: diff each case's snapshots, classify every difference
+# against `known_differences.jl`, and write `comparison.md` and `diffs.json` per case plus
+# `summary.md`. Exits non-zero if any case has an unexpected difference or a failed step.
 #
 #   julia --project=scripts/psy5_psy6_compare/psy6_env \
 #       scripts/psy5_psy6_compare/compare.jl <work_dir> <case.json>...
@@ -17,18 +16,10 @@ include(joinpath(@__DIR__, "known_differences.jl"))
 const STEPS = ("psy5_snapshot", "convert", "psy6_snapshot")
 
 """
-One difference between the snapshots. Kinds:
-
-  - `missing_component` / `extra_component`: present on one side only
-  - `missing_field` / `extra_field`: a field on one side of a matched component only
-  - `moved_to_ext`: a PSY5 field with no PSY6 field, kept in the component's
-    `ext["psy5_unmapped"]`
-  - `value`: a field, time series or attribute value that differs
-  - `unreadable`: the snapshot could read the value on one side only
-  - `unreadable_both`: the snapshot could read the value on neither side
-  - `missing_time_series` / `extra_time_series`
-  - `missing_supplemental_attribute` / `extra_supplemental_attribute`
-  - `system`: a system-level value that differs
+One difference between the snapshots. `kind` is one of `missing_`/`extra_` + `component`,
+`field`, `time_series` or `supplemental_attribute`; `value` (a value differs); `unreadable` /
+`unreadable_both` (one / neither side could be read); `moved_to_ext` (a PSY5 field kept in
+`ext["psy5_unmapped"]`); `system` (a system-level value differs).
 """
 struct Difference
     kind::String
@@ -40,9 +31,6 @@ struct Difference
     psy6::Any
 end
 
-"""
-The object a difference is recorded against.
-"""
 struct Site
     psy5_type::String
     psy6_type::String
@@ -69,7 +57,7 @@ function glob_match(pattern::AbstractString, s::AbstractString)
 end
 
 """
-`:expected` with its reason, `:informational`, or `:unexpected`.
+`(:expected, reason)`, `(:informational, "")` or `(:unexpected, "")`.
 """
 function classify(d::Difference)
     for e in EXPECTED
@@ -91,8 +79,8 @@ is_ref(x::AbstractDict) = haskey(x, "__ref__")
 is_ref(x) = false
 
 """
-Whether a PSY5 and a PSY6 component reference name the same component: same name, and the
-PSY6 type is where `TYPE_MAPPINGS` says the PSY5 type went.
+Whether the references name the same component, the PSY6 type being where `TYPE_MAPPINGS`
+sent the PSY5 type.
 """
 refers_to_same(a::AbstractDict, b::AbstractDict) =
     a["name"] == b["name"] && glob_match(type_mapping(a["__ref__"]).psy6_type, b["__ref__"])
@@ -104,8 +92,7 @@ join_path(path, key) = isempty(path) ? string(key) : "$path.$key"
 
 function diff_values!(out, site::Site, path, a::AbstractDict, b::AbstractDict)
     if is_error(a) && is_error(b)
-        # A limit of the snapshot, not a difference between versions; the two error texts
-        # come from different package versions and are not compared.
+        # A limit of the snapshot, not a difference between versions.
         record!(out, site, "unreadable_both", path, a, b)
         return
     elseif is_error(a) || is_error(b)
@@ -130,7 +117,7 @@ end
 
 function diff_values!(out, site::Site, path, a::AbstractVector, b::AbstractVector)
     if all(is_ref, a) && all(is_ref, b)
-        # Each side sorted its references by its own type labels; line them up by name.
+        # Each side sorted its references by its own type labels.
         a = sort(a; by = r -> r["name"])
         b = sort(b; by = r -> r["name"])
     end
@@ -149,13 +136,13 @@ function diff_values!(out, site::Site, path, a::Real, b::Real)
     end
 end
 
-function diff_values!(out, site::Site, path, a::AbstractDict, b)
-    record!(out, site, is_error(a) ? "unreadable" : "value", path, a, b)
-end
+mismatch_kind(x) = is_error(x) ? "unreadable" : "value"
 
-function diff_values!(out, site::Site, path, a, b::AbstractDict)
-    record!(out, site, is_error(b) ? "unreadable" : "value", path, a, b)
-end
+diff_values!(out, site::Site, path, a::AbstractDict, b) =
+    record!(out, site, mismatch_kind(a), path, a, b)
+
+diff_values!(out, site::Site, path, a, b::AbstractDict) =
+    record!(out, site, mismatch_kind(b), path, a, b)
 
 function diff_values!(out, site::Site, path, a, b)
     if a != b
@@ -193,8 +180,8 @@ function apply_field_rules(
         end
         push!(applied, field)
         value = rule.to_psy5(pop!(record, field), system, record)
-        # Several PSY6 fields can fold into one PSY5 field (a setpoint per mode); only the one
-        # the mode selected holds a value, so an empty one never overwrites it.
+        # Several PSY6 fields fold into one PSY5 field (a setpoint per mode); an unset one
+        # must not overwrite the one the mode selected.
         if !isnothing(value) || !haskey(record, rule.psy5_field)
             record[rule.psy5_field] = value
         end
@@ -203,9 +190,9 @@ function apply_field_rules(
 end
 
 """
-Lift one winding's circuit (`circuit_key` on the PSY6 record) onto `lifted`, each field under
-its PSY5 per-winding name (`WINDING_FIELDS`), or `<field>@<circuit_key>` when PSY5 has none.
-A value that is not a nested circuit is kept under its own key.
+Lift one winding's circuit onto `lifted`, each field under its PSY5 per-winding name
+(`WINDING_FIELDS`), or `<field>@<circuit_key>` when PSY5 has none. A value that is not a
+circuit is kept under its own key.
 """
 function lift_winding!(lifted, circuit_key, winding, circuit::AbstractDict)
     for (inner_key, inner_value) in circuit
@@ -221,9 +208,8 @@ end
 lift_winding!(lifted, circuit_key, _, value) = (lifted[circuit_key] = value; lifted)
 
 """
-The PSY6 record reshaped to line up with the PSY5 one: nested structs named in
-`mapping.flatten` are lifted to the top level, fields are renamed to their PSY5 names, then
-`FIELD_RULES` and `NESTED_ALIGNMENTS` translate the forms PSY6 changed.
+The PSY6 record reshaped to line up with the PSY5 one: `mapping.flatten` structs lifted,
+fields renamed, then `FIELD_RULES` and `NESTED_ALIGNMENTS` applied.
 """
 function align(
     record::AbstractDict,
@@ -250,18 +236,15 @@ function align(
     return align_nested(apply_field_rules(reshaped, psy5_type, system))
 end
 
-"""
-The `ext` key under which the updater keeps PSY5 values that have no PSY6 field
-(`UNMAPPED_EXT_KEY` in the updater's `convert.jl`).
-"""
+# The `ext` key the updater keeps PSY5 values with no PSY6 field under (`UNMAPPED_EXT_KEY`).
 const MOVED_TO_EXT_KEY = "psy5_unmapped"
 
 _moved(ext::AbstractDict) = get(ext, MOVED_TO_EXT_KEY, Dict{String, Any}())
 _moved(::Any) = Dict{String, Any}()
 
 """
-Split the PSY5 values the updater moved to `ext` off an aligned PSY6 record, so the record's
-`ext` compares against PSY5's own `ext` and the moved values can account for missing fields.
+Split the values the updater moved to `ext` off an aligned PSY6 record, so its `ext` compares
+against PSY5's and the moved values can account for missing fields.
 """
 function split_moved(record::Dict{String, Any})
     moved = _moved(get(record, "ext", nothing))
@@ -280,9 +263,8 @@ function diff_records!(
 )
     for key in sort!(collect(union(keys(a), keys(b))))
         if haskey(moved, key) && (!haskey(b, key) || isnothing(b[key]))
-            # Kept as PSY5 stored it, so its value is not compared against the getter's. PSY6
-            # may have the field but leave it unset (a phase shifter's angle limits under an
-            # objective that does not use them).
+            # Kept as PSY5 stored it, not through a getter, so not compared. PSY6 may have the
+            # field but leave it unset.
             record!(out, site, "moved_to_ext", key, a[key], moved[key])
         elseif !haskey(b, key)
             record!(out, site, "missing_field", key, a[key], nothing)
@@ -295,9 +277,8 @@ function diff_records!(
 end
 
 """
-Every PSY6 entry, keyed by name, under a type label matching `pattern` (a `TypeMapping`'s
-`psy6_type`), with the label it was found under. PSY6 can parameterize a type PSY5 did not
-(`OnlineReserve{ReserveUp, NaturalUnit}`), so a mapping names its target by pattern.
+Every PSY6 entry under a type label matching `pattern`, by name, with the label it was found
+under.
 """
 function psy6_matching(psy6::AbstractDict, pattern::AbstractString)
     found = Dict{String, Tuple{String, Any}}()
@@ -354,7 +335,7 @@ time_series_key(r::AbstractDict) =
 time_series_label(key) = "$(key[1]) \"$(key[2])\" @ $(key[3])"
 
 keyed(records::AbstractVector, key) = Dict(key(r) => r for r in records)
-# An `attempt` error record in place of the list: nothing to key, compared whole instead.
+# An `attempt` error record in place of the list: compared whole.
 keyed(records::AbstractDict, key) = Dict(("__error__",) => records)
 
 """
@@ -385,9 +366,6 @@ function diff_keyed!(
     end
 end
 
-"""
-Each side's time series values file, open for reading.
-"""
 struct ValueFiles
     psy5::HDF5.File
     psy6::HDF5.File
@@ -412,8 +390,8 @@ json_safe(x::AbstractFloat) = isfinite(x) ? x : string(x)
 json_safe(x) = x
 
 """
-Compare two series' values element by element, recording one difference that gives the
-number of mismatched elements and the first of them.
+Compare two series element by element, recording one difference with the number of
+mismatched elements and the first of them.
 """
 function diff_arrays!(
     out,
@@ -440,8 +418,7 @@ function diff_arrays!(
 end
 
 """
-A matched pair of time series: metadata as values, then the arrays themselves, read from each
-side's values file. The dataset paths are per file and never compared.
+A matched pair of time series: metadata, then the arrays read from each values file.
 """
 function diff_series!(
     out,
@@ -486,9 +463,8 @@ function diff_series!(
 end
 
 """
-Compare two series in natural units: each side's stored values times its `natural_scale`.
-A scale either snapshot could not compute is recorded as unreadable and the raw values are
-compared, so the failure stays visible.
+Compare two series in natural units (stored values times `natural_scale`). A scale that could
+not be computed is recorded as unreadable and the raw values are compared.
 """
 function diff_scaled_arrays!(out, site::Site, path, a, b, scale_a::Real, scale_b::Real, starts)
     return diff_arrays!(out, site, path, _scaled(a, scale_a), _scaled(b, scale_b), starts)
@@ -502,7 +478,7 @@ end
 _scaled(values::AbstractArray{<:Real}, scale::Real) = values .* scale
 _scaled(values::AbstractArray, ::Real) = values
 
-# An `attempt` error record on either side: nothing to read, compared as values.
+# An `attempt` error record on either side.
 diff_series!(out, site::Site, path, a, b, ::ValueFiles) =
     diff_values!(out, site, path, a, b)
 
@@ -510,7 +486,7 @@ series_differ(files::ValueFiles) =
     (out, site, path, a, b) -> diff_series!(out, site, path, a, b, files)
 
 """
-A matched pair of supplemental attributes: fields as values, then their time series as series.
+A matched pair of supplemental attributes: fields, then their time series.
 """
 function diff_attribute!(
     out,
@@ -546,9 +522,8 @@ diff_attribute!(out, site::Site, path, a, b, ::ValueFiles, ::AbstractDict) =
     diff_values!(out, site, path, a, b)
 
 """
-A PSY5 component reference in PSY6 terms: the PSY6 type label `TYPE_MAPPINGS` sends its type
-to, found among the PSY6 snapshot's components by name. Unchanged when nothing matches, so the
-owner still reads as missing.
+A PSY5 component reference in PSY6 terms; unchanged when nothing matches, so the owner still
+reads as missing.
 """
 function psy6_ref(ref::AbstractDict, psy6_components::AbstractDict)
     candidates = psy6_matching(psy6_components, type_mapping(ref["__ref__"]).psy6_type)
@@ -566,8 +541,8 @@ _psy6_owners(owners::AbstractVector, psy6_components::AbstractDict) = sort!(
 _psy6_owners(owners, ::AbstractDict) = owners
 
 """
-PSY5 supplemental attributes with their owners named in PSY6 terms, so each matches its PSY6
-counterpart by owner (`attribute_key`) even where the owner's type was renamed.
+PSY5 supplemental attributes with their owners named in PSY6 terms, so they match by owner
+(`attribute_key`) even where the owner's type was renamed.
 """
 function with_psy6_owners(records::AbstractVector, psy6_components::AbstractDict)
     return Any[
@@ -622,16 +597,13 @@ end
 attribute_key(r::AbstractDict) = (r["__type__"], JSON.json(r["components"]))
 attribute_label(key) = "$(key[1]) on $(key[2])" * (key[3] > 1 ? " #$(key[3])" : "")
 
-"""
-The fields that tell apart attributes of one type on one owner: a three-winding transformer
-carries an impedance correction table per winding.
-"""
+# Tells apart attributes of one type on one owner (a table per transformer winding).
 attribute_order(r::AbstractDict) =
     (string(get(r, "transformer_winding", "")), string(get(r, "table_number", "")))
 
 """
-Attributes keyed by type, owners and their occurrence among those sharing both, in
-`attribute_order`, so several attributes of one type on one owner pair up one to one.
+Attributes keyed by type, owners and occurrence (in `attribute_order`), so several of one type
+on one owner pair up one to one.
 """
 function keyed_attributes(records::AbstractVector, key)
     groups = Dict{Any, Vector{Any}}()
@@ -661,7 +633,6 @@ function diff_system!(out, psy5::AbstractDict, psy6::AbstractDict)
             )
         end
     end
-    # Their own kind, so system-level mismatches group apart from component values.
     for d in found
         push!(
             out,
@@ -691,19 +662,140 @@ function compare_snapshots(psy5::AbstractDict, psy6::AbstractDict, files::ValueF
     return out
 end
 
-# Report
+# Reporting
 
-"""
-Group key for the report: indices are folded so `points[1]` and `points[7]` group together.
-"""
 group_path(path::AbstractString) = replace(path, r"\[\d+\]" => "[*]")
 
-function brief(x; limit = 70)
+function brief(x; limit = 60)
     s = isnothing(x) ? "—" : JSON.json(x)
-    return length(s) > limit ? first(s, limit) * "…" : s
+    if length(s) > limit
+        return first(s, limit) * "…"
+    end
+    return s
 end
 
 md_cell(x) = replace(string(x), "|" => "\\|", "\n" => " ")
+
+function md_table(io, header, rows)
+    println(io, "| ", join(header, " | "), " |")
+    println(io, "|", repeat(":--|", length(header)))
+    for row in rows
+        println(io, "| ", join(md_cell.(row), " | "), " |")
+    end
+    println(io)
+end
+
+"""
+The type a difference is about: the PSY5 type, with the PSY6 type after an arrow if it differs.
+"""
+function site_type(d::Difference)
+    if isempty(d.psy5_type)
+        return d.psy6_type
+    elseif isempty(d.psy6_type) || d.psy6_type == d.psy5_type
+        return d.psy5_type
+    end
+    return "$(d.psy5_type) → $(d.psy6_type)"
+end
+
+location(d::Difference) = isempty(d.path) ? site_type(d) : "$(site_type(d)).$(group_path(d.path))"
+
+example(d::Difference) = "$(d.name): $(brief(d.psy5)) → $(brief(d.psy6))"
+
+"""
+`diffs` grouped by `key`, largest group first.
+"""
+function group_by(key, items)
+    groups = Dict{Any, Vector{eltype(items)}}()
+    for item in items
+        push!(get!(Vector{eltype(items)}, groups, key(item)), item)
+    end
+    return sort!(collect(groups); by = g -> (-length(last(g)), string(first(g))))
+end
+
+"""
+The first `n` distinct `items`, then how many more there are.
+"""
+function listed(items, n)
+    distinct = unique(items)
+    shown = join(first(distinct, n), ", ")
+    if length(distinct) > n
+        shown *= " (+$(length(distinct) - n) more)"
+    end
+    return shown
+end
+
+function write_unexpected(io, diffs)
+    rows = [
+        (kind, type, path, length(group), example(first(group))) for
+        ((kind, type, path), group) in
+        group_by(d -> (d.kind, site_type(d), group_path(d.path)), diffs)
+    ]
+    md_table(io, ("kind", "type", "path", "count", "example (name: PSY5 → PSY6)"), rows)
+end
+
+function write_expected(io, classified)
+    rows = [
+        (
+            length(group),
+            first(group)[1].kind,
+            listed([location(d) for (d, _) in group], 3),
+            reason,
+        ) for (reason, group) in group_by(((_, reason),) -> reason, classified)
+    ]
+    md_table(io, ("count", "kind", "where", "reason"), rows)
+end
+
+function write_informational(io, diffs)
+    rows = [
+        (
+            length(group),
+            kind,
+            type,
+            listed([group_path(d.path) for d in group], 4),
+            example(first(group)),
+        ) for ((kind, type), group) in group_by(d -> (d.kind, site_type(d)), diffs)
+    ]
+    md_table(io, ("count", "kind", "type", "fields", "example"), rows)
+end
+
+const CONVERSION_FINDINGS = (
+    "unmapped_types" => "Unmapped types (components skipped)",
+    "cascaded_skips" => "Cascaded skips (reference a skipped component)",
+    "unmapped_fields" => "Unmapped fields (kept in ext)",
+    "unverified_units" => "Unverified units",
+    "dropped_dynamic_models" => "Dynamic models dropped",
+    "dropped_invalid_values" => "Invalid values dropped",
+    "approximate_mappings" => "Approximate mappings",
+    "schema_defaults" => "Schema defaults written",
+    "psy5_defaults" => "PSY5 defaults filled",
+)
+
+function write_conversion(io, conversion::AbstractDict)
+    rows = []
+    for (key, title) in CONVERSION_FINDINGS
+        counts = get(conversion, key, Dict{String, Any}())
+        if !isempty(counts)
+            top = sort!(collect(counts); by = p -> (-last(p), first(p)))
+            most = listed(["$k (×$n)" for (k, n) in top], 3)
+            push!(rows, (title, length(counts), sum(values(counts)), most))
+        end
+    end
+    println(io, "## Conversion report\n")
+    if isempty(rows)
+        println(io, "No findings.\n")
+    else
+        md_table(io, ("finding", "entries", "total", "most common"), rows)
+    end
+end
+
+function write_conversion(io, ::Nothing)
+    println(io, "## Conversion report\n\nNone written.\n")
+end
+
+function read_conversion(dir)
+    path = joinpath(dir, CONVERSION_REPORT_JSON)
+    return isfile(path) ? JSON.parsefile(path) : nothing
+end
 
 struct CaseResult
     case::String
@@ -711,157 +803,68 @@ struct CaseResult
     unexpected::Int
     expected::Int
     informational::Int
-    # The updater's report counts (`conversion_report.json`), or `nothing` if it never wrote
-    # one because conversion failed or did not run.
-    conversion::Union{Nothing, AbstractDict}
+    reason::String
 end
 
-CaseResult(case, failed_step, conversion) =
-    CaseResult(case, failed_step, 0, 0, 0, conversion)
-
-function read_conversion_counts(dir)
-    path = joinpath(dir, CONVERSION_REPORT_JSON)
-    return isfile(path) ? JSON.parsefile(path) : nothing
-end
-
-"""
-Components the updater left out: those of a type with no PSY6 counterpart, plus those skipped
-because they reference one.
-"""
-skipped_components(c::AbstractDict) =
-    sum(values(c["unmapped_types"]); init = 0) + sum(values(c["cascaded_skips"]); init = 0)
-skipped_components(::Nothing) = "—"
-
-"""
-Distinct `Type.field` pairs the updater found no PSY6 home for.
-"""
-dropped_fields(c::AbstractDict) = length(c["unmapped_fields"])
-dropped_fields(::Nothing) = "—"
-
-function write_conversion_section(io, c::AbstractDict)
-    println(io, "## Conversion report\n")
-    println(
-        io,
-        "What the updater itself recorded as not carried across (`$CONVERSION_REPORT`).\n",
-    )
-    sections = (
-        ("Unmapped types (components skipped)", c["unmapped_types"]),
-        ("Cascaded skips (components referencing a skipped one)", c["cascaded_skips"]),
-        ("Unmapped fields (values kept in ext)", c["unmapped_fields"]),
-        (
-            "Unverified units (PSY5 value not convertible to the PSY6 unit)",
-            get(c, "unverified_units", Dict{String, Any}()),
-        ),
-        (
-            "Dynamic models dropped (static device kept)",
-            get(c, "dropped_dynamic_models", Dict{String, Any}()),
-        ),
-        (
-            "Invalid values dropped (non-physical PSY5 value or base; data problem in the source)",
-            get(c, "dropped_invalid_values", Dict{String, Any}()),
-        ),
-        (
-            "Approximate mappings (written, but known not to reproduce PSY5)",
-            get(c, "approximate_mappings", Dict{String, Any}()),
-        ),
-        (
-            "Schema defaults written (no PSY5 value; PSY6 requires the field)",
-            get(c, "schema_defaults", Dict{String, Any}()),
-        ),
-        (
-            "PSY5 defaults filled (field absent from an older PSY5 file)",
-            get(c, "psy5_defaults", Dict{String, Any}()),
-        ),
-    )
-    if all(isempty(counts) for (_, counts) in sections)
-        println(io, "No findings.\n")
-        return
-    end
-    for (title, counts) in sections
-        if isempty(counts)
-            continue
-        end
-        println(io, "**$title**\n")
-        println(io, "| | count |")
-        println(io, "|:--|--:|")
-        for key in sort!(collect(keys(counts)))
-            println(io, "| ", md_cell(key), " | ", counts[key], " |")
-        end
-        println(io)
-    end
-end
-
-write_conversion_section(io, ::Nothing) =
-    println(io, "## Conversion report\n\nNo `$CONVERSION_REPORT_JSON` was written.\n")
+CaseResult(case, failed_step, reason) = CaseResult(case, failed_step, 0, 0, 0, reason)
 
 passed(r::CaseResult) = isnothing(r.failed_step) && r.unexpected == 0
 
-function grouped(diffs)
-    groups = Dict{Tuple{String, String, String, String}, Vector{Difference}}()
-    for d in diffs
-        push!(
-            get!(
-                Vector{Difference},
-                groups,
-                (d.kind, d.psy5_type, d.psy6_type, group_path(d.path)),
-            ),
-            d,
-        )
+function status(r::CaseResult)
+    if !isnothing(r.failed_step)
+        return "ERROR ($(r.failed_step))"
     end
-    return sort!(collect(groups); by = first)
+    if passed(r)
+        return "PASS"
+    end
+    return "FAIL"
 end
 
-function write_group_table(io, diffs; reasons = nothing)
-    if isempty(diffs)
-        println(io, "None.\n")
-        return
+const ERROR_KINDS = Dict(
+    "psy5_snapshot" => "load error",
+    "psy6_snapshot" => "load error",
+    "convert" => "convert error",
+)
+
+function outcome(r::CaseResult)
+    if !isnothing(r.failed_step)
+        return get(ERROR_KINDS, r.failed_step, "compare error")
     end
-    header = isnothing(reasons) ? "example (name: PSY5 → PSY6)" : "reason"
-    println(io, "| kind | PSY5 type | PSY6 type | path | count | $header |")
-    println(io, "|:--|:--|:--|:--|--:|:--|")
-    for ((kind, t5, t6, path), group) in grouped(diffs)
-        d = first(group)
-        detail = if isnothing(reasons)
-            "$(d.name): $(brief(d.psy5)) → $(brief(d.psy6))"
-        else
-            reasons[d]
-        end
-        println(
-            io,
-            "| ", join(md_cell.((kind, t5, t6, path, length(group), detail)), " | "), " |",
-        )
+    if passed(r)
+        return "pass"
     end
-    println(io)
+    return "differ"
 end
 
 function write_case_report(dir, case, diffs, psy5_version, psy6_version, conversion)
     classified = [(d, classify(d)...) for d in diffs]
-    unexpected = [d for (d, c, _) in classified if c == :unexpected]
-    expected = [d for (d, c, _) in classified if c == :expected]
-    informational = [d for (d, c, _) in classified if c == :informational]
-    reasons =
-        IdDict{Difference, String}(d => r for (d, c, r) in classified if c == :expected)
+    of(class) = [(d, reason) for (d, c, reason) in classified if c == class]
+    unexpected = first.(of(:unexpected))
+    expected = of(:expected)
+    informational = first.(of(:informational))
 
     open(joinpath(dir, COMPARISON_REPORT), "w") do io
-        println(io, "# $(case_name(case)): PSY5 → PSY6\n")
-        println(io, "Source: `$case`  ")
-        println(io, "PowerSystems $psy5_version → PowerSystems $psy6_version\n")
-        verdict = isempty(unexpected) ? "PASS" : "FAIL"
+        println(io, "# $(case_name(case)): $(isempty(unexpected) ? "PASS" : "FAIL")\n")
+        println(io, "`$case`  ")
+        println(io, "PowerSystems $psy5_version → $psy6_version\n")
         println(
             io,
-            "**$verdict** — $(length(unexpected)) unexpected, $(length(expected)) expected, " *
-            "$(length(informational)) informational difference(s).\n",
+            "**$(length(unexpected)) unexpected** · $(length(expected)) expected · " *
+            "$(length(informational)) informational\n",
         )
-        println(io, "## Unexpected\n")
-        write_group_table(io, unexpected)
-        println(io, "## Expected (accepted breaking changes)\n")
-        write_group_table(io, expected; reasons = reasons)
-        println(
-            io,
-            "## Informational (new in PSY6, moved to ext, or unreadable on both sides)\n",
-        )
-        write_group_table(io, informational)
-        write_conversion_section(io, conversion)
+        if !isempty(unexpected)
+            println(io, "## Unexpected differences\n")
+            write_unexpected(io, unexpected)
+        end
+        if !isempty(expected)
+            println(io, "## Expected (accepted PSY5 → PSY6 changes)\n")
+            write_expected(io, expected)
+        end
+        if !isempty(informational)
+            println(io, "## Informational (new in PSY6, moved to ext, or unreadable)\n")
+            write_informational(io, informational)
+        end
+        write_conversion(io, conversion)
     end
 
     open(joinpath(dir, COMPARISON_DIFFS), "w") do io
@@ -880,13 +883,22 @@ function write_case_report(dir, case, diffs, psy5_version, psy6_version, convers
         ]
         JSON.json(io, records; pretty = true)
     end
+
+    top = group_by(d -> (d.kind, location(d)), unexpected)
+    reason = join(
+        ["$kind $at ×$(length(group))" for ((kind, at), group) in first(top, 2)],
+        "; ",
+    )
+    if length(top) > 2
+        reason *= "; +$(length(top) - 2) more"
+    end
     return CaseResult(
         case_name(case),
         nothing,
         length(unexpected),
         length(expected),
         length(informational),
-        conversion,
+        reason,
     )
 end
 
@@ -894,15 +906,15 @@ function compare_case(work_dir, case)
     dir = case_dir(work_dir, case)
     mkpath(dir)
     clear_step!(dir, "compare")
-    conversion = read_conversion_counts(dir)
     for step in STEPS
-        if isfile(joinpath(dir, error_file(step)))
-            return CaseResult(case_name(case), step, conversion)
+        error_path = joinpath(dir, error_file(step))
+        if isfile(error_path)
+            return CaseResult(case_name(case), step, first_error_line(error_path))
         end
     end
     for file in (PSY5_SNAPSHOT, PSY5_VALUES, PSY6_SNAPSHOT, PSY6_VALUES)
         if !isfile(joinpath(dir, file))
-            return CaseResult(case_name(case), "missing $file", conversion)
+            return CaseResult(case_name(case), "missing $file", "step did not run")
         end
     end
     psy5 = JSON.parsefile(joinpath(dir, PSY5_SNAPSHOT))
@@ -918,61 +930,61 @@ function compare_case(work_dir, case)
         diffs,
         psy5["system"]["psy_version"],
         psy6["system"]["psy_version"],
-        conversion,
+        read_conversion(dir),
     )
 end
 
 """
-Where to look for a case: its comparison, else the error file of the step that failed, else
-(an output was missing without an error, e.g. a step was skipped) the case directory.
+The case's comparison, else its failed step's error file, else its directory.
 """
-report_path(work_dir, r::CaseResult) =
+function report_path(work_dir, r::CaseResult)
     if isnothing(r.failed_step)
-        joinpath(r.case, COMPARISON_REPORT)
-    else
-        _failure_path(work_dir, r.case, error_file(r.failed_step))
+        return joinpath(r.case, COMPARISON_REPORT)
     end
+    error_path = joinpath(r.case, error_file(r.failed_step))
+    if isfile(joinpath(work_dir, error_path))
+        return error_path
+    end
+    return r.case
+end
 
-_failure_path(work_dir, case, file) =
-    isfile(joinpath(work_dir, case, file)) ? joinpath(case, file) : case
+report_link(work_dir, r::CaseResult) = "[report](<$(report_path(work_dir, r))>)"
+
+const OUTCOMES = ("pass", "differ", "load error", "convert error", "compare error")
+
+function totals_line(results)
+    counts = [o => count(r -> outcome(r) == o, results) for o in OUTCOMES]
+    shown = ["$n $o" for (o, n) in counts if n > 0 || o == "pass"]
+    return "$(join(shown, " · ")) — $(length(results)) cases"
+end
 
 function write_summary(io, work_dir, results)
-    println(
-        io,
-        "| case | result | unexpected | expected | informational | " *
-        "skipped components | dropped fields | report |",
-    )
-    println(io, "|:--|:--|--:|--:|--:|--:|--:|:--|")
-    for r in results
-        status = if !isnothing(r.failed_step)
-            "ERROR ($(r.failed_step))"
-        else
-            passed(r) ? "PASS" : "FAIL"
-        end
-        report = report_path(work_dir, r)
-        println(
+    println(io, "# PSY5 → PSY6 comparison\n")
+    println(io, totals_line(results), "\n")
+    failing = filter(!passed, results)
+    if !isempty(failing)
+        println(io, "## Needs attention ($(length(failing)))\n")
+        sort!(failing; by = r -> !isnothing(r.failed_step))
+        md_table(
             io,
-            "| ",
-            join(
-                md_cell.((
-                    r.case,
-                    status,
-                    r.unexpected,
-                    r.expected,
-                    r.informational,
-                    skipped_components(r.conversion),
-                    dropped_fields(r.conversion),
-                    report,
-                )),
-                " | ",
-            ),
-            " |",
+            ("case", "result", "reason", "report"),
+            [(r.case, status(r), r.reason, report_link(work_dir, r)) for r in failing],
         )
     end
-    n_pass = count(passed, results)
-    println(
+    println(io, "## All cases\n")
+    md_table(
         io,
-        "\n$n_pass of $(length(results)) case(s) passed. Results under `$work_dir`.",
+        ("case", "result", "unexpected", "expected", "informational", "report"),
+        [
+            (
+                r.case,
+                status(r),
+                r.unexpected,
+                r.expected,
+                r.informational,
+                report_link(work_dir, r),
+            ) for r in results
+        ],
     )
 end
 
@@ -988,14 +1000,13 @@ function main(args)
             open(joinpath(dir, error_file("compare")), "w") do io
                 showerror(io, e, catch_backtrace())
             end
-            CaseResult(case_name(case), "compare", read_conversion_counts(dir))
+            CaseResult(case_name(case), "compare", first_error_line(joinpath(dir, error_file("compare"))))
         end
         push!(results, result)
     end
-    open(joinpath(work_dir, SUMMARY), "w") do io
-        write_summary(io, work_dir, results)
-    end
-    write_summary(stdout, work_dir, results)
+    summary_path = joinpath(work_dir, SUMMARY)
+    open(io -> write_summary(io, work_dir, results), summary_path, "w")
+    println("compare: ", totals_line(results), "\nsummary: ", summary_path)
     return all(passed, results) ? 0 : 1
 end
 

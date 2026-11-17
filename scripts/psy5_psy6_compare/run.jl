@@ -2,31 +2,23 @@
 #
 #   julia scripts/psy5_psy6_compare/run.jl [options] <case.json | directory>...
 #
-# For every case (a PSY5 `System` JSON, with its `_time_series_storage.h5` beside it):
+# A directory expands to every `*.json` under it that is not a `_metadata.json`. Per case, four
+# steps, each its own process (PSY5 and PSY6 cannot share one) handing off through files under
+# the work directory (see case_layout.jl):
 #
-#   1. psy5_snapshot  load it with PowerSystems 5 and snapshot it          (psy5_env)
-#   2. convert        upgrade it to a PSY6 bundle with PowerSystemsUpdater  (psy6_env)
-#   3. psy6_snapshot  load the bundle with PowerSystems 6 and snapshot it  (psy6_env)
-#   4. compare        diff the snapshots against known_differences.jl      (psy6_env)
-#
-# PSY5 and PSY6 are the same package to Julia, so each step is its own process in its own
-# environment, and steps hand off through files under the work directory (see case_layout.jl).
-# Each step processes every case in one process, so package load time is paid once per step.
-#
-# A directory argument expands to every `*.json` under it, searched recursively, that is
-# not a `_metadata.json` — so `data/` covers every generated category.
+#   psy5_snapshot  load with PowerSystems 5 and snapshot    (psy5_env)
+#   convert        upgrade with PowerSystemsUpdater         (psy6_env)
+#   psy6_snapshot  load the bundle with PSY6 and snapshot   (psy6_env)
+#   compare        diff the snapshots, write the reports    (psy6_env)
 #
 # Options:
-#   --work DIR        where results go (default: scripts/psy5_psy6_compare/work)
+#   --work DIR        results directory (default: scripts/psy5_psy6_compare/work)
 #   --steps a,b,...   run only these steps, e.g. `--steps compare` after editing
-#                     known_differences.jl, or `--steps convert,psy6_snapshot,compare` after
-#                     changing the updater
+#                     known_differences.jl
 #   --instantiate     instantiate both environments first
 #
-# Everything the steps print is shown and also appended to `<work>/run.log`, under a header
-# naming the run, so a failure seen scrolling past can be found again.
-#
-# Exits non-zero if any case fails a step or has an unexpected difference.
+# The terminal shows one line per step; the full output, with per-case progress, is appended to
+# `<work>/run.log`. Exits non-zero if any case failed a step or has an unexpected difference.
 
 import Dates
 
@@ -65,7 +57,7 @@ function expand_cases(paths)
         error("no PSY5 cases found in $(paths)")
     end
     unique!(cases)
-    # Results are kept per case name, so two cases with one name would overwrite each other.
+    # Results are kept per case name.
     by_name = Dict{String, Vector{String}}()
     for case in cases
         push!(get!(Vector{String}, by_name, case_name(case)), case)
@@ -111,18 +103,17 @@ end
 
 julia_in(env) = `$(Base.julia_cmd()) --project=$env`
 
-"""
-Print a line from the driver itself, to the terminal and the log.
-"""
 function note(log::IO, message::AbstractString)
-    line = "[run.jl] $message\n"
-    print(stdout, line)
-    print(log, line)
+    println(stdout, message)
+    println(log, message)
     flush(log)
 end
 
+# Per-case progress lines from the step scripts (`[ Info:`) go to the log only.
+shown_on_terminal(line::AbstractString) = !startswith(line, "[ Info:")
+
 """
-Run `cmd`, copying its stdout and stderr line by line to the terminal and to `log`. Returns
+Run `cmd`, copying its output to `log` and the terminal-worthy lines to the terminal. Returns
 its exit code.
 """
 function run_logged(cmd::Cmd, log::IO)
@@ -130,7 +121,9 @@ function run_logged(cmd::Cmd, log::IO)
     proc = run(pipeline(ignorestatus(cmd); stdout = output, stderr = output); wait = false)
     close(output.in)
     for line in eachline(output; keep = true)
-        print(stdout, line)
+        if shown_on_terminal(line)
+            print(stdout, line)
+        end
         print(log, line)
         flush(log)
     end
@@ -138,12 +131,15 @@ function run_logged(cmd::Cmd, log::IO)
     return proc.exitcode
 end
 
+failed_cases(work_dir, cases, step) =
+    count(c -> isfile(joinpath(case_dir(work_dir, c), error_file(step))), cases)
+
 function main(args)
     work_dir, steps, instantiate, cases = parse_args(args)
     mkpath(work_dir)
     open(joinpath(work_dir, RUN_LOG), "a") do log
         println(log, "\n", "="^80)
-        note(log, "$(Dates.now()) julia run.jl $(join(args, ' '))")
+        println(log, "$(Dates.now()) julia run.jl $(join(args, ' '))")
         if instantiate
             for env in (PSY5_ENV, PSY6_ENV)
                 note(log, "instantiating $env")
@@ -154,20 +150,20 @@ function main(args)
                 end
             end
         end
-        note(
-            log,
-            "comparing $(length(cases)) case(s) in $work_dir; steps: $(join(steps, ", "))",
-        )
+        note(log, "$(length(cases)) case(s) -> $work_dir")
         status = 0
         for (step, (env, script)) in STEP_COMMANDS
             if step ∉ steps
                 continue
             end
-            note(log, "step: $step")
-            status =
-                max(status, run_logged(`$(julia_in(env)) $script $work_dir $cases`, log))
+            started = time()
+            code = run_logged(`$(julia_in(env)) $script $work_dir $cases`, log)
+            seconds = round(Int, time() - started)
+            failed = failed_cases(work_dir, cases, step)
+            note(log, "$step: $(length(cases) - failed) ok, $failed failed ($(seconds)s)")
+            status = max(status, code)
         end
-        note(log, "done, exit status $status")
+        note(log, "log: $(joinpath(work_dir, RUN_LOG))")
         return status
     end
 end

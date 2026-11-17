@@ -1,24 +1,17 @@
-# Unit conversion between the values PSY5 stored and the units the PSY6 schema declares.
+# Unit conversion from how PSY5 stored a field to the unit the PSY6 schema declares for it.
 #
-# Every field `build_kwargs` writes is converted by one rule, from two sources of metadata:
-#
-#   - PSY6: the schema's `x-unit` annotations, which the model packages expose as
-#     `ICOM.unit_discriminator` / `ICOM.declared_unit` / `ICOM.declared_quantity`.
-#   - PSY5: how PSY5 stored the field. `PSY5_DEVICE_BASE_FIELDS` is generated from PSY5's
-#     descriptors (`scripts/psy5_units/generate_psy5_units.jl`); `PSY5_STORAGE` lists by hand
-#     the fields PSY5 stored some other way without annotating them.
-#
-# A field whose PSY6 unit is per unit is copied, as PSY5's device-base storage already is. A
-# field with a physical PSY6 unit is converted from PSY5's per-unit or relative value. A field
-# whose PSY6 unit is physical and whose PSY5 storage is not known is never silently copied:
-# it is reported as an unverified unit (and kept in `ext` when the field is optional).
+# PSY6 side: the schema's `x-unit` annotations (`ICOM.declared_unit` and friends). PSY5 side:
+# `PSY5_DEVICE_BASE_FIELDS` (generated from PSY5's descriptors by
+# `scripts/psy5_units/generate_psy5_units.jl`) plus `PSY5_STORAGE`, the hand-listed exceptions.
+# A per-unit PSY6 field is copied; a physical one is converted. A physical PSY6 field whose PSY5
+# storage is unknown is never copied silently: it is reported as an unverified unit.
 
 include("psy5_units_generated.jl")
 
 """How PSY5 stored a field's value."""
 abstract type Psy5Storage end
 
-"""Per unit on the component's own `base_power` (the system base for a component with none)."""
+"""Per unit on the component's `base_power` (the system base if it has none)."""
 struct DeviceBasePU <: Psy5Storage end
 
 """Per unit on the system base, whatever the component's own base."""
@@ -27,74 +20,57 @@ struct SystemBasePU <: Psy5Storage end
 """Already in the physical unit PSY6 declares."""
 struct Natural <: Psy5Storage end
 
-"""Natural, but per hour where PSY6 is per second (`m3/h` against `m3/s`)."""
+"""Natural, but per hour where PSY6 is per second."""
 struct PerHour <: Psy5Storage end
 
-"""Natural current in A (PSY5's DC converter currents), where the schema declares kA."""
+"""Current in A, where the schema declares kA."""
 struct Amperes <: Psy5Storage end
 
-"""Natural power (MW, MVA, MVAr), which a per-unit PSY6 field takes on the component's base."""
+"""Natural power, which a per-unit PSY6 field takes on the component's base."""
 struct NaturalPower <: Psy5Storage end
 
-"""
-Per unit of the base voltage of one end of the component's arc (`end_index` 1 for `from`, 2
-for `to`): a converter setpoint referred to its own AC terminal.
-"""
+"""Per unit of the base voltage at one end of the component's arc (1 `from`, 2 `to`)."""
 struct ArcEndVoltagePU <: Psy5Storage
     end_index::Int
 end
 
-"""
-A multiple of another PSY5 value: a level stored as a fraction of `storage_level_limits.max`,
-or a voltage in per unit of `rated_dc_voltage`. `path` names that value in the PSY5 record.
-"""
+"""A multiple of another PSY5 value, named by `path` in the record (e.g. a fraction of a limit)."""
 struct RelativeTo <: Psy5Storage
     path::Vector{String}
 end
 
-"""
-A VSC converter's DC voltage limits: per unit of `rated_dc_voltage`, like `RelativeTo`, except
-that the no-limit maximum `DC_VOLTAGE_NO_LIMIT` (PSY5's and PSY6's default) stays as it is
-rather than being scaled into a real voltage.
-"""
+"""A VSC's DC voltage limits: `RelativeTo` `rated_dc_voltage`, but `DC_VOLTAGE_NO_LIMIT` stays."""
 struct DCVoltageLimits <: Psy5Storage end
 
-"""
-Per unit on the system base power and the voltage (kV) named by `path` in the PSY5 record,
-rather than a bus's: an LCC line's impedances, on the base of the circuit they sit in.
-"""
+"""Per unit on the system base power and the kV at `path` in the record, not a bus's."""
 struct SystemBasePUOnVoltage <: Psy5Storage
     path::Vector{String}
 end
 
-"""Not recorded anywhere: PSY5 never annotated the field and it is not in `PSY5_STORAGE`."""
+"""PSY5 never annotated the field and it is not in `PSY5_STORAGE`."""
 struct UnknownStorage <: Psy5Storage end
 
 """
-PSY5 fields stored some way other than device-base per unit, which PSY5's descriptors do not
-record, keyed by PSY5 type and by the field's name as it reaches `build_kwargs` (after any
-translator rename, e.g. `FixedAdmittance`'s `Y` → `y`). `"*"` matches any type. Each entry
-cites where the PSY5 convention is stated.
+PSY5 fields not stored as device-base per unit, which PSY5's descriptors do not record, by
+type and field name as it reaches `build_kwargs` (after translator renames). `"*"` matches any
+type. Comments cite the PSY5 convention.
 """
 const PSY5_STORAGE = Dict{Tuple{String, String}, Psy5Storage}(
-    # Reserve requirements: system-base per unit (PSY5 `get_requirement` divides MW by the
-    # system base); PSY6 declares MW.
+    # PSY5 `get_requirement` divides MW by the system base.
     ("VariableReserve", "requirement") => SystemBasePU(),
     ("ConstantReserve", "requirement") => SystemBasePU(),
     ("VariableReserveNonSpinning", "requirement") => SystemBasePU(),
     ("ConstantReserveNonSpinning", "requirement") => SystemBasePU(),
     ("ConstantReserveGroup", "requirement") => SystemBasePU(),
-    # "Fixed admittance in p.u. (SYSTEM_BASE)"; PSY6 declares MVAr (COMPONENT_MVAR).
+    # "Fixed admittance in p.u. (SYSTEM_BASE)".
     ("FixedAdmittance", "y") => SystemBasePU(),
-    # PSS/E BINIT and B1..B8, rescaled by PSY5's parser to system-base per unit
-    # (`parsers/pm_io/data.jl`); PSY6 declares MVAr (COMPONENT_MVAR).
+    # PSS/E BINIT and B1..B8, rescaled by PSY5's parser (`parsers/pm_io/data.jl`).
     ("SwitchedAdmittance", "solved_admittance") => SystemBasePU(),
     ("SwitchedAdmittance", "y_increase") => SystemBasePU(),
-    # PSS/E VSWLO/VSWHI as read: per unit voltage, or a fraction of a reactive range.
+    # PSS/E VSWLO/VSWHI as read.
     ("SwitchedAdmittance", "voltage_limits") => Natural(),
     ("SwitchedAdmittance", "reactive_power_range_limits") => Natural(),
-    # "Initial level of the reservoir relative to the `storage_level_limits.max`" and level
-    # targets "as a fraction of" it; PSY6 declares absolute levels.
+    # "relative to the `storage_level_limits.max`"; PSY6 declares absolute levels.
     ("HydroReservoir", "initial_level") => RelativeTo(["storage_level_limits", "max"]),
     ("HydroReservoir", "level_targets") => RelativeTo(["storage_level_limits", "max"]),
     # "in m^3, m, or MWh" / "in m^3/h or MW": natural, flows per hour.
@@ -102,10 +78,9 @@ const PSY5_STORAGE = Dict{Tuple{String, String}, Psy5Storage}(
     ("HydroReservoir", "inflow") => PerHour(),
     ("HydroReservoir", "outflow") => PerHour(),
     ("HydroReservoir", "spillage_limits") => PerHour(),
-    # Two-terminal LCC: impedances "in system p.u. (SYSTEM_BASE)", voltages "in kV",
-    # compounding resistance "in ohms". The impedance base voltage is the circuit's own, not a
-    # bus's: PSY5's PSS/E parser divides `RDC` by `VSCHD^2 / baseMVA` and each converter's
-    # `RC`/`XC`/`XCAP` by `EBAS^2 / baseMVA` (`parsers/pm_io/psse.jl`).
+    # LCC impedances are system-base per unit on the circuit's own voltage, not a bus's: PSY5's
+    # PSS/E parser divides `RDC` by `VSCHD^2 / baseMVA` and `RC`/`XC`/`XCAP` by
+    # `EBAS^2 / baseMVA` (`parsers/pm_io/psse.jl`).
     ("TwoTerminalLCCLine", "r") => SystemBasePUOnVoltage(["scheduled_dc_voltage"]),
     ("TwoTerminalLCCLine", "rectifier_rc") =>
         SystemBasePUOnVoltage(["rectifier_base_voltage"]),
@@ -122,25 +97,20 @@ const PSY5_STORAGE = Dict{Tuple{String, String}, Psy5Storage}(
     ("TwoTerminalLCCLine", "compounding_resistance") => Natural(),
     ("TwoTerminalLCCLine", "rectifier_base_voltage") => Natural(),
     ("TwoTerminalLCCLine", "inverter_base_voltage") => Natural(),
-    # From PSY5's `transfer_setpoint` (`_lcc_control`): "in MW units" (power mode) or "in
-    # Amperes units" (current mode); "must not be specified in per-unit".
+    # From `transfer_setpoint` (`_lcc_control`): MW (power mode) or A (current mode).
     ("TwoTerminalLCCLine", "power_transfer_setpoint") => NaturalPower(),
     ("TwoTerminalLCCLine", "current_transfer_setpoint") => Natural(),
     ("TwoTerminalLCCLine", "scheduled_dc_voltage") => Natural(),
     ("TwoTerminalLCCLine", "switch_mode_voltage") => Natural(),
     ("TwoTerminalLCCLine", "min_compounding_voltage") => Natural(),
-    # Two-terminal VSC: "series conductance ... in pu (SYSTEM_BASE)"; DC voltage limits "in per
-    # unit" of the link's DC voltage base, `rated_dc_voltage` ("Rated (base) DC voltage ... in
-    # kV"), not of the AC buses either end; DC currents "(A)".
-    # PSY5's PSS/E parser puts the DC circuit's RDC, and so `g`, on the DC voltage base
-    # (`DCSET`, which becomes `rated_dc_voltage`), not an AC bus's.
+    # VSC `g` is on the DC voltage base (`DCSET`, now `rated_dc_voltage`), not an AC bus's; DC
+    # voltage limits are per unit of `rated_dc_voltage`; DC currents are in A.
     ("TwoTerminalVSCLine", "g") => SystemBasePUOnVoltage(["rated_dc_voltage"]),
     ("TwoTerminalVSCLine", "voltage_limits_from") => DCVoltageLimits(),
     ("TwoTerminalVSCLine", "voltage_limits_to") => DCVoltageLimits(),
     ("TwoTerminalVSCLine", "rated_dc_voltage") => Natural(),
-    # From PSY5's `dc_setpoint_*` / `ac_setpoint_*` (`_vsc_setpoints`): DC power "in per-unit
-    # (SYSTEM_BASE)", DC voltage "in per-unit of `rated_dc_voltage`", AC voltage "entered in
-    # per unit" (of the converter's AC bus), power factor dimensionless.
+    # From `dc_setpoint_*` / `ac_setpoint_*` (`_vsc_setpoints`): DC power in system-base per
+    # unit, DC voltage per unit of `rated_dc_voltage`.
     ("TwoTerminalVSCLine", "dc_power_setpoint_from") => SystemBasePU(),
     ("TwoTerminalVSCLine", "dc_power_setpoint_to") => SystemBasePU(),
     ("TwoTerminalVSCLine", "dc_voltage_setpoint_from") =>
@@ -156,11 +126,8 @@ const PSY5_STORAGE = Dict{Tuple{String, String}, Psy5Storage}(
     ("TwoTerminalVSCLine", "max_dc_current_to") => Amperes(),
     ("InterconnectingConverter", "dc_current") => Amperes(),
     ("InterconnectingConverter", "max_dc_current") => Amperes(),
-    # TModelHVDCLine: "in p.u. (SYSTEM_BASE)".
     ("TModelHVDCLine", "r") => SystemBasePU(),
-    # "Load-frequency damping parameter ... (MW/Hz)".
     ("Area", "load_response") => Natural(),
-    # Bases are physical by definition.
     ("*", "base_power") => Natural(),
     ("*", "base_voltage") => Natural(),
 )
@@ -175,33 +142,24 @@ function psy5_storage(psy5_type::AbstractString, field::AbstractString)
     elseif haskey(PSY5_STORAGE, ("*", key[2]))
         return PSY5_STORAGE[("*", key[2])]
     elseif startswith(key[2], "base_power") || startswith(key[2], "base_voltage")
-        # `base_power_12`, `base_voltage_primary`, ...
         return Natural()
     end
     return UnknownStorage()
 end
 
-# ── PSY6 side ─────────────────────────────────────────────────────────────────────────────
-
-"""Every value a unit discriminator can take, in the order a basis is preferred."""
+"""Values a unit discriminator can take, in order of preference."""
 const UNIT_BASES = (
     :COMPONENT_BASE, :NATURAL_UNITS, :COMPONENT_MVAR, :MWH, :MWMIN,
     :USABLE_VOLUME, :TOTAL_VOLUME, :HEAD, :ENERGY,
 )
 
-"""
-Discriminators whose value is data the record already carries (a reservoir's
-`level_data_type`), rather than a unit basis the updater chooses and writes.
-"""
+"""Discriminators whose value is data in the record, not a basis the updater chooses."""
 const DATA_DISCRIMINATORS = Set([:level_data_type])
 
-"""Power-family units, in which a per-unit value is a multiple of a base MVA."""
+"""Power units, in which a per-unit value is a multiple of a base MVA."""
 const POWER_UNITS = Set(["MW", "MVA", "MVAr", "MWh", "MW/min", "MVA/min", "MVAr/min"])
 
-"""
-Physical units PSY5 commonly stored per unit. A field PSY6 declares in one of these, whose
-PSY5 storage is not known, is reported instead of copied.
-"""
+"""Physical units PSY5 commonly stored per unit; an unknown-storage field in one is reported."""
 const PER_UNIT_PRONE_UNITS =
     union(POWER_UNITS, Set(["ohm", "S", "kV", "A", "H", "F", "kV/MW", "MW/Hz"]))
 
@@ -222,12 +180,10 @@ _unit_discriminator(T, field::Symbol) =
 _is_per_unit(unit::AbstractString) = startswith(unit, "pu")
 
 """
-The unit PSY6 declares for `field` of model `T`, and the discriminator value to write for it
-(`discriminator => basis`), or `nothing` when the updater need not write one.
-
-A field with a per-unit basis gets it: PSY5's device-base values already are per unit on the
-component's `base_power`. A data discriminator (`level_data_type`) is read from `raw`. Any
-other discriminator takes its first basis in a power unit (`FixedAdmittance.y` in MVAr).
+`(unit, discriminator => basis)` PSY6 declares for `field` of `T`; either is `nothing` when
+absent or when the updater need not write the basis. A per-unit basis is preferred, since
+PSY5's device-base values already are per unit on `base_power`. A data discriminator is read
+from `raw`; any other falls back to its first power-unit basis.
 """
 function target_unit(::Type{T}, field::Symbol, raw::AbstractDict) where {T}
     if !ICOM.has_declared_unit(T, Val(field))
@@ -239,8 +195,10 @@ function target_unit(::Type{T}, field::Symbol, raw::AbstractDict) where {T}
     end
     if discriminator in DATA_DISCRIMINATORS
         value = get(raw, string(discriminator), nothing)
-        unit = isnothing(value) ? nothing : _declared_unit(T, field, Symbol(value))
-        return (unit, nothing)
+        if isnothing(value)
+            return (nothing, nothing)
+        end
+        return (_declared_unit(T, field, Symbol(value)), nothing)
     end
     for basis in UNIT_BASES
         unit = _declared_unit(T, field, basis)
@@ -257,12 +215,9 @@ function target_unit(::Type{T}, field::Symbol, raw::AbstractDict) where {T}
     return (nothing, nothing)
 end
 
-# ── Conversion ────────────────────────────────────────────────────────────────────────────
-
 """
-Bus voltage bases, bus numbers and arc endpoints of a PSY5 case: the voltage bases for
-impedance and voltage conversions, the numbers for fields PSY5 names a bus by number and PSY6
-by id (a regulated bus).
+Bus voltage bases, arc endpoints and bus numbers of a PSY5 case: the bases convert impedances
+and voltages, the numbers resolve fields PSY5 names a bus by number.
 """
 struct BusIndex
     base_voltage::Dict{String, Float64}
@@ -291,8 +246,6 @@ function BusIndex(components)
         end
         kv = get(raw, "base_voltage", nothing)
         if type_name in ("ACBus", "DCBus") && !isnothing(kv) && kv > 0
-            # A non-physical base (0) is no base: a field needing it is reported, not scaled
-            # by zero.
             index.base_voltage[component_uuid(raw)] = Float64(kv)
         elseif type_name == "Arc"
             index.arcs[component_uuid(raw)] =
@@ -302,7 +255,7 @@ function BusIndex(components)
     return index
 end
 
-"""What converting one component's fields needs: its PSY5 record and the bases around it."""
+"""A component's PSY5 record and the bases needed to convert its fields."""
 struct ComponentUnits
     psy5_type::String
     raw::AbstractDict
@@ -312,10 +265,8 @@ struct ComponentUnits
 end
 
 """
-The component's voltage base (kV), from its buses: an injector's `bus`, or a branch's `arc`.
-The two ends of a branch share one base except across a transformer, whose impedances are
-per unit and never converted here; where they differ, the `from` bus is used. `nothing` when
-the component names no bus with a base voltage.
+The component's voltage base (kV) from its `bus` or its arc's `from` bus, or `nothing`.
+Transformers, whose ends differ, have per-unit impedances that are never converted here.
 """
 function voltage_base(units::ComponentUnits)
     bus = get(units.raw, "bus", nothing)
@@ -332,11 +283,10 @@ function arc_end_voltage(units::ComponentUnits, end_index::Int)
         return nothing
     end
     ends = get(units.buses.arcs, reference_uuid(arc), nothing)
-    return if isnothing(ends)
-        nothing
-    else
-        get(units.buses.base_voltage, ends[end_index], nothing)
+    if isnothing(ends)
+        return nothing
     end
+    return get(units.buses.base_voltage, ends[end_index], nothing)
 end
 
 _scale(value::Bool, ::Real) = value
@@ -360,15 +310,12 @@ function _lookup(raw::AbstractDict, path::Vector{String})
     return value
 end
 
-"""Marks a value whose unit could not be established; see `convert_units`."""
+"""A value whose unit could not be established; see `convert_units`."""
 struct UnverifiedUnit
     reason::String
 end
 
-"""
-Marks a value whose PSY5 base is non-physical (a base voltage of 0 or less), so it has no
-value in the unit PSY6 declares: a data problem in the source, reported as an invalid value.
-"""
+"""A value on a non-physical PSY5 base (a voltage of 0 or less), reported as an invalid value."""
 struct NonPhysicalBase
     reason::String
 end
@@ -376,10 +323,7 @@ end
 _base(::DeviceBasePU, units::ComponentUnits) = units.component_base
 _base(::SystemBasePU, units::ComponentUnits) = units.system_base
 
-"""
-The factor taking a per-unit value on `base` MVA to `unit`, or `nothing` when `unit` is not
-reachable from per unit with the bases at hand.
-"""
+"""The factor from per unit on `base` MVA to `unit`, or `nothing` if not reachable."""
 function _per_unit_factor(unit::AbstractString, base::Real, units::ComponentUnits)
     if unit in POWER_UNITS
         return base
@@ -389,14 +333,19 @@ function _per_unit_factor(unit::AbstractString, base::Real, units::ComponentUnit
             return nothing
         end
         z_base = kv^2 / base
-        return unit == "ohm" ? z_base : unit == "S" ? 1 / z_base : kv
+        if unit == "ohm"
+            return z_base
+        elseif unit == "S"
+            return 1 / z_base
+        end
+        return kv
     end
     return nothing
 end
 
 """
-`value` (as PSY5 stored it) in the unit PSY6 declares, or an `UnverifiedUnit` when that cannot
-be established. `unit` is `target_unit`'s, `nothing` for a field with no declared unit.
+`value` (as PSY5 stored it) in the unit PSY6 declares (`unit`, from `target_unit`), or an
+`UnverifiedUnit` or `NonPhysicalBase` when that cannot be established.
 """
 convert_units(::Psy5Storage, ::Nothing, value, ::ComponentUnits) = value
 convert_units(::Natural, ::AbstractString, value, ::ComponentUnits) = value
@@ -404,9 +353,7 @@ convert_units(::Natural, ::AbstractString, value, ::ComponentUnits) = value
 convert_units(storage::RelativeTo, ::AbstractString, value, units::ComponentUnits) =
     _relative(value, _lookup(units.raw, storage.path), storage)
 
-"""
-The "no limit" maximum of a VSC DC voltage band: 999.9 in PSY5 (per unit) and in PSY6 (kV).
-"""
+"""The "no limit" maximum of a VSC DC voltage band: 999.9 in PSY5 (per unit) and PSY6 (kV)."""
 const DC_VOLTAGE_NO_LIMIT = 999.9
 
 function convert_units(
@@ -438,15 +385,10 @@ _relative(value, reference::Real, storage::RelativeTo) =
 _relative(_, ::Any, storage::RelativeTo) =
     UnverifiedUnit("relative to $(join(storage.path, ".")), which is missing")
 
-"""
-The schema's "no limit" DC current, 9999 kA (PowerSystems' `INFINITE_CURRENT`).
-"""
+"""The schema's "no limit" DC current in kA (PowerSystems' `INFINITE_CURRENT`)."""
 const NO_CURRENT_LIMIT_KA = 9999.0
 
-"""
-PSY5's "no limit" DC currents: 9999 (its PSS/E parser's value for an IMAX of 0) and 1e8 A (its
-constructor default). Each becomes `NO_CURRENT_LIMIT_KA` rather than a scaled number.
-"""
+"""PSY5's "no limit" DC currents (PSS/E IMAX of 0, and the constructor default)."""
 const PSY5_NO_CURRENT_LIMITS = (9999.0, 1.0e8)
 
 function convert_units(::Amperes, unit::AbstractString, value::Real, ::ComponentUnits)
@@ -468,7 +410,10 @@ function convert_units(::NaturalPower, unit::AbstractString, value, units::Compo
     if _is_per_unit(unit)
         return _scale(value, 1 / units.component_base)
     end
-    return unit in POWER_UNITS ? value : UnverifiedUnit("no conversion from MW to $unit")
+    if unit in POWER_UNITS
+        return value
+    end
+    return UnverifiedUnit("no conversion from MW to $unit")
 end
 
 function convert_units(
@@ -492,7 +437,6 @@ function convert_units(
 )
     base = _base(storage, units)
     if _is_per_unit(unit)
-        # Per unit on the component's base, which PSY5's device base already is.
         return _scale(value, base / units.component_base)
     end
     factor = _per_unit_factor(unit, base, units)

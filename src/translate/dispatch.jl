@@ -8,10 +8,7 @@ end
 TranslationContext(ledger::Ledger, report::ConversionReport, system_base::Real) =
     TranslationContext(ledger, report, Float64(system_base), BusIndex())
 
-"""
-The PSY6 id of the PSY5 `ACBus` numbered `number`, for a field PSY5 names a bus by number and
-PSY6 by id. `context` names the field in the error when no bus has that number.
-"""
+"""The PSY6 id of the `ACBus` numbered `number`; `context` names the field in the error."""
 function bus_id_for_number(
     ctx::TranslationContext,
     number::Integer,
@@ -32,9 +29,9 @@ function bus_number(ctx::TranslationContext, uuid::AbstractString)
 end
 
 """
-Record `setpoint` as the `voltage_setpoint` of the bus `bus_uuid` regulates to, for
-`_apply_bus_voltage_setpoints`. A second, different setpoint for the same bus keeps the first
-and is reported under approximate mappings: PSY6 has one setpoint per bus.
+Record `setpoint` as the `voltage_setpoint` of bus `bus_uuid`, for
+`_apply_bus_voltage_setpoints`. PSY6 has one setpoint per bus: a second, different one is
+reported as an approximate mapping and the first kept.
 """
 function record_bus_voltage_setpoint!(
     ctx::TranslationContext,
@@ -53,7 +50,7 @@ function record_bus_voltage_setpoint!(
     return nothing
 end
 
-"""What converting `raw`'s fields into their declared units needs (`convert_units`)."""
+"""The bases `convert_units` needs for `raw`."""
 component_units(raw::AbstractDict, ctx::TranslationContext) = ComponentUnits(
     component_type(raw),
     raw,
@@ -62,28 +59,20 @@ component_units(raw::AbstractDict, ctx::TranslationContext) = ComponentUnits(
     ctx.buses,
 )
 
-"""
-PSY5 fields whose PSY6 counterpart has another name, applied by `direct_translate` before the
-field copy: `(PSY5 type, PSY5 field) => PSY6 field`.
-"""
+"""PSY5 fields PSY6 spells differently: `(PSY5 type, PSY5 field) => PSY6 field`."""
 const PSY5_FIELD_RENAMES = Dict{Tuple{String, String}, String}(
     ("Source", "R_th") => "r_th",
     ("Source", "X_th") => "x_th",
 )
 
 """
-PSY5 fields whose PSY6 counterpart is a different field carrying the same information,
-rewritten by `direct_translate` before the field copy. Each consumes the PSY5 field it maps,
-so it is not also reported as unmapped; one that cannot be mapped is left for the copy to
-report and keep in `ext`.
+Rewrite PSY5 fields into the different PSY6 fields that carry the same information. Each
+consumes the PSY5 field it maps; one that cannot be mapped is left for the copy to report.
 """
 _derive_fields(::Type{T}, raw::AbstractDict, ctx::TranslationContext) where {T} =
     _derive_minimum_energy_offer(_derive_commitment_mode(T, raw), ctx)
 
-"""
-PSY5's `must_run = true` is PSY6's `commitment_mode = MUST_RUN`. `false` says nothing more
-than PSY6's default commitment mode, so it is consumed without writing one.
-"""
+"""PSY5 `must_run = true` is `commitment_mode = MUST_RUN`; `false` is PSY6's default."""
 function _derive_commitment_mode(::Type{T}, raw::AbstractDict) where {T}
     if !haskey(raw, "must_run") || !(:commitment_mode in fieldnames(T))
         return raw
@@ -111,10 +100,9 @@ _min_of(limits::AbstractDict) = _real_or_nothing(get(limits, "min", nothing))
 _min_of(::Any) = nothing
 
 """
-PSY5's `MarketBidCost.no_load_cost` (\$/h) is PSY6's `minimum_energy_offer` (\$/MWh at the
-unit's minimum power), by the conversion the schema documents: `no_load_cost / P_min`. P_min
-is the owning device's `active_power_limits.min`, in MW. With no positive P_min the cost is
-left for the copy to report and keep in `ext`.
+PSY5 `MarketBidCost.no_load_cost` (\$/h) is PSY6 `minimum_energy_offer` (\$/MWh at minimum
+power): `no_load_cost / P_min`, with P_min the device's `active_power_limits.min` in MW. With
+no positive P_min the cost is left for the copy to report.
 """
 function _derive_minimum_energy_offer(raw::AbstractDict, ctx::TranslationContext)
     cost = get(raw, "operation_cost", nothing)
@@ -148,10 +136,7 @@ function _rename_fields(raw::AbstractDict)
     return renamed
 end
 
-"""
-PSY5 type names that map onto an identically named PSY6 model. Everything else needs a
-bespoke `translate` method.
-"""
+"""PSY5 types that map onto an identically named PSY6 model by a plain field copy."""
 const DIRECT_TYPES = (
     :ACBus, :Area, :AreaInterchange, :DCBus, :DiscreteControlledACBranch,
     :EnergyReservoirStorage, :FACTSControlDevice, :HybridSystem, :HydroDispatch,
@@ -162,10 +147,8 @@ const DIRECT_TYPES = (
 )
 
 """
-Translate one PSY5 component into zero or more PSY6 models.
-
-Zero models means the component was skipped; the reason is already recorded on the report
-and the ledger.
+Translate one PSY5 component into zero or more PSY6 models. Zero models means it was
+skipped, and the reason is already on the report and the ledger.
 """
 function translate_component(raw::AbstractDict, ctx::TranslationContext)
     type_name = component_type(raw)
@@ -178,7 +161,6 @@ function translate_component(raw::AbstractDict, ctx::TranslationContext)
         record_cascaded_skip!(ctx.report, type_name)
         return ICOM.APIModel[]
     end
-    # Values the translation cannot place are kept against this component (`keep_unmapped!`).
     ctx.ledger.owner = uuid
     try
         return translate(Val(Symbol(type_name)), raw, ctx)
@@ -187,18 +169,14 @@ function translate_component(raw::AbstractDict, ctx::TranslationContext)
     end
 end
 
-"""
-Fallback for a PSY5 type with no PSY6 counterpart: skip, record, continue.
-"""
+"""Fallback for a PSY5 type with no PSY6 counterpart: skip and record."""
 function translate(::Val{S}, raw::AbstractDict, ctx::TranslationContext) where {S}
     record_unmapped_type!(ctx.report, string(S))
     mark_skipped!(ctx.ledger, component_uuid(raw), "no PSY6 model for $(S)")
     return ICOM.APIModel[]
 end
 
-"""
-Build a single PSY6 model of type `T` by copying fields by name.
-"""
+"""Build one PSY6 model of type `T` by copying `raw`'s fields by name."""
 function direct_translate(
     ::Type{T},
     raw::AbstractDict,
@@ -224,9 +202,7 @@ function direct_translate(
     return ICOM.APIModel[T(; kwargs...)]
 end
 
-"""
-The OpenAPI model type named `name`, from whichever model package defines it.
-"""
+"""The OpenAPI model type named `name`, from whichever model package defines it."""
 function openapi_type(name::Symbol)
     for mod in (PCOM, POOM, ITSOM, ICOM)
         if isdefined(mod, name)
@@ -246,15 +222,9 @@ for name in DIRECT_TYPES
     end
 end
 
-# The cable exception, and the one type this translator cannot convert. PSY6 stores
-# TModelHVDCLine's `r`/`l`/`c` in ohm, H and F, and documents its required `base_current` as
-# informational: "No field of this component is per-unit on it" (PowerSystems 404b0d571). PSY5
-# records no current base anywhere on the type, the schema gives no default, and the system
-# base is a power, not a current, so the required field has nothing to fill it (kA in both the
-# schema and PowerSystems). Converting `l`/`c` from PSY5's system-base per unit
-# would also need a time-base convention PSY5 does not document. Until the schema makes
-# `base_current` optional or a convention is agreed, this throws rather than invent a value.
-# `KNOWN_CONVERSION_GAPS` in test/test_corpus.jl records the corpus systems this takes out.
+# PSY6 requires `base_current` (kA, informational) on TModelHVDCLine, PSY5 records no current
+# base, and the schema gives no default, so this throws rather than invent one.
+# `KNOWN_CONVERSION_GAPS` in test/test_corpus.jl lists the corpus systems this excludes.
 function translate(::Val{:TModelHVDCLine}, raw::AbstractDict, ::TranslationContext)
     throw(
         Psy5FormatError(
@@ -264,12 +234,8 @@ function translate(::Val{:TModelHVDCLine}, raw::AbstractDict, ::TranslationConte
     )
 end
 
-# PSY5 spells Arc's endpoints `from`/`to`; PSY6 names them `from_id`/`to_id`. Renaming
-# before `direct_translate`'s generic field copy routes them through the ordinary
-# reference-resolution path (`translate_value` -> `lookup_id`) instead of recording two
-# unmapped fields and dropping Arc's topology. No docstring here: any docstring after the
-# `@eval` loop above makes Documenter's autodocs report a duplicate-docs error, the same
-# reason `translate/reserves.jl`'s dispatch methods carry only comments.
+# PSY5 `from`/`to` are PSY6 `from_id`/`to_id`. No docstrings on the `translate` methods: after
+# the `@eval` loop above they make Documenter report duplicate docs.
 function translate(::Val{:Arc}, raw::AbstractDict, ctx::TranslationContext)
     renamed = copy(raw)
     renamed["from_id"] = pop!(renamed, "from")
@@ -278,13 +244,9 @@ function translate(::Val{:Arc}, raw::AbstractDict, ctx::TranslationContext)
 end
 
 """
-PSY6 has no `MonitoredLine`: it is a `Line` whose `operational_flow_limit` is set. PSY5's
-`flow_limits` holds one maximum per direction, `(from_to, to_from)`; PSY6 holds a min/max pair
-per direction, written flat in the document (`from_to_min`, `from_to_max`, ...). Each PSY5
-value becomes that direction's max, and each min is `0.0`, reading the PSY5 limits as bounds
-on the flow in each direction separately (the PSY6 field documents "minimum and maximum flow
-in each direction"). The limits are on the same base as `rating`, so they carry across
-unscaled, as `rating` does.
+PSY6 has no `MonitoredLine`: it is a `Line` with `operational_flow_limit` set. PSY5's
+`flow_limits` holds one maximum per direction; each becomes that direction's max with a min of
+`0.0`. The limits share `rating`'s base, so they are not scaled.
 """
 function translate(::Val{:MonitoredLine}, raw::AbstractDict, ctx::TranslationContext)
     renamed = copy(raw)
@@ -298,11 +260,7 @@ function translate(::Val{:MonitoredLine}, raw::AbstractDict, ctx::TranslationCon
     return direct_translate(openapi_type(:Line), renamed, ctx)
 end
 
-# PSY5 spells FixedAdmittance's admittance field `Y`; the PSY6 schema property is also `Y`,
-# but the generated Julia struct field is the lowercased `y` (the generator lowercases an
-# all-uppercase property name). `build_kwargs` matches PSY5 keys against `fieldnames(T)`, so
-# the raw `Y` key never matches `:y` and is recorded as unmapped instead of filling the
-# required field. Renaming before `direct_translate`'s generic field copy fixes that.
+# The generated struct field is the lowercased `y`, so PSY5's `Y` would be reported unmapped.
 function translate(::Val{:FixedAdmittance}, raw::AbstractDict, ctx::TranslationContext)
     renamed = copy(raw)
     renamed["y"] = pop!(renamed, "Y")
@@ -310,10 +268,8 @@ function translate(::Val{:FixedAdmittance}, raw::AbstractDict, ctx::TranslationC
 end
 
 """
-The PSY6 band `SwitchedAdmittance.admittance_limits` (PSS/E VSWLO/VSWHI) lands in, by control
-mode: the schema's voltage modes use `voltage_limits`, its reactive modes
-`reactive_power_range_limits`. `FIXED` and `UNDEFINED` use neither, so their band is kept in
-ext.
+The PSY6 field `admittance_limits` (PSS/E VSWLO/VSWHI) lands in, by control mode. `FIXED` and
+`UNDEFINED` use neither, so their band is kept in ext.
 """
 const SWITCHED_ADMITTANCE_LIMITS_FIELD = Dict{String, String}(
     "DISCRETE_VOLTAGE" => "voltage_limits",
@@ -325,21 +281,17 @@ const SWITCHED_ADMITTANCE_LIMITS_FIELD = Dict{String, String}(
 )
 
 """
-PSY5's `SwitchedAdmittance`, mapped as PowerFlowFileParser's PSS/E reader maps the same record
+PSY5 `SwitchedAdmittance`, mapped as PowerFlowFileParser's PSS/E reader maps the same record
 (`PowerFlowFileParser.jl/src/openapi/shunt.jl`):
 
-  - `Y` (PSS/E BINIT, the solved total) → `solved_admittance`, its susceptance. Left unset when
-    `Y` is zero, so PSY6 sums the engaged blocks as PSY5 does.
-  - `initial_status` (PSS/E `Si`, a per-block in-service flag) → `number_engaged` (a per-block
-    step count).
-  - `Y_increase` → `y_increase`; `admittance_limits` (PSS/E VSWLO/VSWHI) → the band its control
-    mode uses (`SWITCHED_ADMITTANCE_LIMITS_FIELD`), else ext.
+  - `Y` (BINIT) -> `solved_admittance`, its susceptance, unset when zero. A non-zero
+    conductance has no PSY6 field, so `Y` is then kept in ext whole.
+  - `initial_status` (per-block in-service flag) -> `number_engaged` (per-block step count).
+  - `Y_increase` -> `y_increase`; `admittance_limits` -> the field of
+    `SWITCHED_ADMITTANCE_LIMITS_FIELD`, else ext.
+  - `regulated_bus_number` -> `remote_regulated_bus` (an id); 0 or the shunt's own bus is none.
 
-Where this is known not to reproduce PSY5, the component is reported under approximate
-mappings (`_warn_switched_admittance_approximations`). A non-zero conductance (`real(Y)`) has no
-PSY6 field: `Y` is kept in ext whole. PSY6 names a remote regulated bus by id
-(`remote_regulated_bus`), unset for the shunt's own bus: a `regulated_bus_number` of 0 or of
-the shunt's own bus writes none, any other the id of the bus with that number.
+Known inexact mappings are reported (`_warn_switched_admittance_approximations`).
 """
 function translate(::Val{:SwitchedAdmittance}, raw::AbstractDict, ctx::TranslationContext)
     _warn_switched_admittance_approximations(raw, ctx)
@@ -375,15 +327,12 @@ function translate(::Val{:SwitchedAdmittance}, raw::AbstractDict, ctx::Translati
 end
 
 """
-Report (and log) the PSY5 `SwitchedAdmittance`s that the PowerFlowFileParser mapping does not
-reproduce:
+Report and log the `SwitchedAdmittance`s the mapping does not reproduce:
 
-  - **`solved_admittance`:** `Y` is non-zero and some block is in service. PSY5's power flow
-    takes `Y + Σ initial_status · Y_increase`; PSY6 takes `solved_admittance` alone (`Y`). PSY5's
-    PSS/E parser zeroes `initial_status` for the modes where this would double count, but not for
-    the others, so PSY6's value (BINIT, the PSS/E solved total) differs from PSY5's.
-  - **`number_engaged`:** an in-service block has more than one step. `Si` says the block is in
-    service, not how many of its steps are engaged, so `number_engaged = 1` may be wrong.
+  - `solved_admittance`: `Y` is non-zero and a block is in service. PSY5 takes
+    `Y + Σ initial_status · Y_increase`; PSY6 takes `Y` alone.
+  - `number_engaged`: an in-service block has several steps, but `initial_status` does not say
+    how many are engaged.
 """
 function _warn_switched_admittance_approximations(
     raw::AbstractDict,
@@ -406,15 +355,9 @@ function _warn_switched_admittance_approximations(
     return nothing
 end
 
-# PSY5 stores a device's loss coefficients as a bare curve (`InputOutputCurve` or
-# `IncrementalCurve`); PSY6 wraps it in a `LossCurve` (`power_units` + `value_curve`). PSY5
-# has no field for `power_units` here — the natural-units default the schema documents. The
-# field carrying it is spelled differently per type (`loss` on the two-terminal HVDC lines,
-# `loss_function` on `InterconnectingConverter`, `converter_loss_from`/`converter_loss_to` on
-# `TwoTerminalVSCLine`), so every known name is checked; no type declares more than one of
-# them. Wrapping before `direct_translate`'s generic field copy leaves the curve itself
-# untranslated so `build_kwargs`'s own call to `translate_value` on the wrapped dict gives it
-# its discriminator exactly once, the same reasoning `_promote_market_bid_cost_scalar` follows.
+# PSY5 stores loss coefficients as a bare curve; PSY6 wraps it in a `LossCurve` with the
+# schema's natural-units `power_units`. The field name varies by type. The curve itself is
+# left for `build_kwargs` to translate once.
 const LOSS_CURVE_FIELDS =
     Set(["loss", "loss_function", "converter_loss_from", "converter_loss_to"])
 
@@ -434,11 +377,9 @@ function _wrap_loss_curves(raw::AbstractDict)
 end
 
 """
-PSY6 requires a `rating` (the DC line's transfer rating) on the generic and LCC HVDC lines,
-which PSY5 does not record; PSY5 bounds the transfer with `active_power_limits_from` instead,
-and PSY6 removed that field. The rating is taken as `active_power_limits_from.max`, on the same
-base, so it carries across unscaled. `active_power_limits_from` itself is left in place for
-`build_kwargs` to report as dropped: its `min`, and the `_to` limits, have no PSY6 home.
+PSY6 requires a `rating` on the generic and LCC HVDC lines. PSY5 has none, so it is
+`active_power_limits_from.max` (same base). `active_power_limits_from` stays for `build_kwargs`
+to report as dropped: its `min` and the `_to` limits have no PSY6 field.
 """
 function _with_rating_from_limits(raw::AbstractDict)
     limits = get(raw, "active_power_limits_from", nothing)
@@ -469,9 +410,8 @@ function translate(
 end
 
 """
-PSY5's LCC `power_mode` flag and single `transfer_setpoint` are PSY6's `control_mode` and one
-of two setpoints: `power_mode = true` is `POWER` with `power_transfer_setpoint` (MW), `false`
-is `CURRENT` with `current_transfer_setpoint` (A).
+PSY5 LCC `power_mode` and `transfer_setpoint` become PSY6 `control_mode` and one setpoint:
+`POWER` with `power_transfer_setpoint` (MW), or `CURRENT` with `current_transfer_setpoint` (A).
 """
 function _lcc_control(raw::AbstractDict)
     mode = get(raw, "power_mode", nothing)
@@ -496,10 +436,9 @@ function translate(::Val{:TwoTerminalLCCLine}, raw::AbstractDict, ctx::Translati
 end
 
 """
-PSY5's VSC `dc_setpoint_*` and `ac_setpoint_*` each hold whichever quantity the converter's
-control mode regulates; PSY6 has one field per quantity, selected by the same mode. An
-`AC_VOLTAGE` setpoint is the regulated bus's `ACBus.voltage_setpoint` in PSY6
-(`_vsc_ac_voltage!`).
+PSY5 VSC `dc_setpoint_*` and `ac_setpoint_*` hold whichever quantity the control mode
+regulates; PSY6 has one field per quantity. An `AC_VOLTAGE` setpoint is instead the regulated
+bus's `voltage_setpoint` (`_vsc_ac_voltage!`).
 """
 const VSC_SETPOINT_FIELDS = (
     (
@@ -518,19 +457,18 @@ const VSC_SETPOINT_FIELDS = (
     ),
 )
 
-"""Which end of a VSC line's arc each side's converter sits at."""
+"""The end of a VSC line's arc each side's converter sits at."""
 const VSC_SIDE_END = Dict("from" => 1, "to" => 2)
 
 """
-One `AC_VOLTAGE` converter end of a PSY5 VSC line, moved onto `derived` in PSY6's form. PSY5
-names the bus the converter regulates by number (`remote_bus_control_<side>`, 0 for its own
-terminal) and holds its target in `ac_setpoint_<side>`; PSY6 names a remote bus by id
-(`remote_regulated_bus_<side>`, unset for the terminal) and keeps the target on that bus
-(`ACBus.voltage_setpoint`, recorded here and written by `_apply_bus_voltage_setpoints`).
+Move one `AC_VOLTAGE` converter end of a PSY5 VSC line onto `derived` in PSY6's form. PSY5
+names the regulated bus by number (`remote_bus_control_<side>`, 0 for its own terminal) with
+the target in `ac_setpoint_<side>`; PSY6 names a remote bus by id
+(`remote_regulated_bus_<side>`) and keeps the target on that bus
+(`_apply_bus_voltage_setpoints`).
 
-A remote bus number no `ACBus` in the case has (a dangling reference in the source data) has no
-bus to name or to carry the target: the number and the setpoint are kept in ext and reported
-under INVALID VALUES DROPPED, and the converter is left regulating no stated bus.
+A remote bus number that no `ACBus` has is a dangling source reference: the number and
+setpoint are kept in ext and reported as dropped invalid values.
 """
 function _vsc_ac_voltage!(
     derived::AbstractDict,
@@ -574,9 +512,8 @@ function _vsc_setpoints(raw::AbstractDict, ctx::TranslationContext)
         if get(raw, "ac_control_$side", nothing) == "AC_VOLTAGE"
             _vsc_ac_voltage!(derived, raw, side, ctx)
         elseif get(derived, "remote_bus_control_$side", nothing) == 0
-            # PSY5 (PSS/E) spells "regulates its own terminal bus" as remote bus 0; PSY6 as
-            # no remote bus. A remote bus outside AC_VOLTAGE has no PSY6 use and is kept in
-            # ext like any unmapped field.
+            # Remote bus 0 means the own terminal; any other remote bus outside AC_VOLTAGE has
+            # no PSY6 use and stays for the copy to report.
             delete!(derived, "remote_bus_control_$side")
         end
     end
@@ -599,22 +536,20 @@ function translate(::Val{:TwoTerminalVSCLine}, raw::AbstractDict, ctx::Translati
     )
 end
 
-for name in (:InterconnectingConverter,)
-    @eval function translate(
-        ::Val{$(QuoteNode(name))},
-        raw::AbstractDict,
-        ctx::TranslationContext,
+function translate(
+    ::Val{:InterconnectingConverter},
+    raw::AbstractDict,
+    ctx::TranslationContext,
+)
+    return direct_translate(
+        openapi_type(:InterconnectingConverter),
+        _wrap_loss_curves(raw),
+        ctx,
     )
-        return direct_translate($(openapi_type(name)), _wrap_loss_curves(raw), ctx)
-    end
 end
 
-# PSY5 spells the pumped-storage unit's pump/generate/idle mode `status`
-# (`"PUMP"`/`"GEN"`/`"OFF"`); PSY6 calls that field `operating_mode` and reserves `status` for
-# the ordinary on/off `OperationalStates` every other committable device uses. Renaming
-# before `direct_translate`'s generic field copy routes the PSY5 value onto its real PSY6
-# field instead of failing `OperationalStates`' enum validation; PSY6 `status` is left unset
-# and takes the schema's own `"OFFLINE"` default, since PSY5 has no separate on/off flag here.
+# PSY5's pump/generate/idle `status` is PSY6's `operating_mode`; PSY6 `status` is the on/off
+# state and keeps its schema default, since PSY5 has no such flag here.
 function translate(::Val{:HydroPumpTurbine}, raw::AbstractDict, ctx::TranslationContext)
     renamed = copy(raw)
     if haskey(renamed, "status")
@@ -623,10 +558,7 @@ function translate(::Val{:HydroPumpTurbine}, raw::AbstractDict, ctx::Translation
     return direct_translate(POOM.HydroPumpTurbine, renamed, ctx)
 end
 
-# PSY5 spells ExponentialLoad's voltage-dependency exponents with Greek letters `α`/`β`;
-# PSY6 spells them ASCII `alpha`/`beta`. Renaming before `direct_translate`'s generic field
-# copy routes them through the ordinary field-copy path instead of recording two unmapped
-# fields and leaving the required alpha/beta absent.
+# PSY5's Greek `α`/`β` are PSY6's ASCII `alpha`/`beta`.
 function translate(::Val{:ExponentialLoad}, raw::AbstractDict, ctx::TranslationContext)
     renamed = copy(raw)
     renamed["alpha"] = pop!(renamed, "α")

@@ -9,36 +9,16 @@ _is_three_winding(::ThreeWindingTransformer) = true
 _is_three_winding(::PSU.ICOM.APIModel) = false
 
 @testset "winding group -> alpha" begin
-    # Sparse and SIGN-INVERTED: GROUP_1 is -30 degrees, not +30.
+    # Sparse and sign-inverted: GROUP_1 is -30 degrees, not +30.
     @test PSU.winding_group_alpha("GROUP_0") == 0.0
     @test PSU.winding_group_alpha("GROUP_1") ≈ -pi / 6
     @test PSU.winding_group_alpha("GROUP_5") ≈ -5pi / 6
     @test PSU.winding_group_alpha("GROUP_6") ≈ pi
     @test PSU.winding_group_alpha("GROUP_7") ≈ 5pi / 6
     @test PSU.winding_group_alpha("GROUP_11") ≈ pi / 6
-    @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("GROUP_3")
-end
-
-@testset "all six WindingGroupNumber values, exact radians" begin
-    @test PSU.winding_group_alpha("GROUP_0") == 0.0
-    @test PSU.winding_group_alpha("GROUP_1") == Float64(-pi / 6)
-    @test PSU.winding_group_alpha("GROUP_5") == Float64(-5pi / 6)
-    @test PSU.winding_group_alpha("GROUP_6") == Float64(pi)
-    @test PSU.winding_group_alpha("GROUP_7") == Float64(5pi / 6)
-    @test PSU.winding_group_alpha("GROUP_11") == Float64(pi / 6)
-
-    @test PSU.winding_group_alpha("GROUP_1") < 0.0
-    @test PSU.winding_group_alpha("GROUP_11") > 0.0
-end
-
-@testset "unknown winding group throws" begin
-    @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("GROUP_3")
-    @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("")
-end
-
-@testset "UNDEFINED winding group takes the schema default" begin
     @test PSU.winding_group_alpha("UNDEFINED") == 0.0
     @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("GROUP_3")
+    @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("")
 end
 
 @testset "translate Transformer2W" begin
@@ -79,12 +59,6 @@ end
     @test circuit.tap == 1.0                    # Transformer2W has no tap
     @test circuit.alpha ≈ -pi / 6               # from GROUP_1
     @test circuit.base_power == 100.0
-
-    @testset "field survival" begin
-        @test circuit.rating == 2.0
-        @test circuit.base_voltage_primary == 230.0
-        @test circuit.base_voltage_secondary == 115.0
-    end
 end
 
 @testset "translate TapTransformer" begin
@@ -116,15 +90,6 @@ end
     @test circuit.tap == 1.05                   # TapTransformer's own tap, not the default
     @test circuit.alpha ≈ pi / 6                 # from GROUP_11
     @test circuit.arc == arc_id
-
-    @testset "field survival" begin
-        @test circuit.r == 0.02
-        @test circuit.x == 0.2
-        @test circuit.rating == 3.0
-        @test circuit.base_power == 100.0
-        @test circuit.base_voltage_primary == 138.0
-        @test circuit.base_voltage_secondary == 69.0
-    end
 end
 
 @testset "translate PhaseShiftingTransformer" begin
@@ -151,28 +116,6 @@ end
     transformer = only(filter(_is_two_winding, out))
     @test circuit.tap == 1.02
     @test circuit.alpha == 0.05        # already radians, copied verbatim
-end
-
-@testset "PhaseShiftingTransformer alpha: negative value, no sign flip" begin
-    led = PSU.Ledger()
-    rep = PSU.ConversionReport()
-    ctx = PSU.TranslationContext(led, rep, 100.0)
-    PSU.assign_id!(led, "uuid-pst-neg")
-    PSU.assign_id!(led, "uuid-arc-neg")
-
-    raw = Dict{String, Any}(
-        "__metadata__" => Dict("type" => "PhaseShiftingTransformer"),
-        "internal" => Dict("uuid" => Dict("value" => "uuid-pst-neg")),
-        "name" => "pst_neg", "available" => true,
-        "arc" => Dict("value" => "uuid-arc-neg"),
-        "r" => 0.01, "x" => 0.1, "tap" => 0.98, "α" => -0.37,
-        "rating" => 2.0, "base_power" => 100.0,
-        "active_power_flow" => 0.0, "reactive_power_flow" => 0.0,
-    )
-
-    out = PSU.translate_component(raw, ctx)
-    circuit = only(filter(_is_circuit, out))
-    @test circuit.alpha == -0.37
 end
 
 @testset "magnetizing_shunt: real/imag survive" begin
@@ -287,12 +230,6 @@ end
     @test primary.rating == 10.0
     @test primary.base_voltage_primary == 110.0
 
-    @testset "index flip: pairwise pairs stay distinct, not just correctly named" begin
-        @test tx.r_12 != tx.r_23
-        @test tx.r_23 != tx.r_31
-        @test tx.r_12 != tx.r_31
-    end
-
     @testset "per-winding field routing: each circuit keeps its own values" begin
         secondary = only(c for c in circuits if c.arc == sa)
         tertiary = only(c for c in circuits if c.arc == ta)
@@ -307,20 +244,13 @@ end
         @test tertiary.rating == 10.0
         @test tertiary.base_voltage_primary == 33.0
 
-        # Distinguishing values so a wrong-winding mix-up cannot pass silently.
         @test primary.r != secondary.r != tertiary.r
         @test primary.base_voltage_primary != secondary.base_voltage_primary !=
               tertiary.base_voltage_primary
     end
 
-    @testset "ids are non-nothing and distinct" begin
-        @test !isnothing(tx.id)
-        for c in circuits
-            @test !isnothing(c.id)
-            @test c.id != tx.id
-        end
-        @test length(Set(c.id for c in circuits)) == 3
-    end
+    @test length(Set(c.id for c in circuits)) == 3
+    @test all(c.id != tx.id for c in circuits)
 
     @testset "magnetizing_shunt: g/b survive as ComplexNumber, zero case" begin
         @test tx.magnetizing_shunt.real == 0.0

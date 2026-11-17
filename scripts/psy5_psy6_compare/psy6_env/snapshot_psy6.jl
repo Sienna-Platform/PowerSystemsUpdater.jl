@@ -1,12 +1,10 @@
-# Step 3 of the PSY5 -> PSY6 comparison: deserialize each converted bundle with PowerSystems 6
-# and write its snapshot to `<work_dir>/<case>/psy6_snapshot.json`, with its time series
-# values in `psy6_values.h5`.
+# Step 3 of the PSY5 -> PSY6 comparison: load each converted bundle with PowerSystems 6 and
+# snapshot it to `<work_dir>/<case>/psy6_snapshot.json` and `psy6_values.h5`.
 #
 #   julia --project=scripts/psy5_psy6_compare/psy6_env \
 #       scripts/psy5_psy6_compare/psy6_env/snapshot_psy6.jl <work_dir> <case.json>...
 #
-# The case arguments are the original PSY5 files; only their names are used, to find the
-# bundle step 2 wrote.
+# The case arguments are the PSY5 files; only their names are used, to find the bundle.
 
 using PowerSystems
 const PSY = PowerSystems
@@ -20,17 +18,14 @@ function getter_for(field::Symbol)
     return isdefined(PSY, name) ? getfield(PSY, name) : nothing
 end
 
-# Unitful units, not the exported `SU` marker: PSY6's generated getters convert through
-# `get_value(..., ::Unitful.Units)` and have no method for the marker type. Rates (ramp
-# limits) refuse a bare power basis and take a per-time one; PSY5's SYSTEM_BASE ramps are
-# per unit per minute.
+# Unitful units, not the `SU` marker, which the generated getters have no method for. Rates
+# (ramp limits) refuse a bare power basis; PSY5's SYSTEM_BASE ramps are per unit per minute.
 const SYSTEM_BASE_UNITS = (u"SU", u"SU/minute")
 
 """
-PSY6 getters take their units explicitly. Read unit-bearing fields in system base to match
-the PSY5 snapshot. A getter refuses a unit of the wrong kind with an `ArgumentError`, so each
-system-base unit is tried in turn; base values (`base_power`, `base_voltage`) refuse them all
-and are read in natural units, as PSY5 returns them.
+Read unit-bearing fields in system base, to match the PSY5 snapshot. A getter refuses a unit
+of the wrong kind with an `ArgumentError`, so each is tried in turn; base values refuse them
+all and are read in natural units, as PSY5 returns them.
 """
 function read_field(x::T, field::Symbol) where {T}
     getter = getter_for(field)
@@ -64,9 +59,7 @@ end
 services_of(component::PSY.Device) = PSY.get_services(component)
 services_of(::PSY.Component) = ()
 
-# Time series catalog: IS4 lists one metadata row per series. The row's key names the stored
-# type; reading a `DeterministicSingleTimeSeries` returns a materialized `Deterministic`, so
-# the type is never taken from the read series.
+# Time series catalog: IS4 lists one metadata row per series; its key names the stored type.
 list_series(owner) = IS.list_time_series_metadata(owner)
 series_type(row::IS.TimeSeriesMetadata) =
     IS.get_time_series_type(IS.get_time_series_key(row))
@@ -75,9 +68,8 @@ read_series(owner, row::IS.TimeSeriesMetadata) =
     IS.get_time_series(owner, IS.get_time_series_key(row))
 
 """
-The factor that takes a series' stored values to natural units, as PowerSystems reads it: from
-its units labels (CU of `base_power` multiplies by the base, a natural `units` label by 1), in
-its quantity's natural unit. 1.0 for a series without labels, whose values are taken as stored.
+The factor taking a series' stored values to natural units, as PowerSystems reads it from the
+series' units labels; 1.0 for a series without labels.
 """
 function natural_scale(owner, row::IS.TimeSeriesMetadata)
     quantity = PSY._ts_quantity(row)
@@ -93,17 +85,16 @@ function natural_scale(owner, row::IS.TimeSeriesMetadata)
     )
 end
 
-# A forecast's length is the count of its windows, not a series length: IS4 may fill both
-# columns, but only one applies, as in PSY5's keys.
+# IS4 may fill both `length` and the forecast columns; only one applies, as in PSY5's keys.
 _length(::IS.TimeSeriesMetadata{<:IS.Forecast}) = nothing
 _length(row::IS.TimeSeriesMetadata) = row.length
 _forecast_field(::IS.TimeSeriesMetadata{<:IS.Forecast}, value) = value
 _forecast_field(::IS.TimeSeriesMetadata, _) = nothing
 
 """
-Every series' catalog row in the system being snapshotted, by association id, so a
-`TimeSeriesKey` held in a field (`FuelCurve.fuel_cost_time_series`) can be recorded as the
-series it names rather than as a bare id. Filled by `index_series!` before the snapshot.
+Every series' catalog row by association id, so a `TimeSeriesKey` held in a field
+(`FuelCurve.fuel_cost_time_series`) is recorded as the series it names. Filled by
+`index_series!`.
 """
 const SERIES_BY_ASSOCIATION = Dict{Int, IS.TimeSeriesMetadata}()
 
@@ -118,8 +109,8 @@ function index_series!(sys::PSY.System)
 end
 
 """
-A key held in a field, recorded the way PSY5 records its `ForecastKey`/`StaticTimeSeriesKey`:
-the named series' type, name and window parameters. A key naming no indexed series keeps its id.
+A key held in a field, recorded as PSY5's `ForecastKey`/`StaticTimeSeriesKey`; one naming no
+indexed series keeps its id.
 """
 function snapshot_value(key::IS.TimeSeriesKey)
     id = IS.get_association_id(key)
@@ -131,7 +122,6 @@ function snapshot_value(key::IS.TimeSeriesKey)
     record = Dict{String, Any}(
         "__type__" => forecast ? "ForecastKey" : "StaticTimeSeriesKey",
         "name" => series_name(row),
-        # PSY5's keys name the type without its element parameter.
         "time_series_type" => string(nameof(series_type(row))),
     )
     for (k, v) in series_metadata(row)
@@ -173,19 +163,17 @@ function main(args)
     work_dir, cases = parse_step_args(args)
     for case in cases
         bundle = joinpath(case_dir(work_dir, case), PSY6_BUNDLE)
-        # A failed conversion can leave a partial bundle behind; loading it would only add a
-        # second, misleading error after the conversion's own.
+        # A failed conversion can leave a partial bundle; loading it would only add a second,
+        # misleading error.
         if !isdir(bundle) ||
            isfile(joinpath(case_dir(work_dir, case), error_file("convert")))
-            # Conversion failed or never ran; an older snapshot must not stand in for this one.
             clear_step!(case_dir(work_dir, case), "psy6_snapshot")
             @warn "no converted bundle; skipping" case = case_name(case)
             continue
         end
         run_case_step(work_dir, case, "psy6_snapshot") do dir
-            # Default (writable) mode, as a user would load it. Read-only currently fails
-            # for any system with supplemental attributes: PSY6's loader writes their
-            # associations into the time series store, which read-only rejects.
+            # Writable, as a user would load it: read-only fails for any system with
+            # supplemental attributes, whose associations the loader writes to the store.
             sys = PSY.from_file(bundle)
             index_series!(sys)
             write_snapshot(sys, dir, PSY6_SNAPSHOT, PSY6_VALUES)

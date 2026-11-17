@@ -452,9 +452,8 @@ cover all of them. Both preconditions are checked before anything is written —
 `(horizon, interval)` per category and resolution, and one derived row per static row — and a
 sidecar that breaks either aborts rather than silently gaining or losing forecasts.
 
-The owner category matters because PSY5 derives forecasts for components only, as IS does
-(`owner_category = InfraStore.Component`): a supplemental attribute's static series, such as an
-outage probability, has no derived forecast and must not gain one.
+Only components get derived forecasts, as in IS (`owner_category = InfraStore.Component`): a
+supplemental attribute's static series must not gain one.
 
 `normalize_single_window` and `require_uniform_forecast_grid` are set the way IS sets them,
 because IS is what reads the result.
@@ -543,12 +542,8 @@ end
 # ── Entry point ─────────────────────────────────────────────────────────────────
 
 """
-The document's supplemental attribute associations as catalog rows.
-
-A sidecar's catalog is authoritative when PSY6 adopts it: the importer attaches a document
-association the catalog already holds and *adds* (writes) any it lacks. Under
-`time_series_read_only` the catalog is opened in place and that write fails, so the catalog
-must already hold every row the document declares, as a PSY6-written store does.
+The document's supplemental attribute associations as catalog rows. The catalog must hold
+them all already: under `time_series_read_only` PSY6 cannot add the ones it lacks.
 """
 _store_supplemental_associations(
     rows::AbstractVector{ICOM.SupplementalAttributeAssociation},

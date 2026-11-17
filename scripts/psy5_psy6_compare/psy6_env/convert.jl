@@ -1,5 +1,5 @@
-# Step 2 of the PSY5 -> PSY6 comparison: run PowerSystemsUpdater on each PSY5 case, writing
-# the PSY6 bundle to `<work_dir>/<case>/psy6_bundle/` and the conversion report beside it.
+# Step 2 of the PSY5 -> PSY6 comparison: convert each PSY5 case with PowerSystemsUpdater into
+# `<work_dir>/<case>/psy6_bundle/`, with the conversion report beside it.
 #
 #   julia --project=scripts/psy5_psy6_compare/psy6_env \
 #       scripts/psy5_psy6_compare/psy6_env/convert.jl <work_dir> <case.json>...
@@ -11,30 +11,22 @@ using PowerSystemsUpdater
 
 include(joinpath(@__DIR__, "..", "case_layout.jl"))
 
+by_field(counts) = Dict("$type.$field" => n for ((type, field), n) in counts)
+
 """
-The report's counts in a form the comparison step can read without loading the updater.
+The report's counts as plain dictionaries, for a step that does not load the updater.
 """
 function report_counts(report::ConversionReport)
     return Dict(
         "unmapped_types" => report.unmapped_types,
         "cascaded_skips" => report.cascaded_skips,
-        "unmapped_fields" =>
-            Dict("$type.$field" => n for ((type, field), n) in report.unmapped_fields),
-        "unverified_units" =>
-            Dict("$type.$field" => n for ((type, field), n) in report.unverified_units),
+        "unmapped_fields" => by_field(report.unmapped_fields),
+        "unverified_units" => by_field(report.unverified_units),
         "dropped_dynamic_models" => report.dropped_dynamic_models,
-        "dropped_invalid_values" => Dict(
-            "$type.$field" => n for ((type, field), n) in report.dropped_invalid_values
-        ),
-        "approximate_mappings" => Dict(
-            "$type.$field" => n for ((type, field), n) in report.approximate_mappings
-        ),
-        "schema_defaults" => Dict(
-            "$type.$field" => n for ((type, field), n) in report.schema_defaults
-        ),
-        "psy5_defaults" => Dict(
-            "$type.$field" => n for ((type, field), n) in report.psy5_defaults
-        ),
+        "dropped_invalid_values" => by_field(report.dropped_invalid_values),
+        "approximate_mappings" => by_field(report.approximate_mappings),
+        "schema_defaults" => by_field(report.schema_defaults),
+        "psy5_defaults" => by_field(report.psy5_defaults),
     )
 end
 
