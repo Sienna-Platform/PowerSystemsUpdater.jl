@@ -495,16 +495,25 @@ end
 
 # ── Corpus magnitudes ──────────────────────────────────────────────────────────
 
+const RAW_CU_FACTORS = Dict{String, Function}(
+    "PowerLoad" => owner -> owner["max_active_power"],
+    "RenewableDispatch" => owner -> owner["rating"] * owner["power_factor"],
+    "RenewableNonDispatch" => owner -> owner["rating"] * owner["power_factor"],
+)
+
 """
-Every `SingleTimeSeries` of `case` that has a PSY5 multiplier, as `(row, owner, profile)`:
-the association row, the raw owner and the normalized array PSY5 stored.
+Every `SingleTimeSeries` of `case` that has a PSY5 multiplier and a load or renewable owner,
+as `(row, owner, profile)`: the association row, the raw owner and the normalized array PSY5
+stored. The test reads the multiplier from the raw owner fields in `RAW_CU_FACTORS`, not
+from `PSU.scale_factor`.
 """
 function psy5_profiles(case)
     owners = Dict(PSU.component_uuid(raw) => raw for raw in PSU.all_components(case))
     rows = filter(
         r ->
             r["time_series_type"] == "SingleTimeSeries" &&
-                !isnothing(PSU._scaling_factor_multiplier(r)),
+                !isnothing(PSU._scaling_factor_multiplier(r)) &&
+                haskey(RAW_CU_FACTORS, r["owner_type"]),
         PSU.read_associations(case.time_series_path),
     )
     return PSU.HDF5.h5open(case.time_series_path, "r") do file
@@ -518,8 +527,8 @@ function psy5_profiles(case)
     end
 end
 
-function psy5_multiplier_of(item)
-    return PSU.psy5_multiplier(PSU._scaling_factor_multiplier(item.row))
+function raw_cu_factor(item)
+    return RAW_CU_FACTORS[item.row["owner_type"]](item.owner)
 end
 
 is_static_series(::Type{<:InfraStore.SingleTimeSeries}) = true
@@ -533,7 +542,6 @@ is_static_series(::Type) = false
     )
         require_corpus_file(path) || continue
         case = PSU.read_psy5(path)
-        base = PSU.system_base_power(case)
         _, ledger = PSU.build_document(case, PSU.ConversionReport())
         items = psy5_profiles(case)
         @test !isempty(items)
@@ -549,13 +557,12 @@ is_static_series(::Type) = false
                     e in entries if is_static_series(e.time_series_type)
                 )
                 for item in items
-                    factor = PSU.scale_factor(psy5_multiplier_of(item), item.owner, base)
                     entry = by_key[(
                         PSU.lookup_id(ledger, item.row["owner_uuid"]),
                         string(item.row["name"]),
                     )]
                     @test InfraStore.read_by_id(store, entry.id).data ≈
-                          item.profile .* factor
+                          item.profile .* raw_cu_factor(item)
                 end
             finally
                 InfraStore.close!(store)
@@ -569,11 +576,13 @@ const PSY6_OWNER_TYPES = Dict(
     "RenewableDispatch" => PSY.RenewableDispatch,
 )
 
+const PSY6_SYSTEMS = ("5_bus_matpower_DA", "modified_RTS_GMLC_DA_sys")
+
 @testset "time series PSY6 magnitudes" begin
-    path = joinpath(@__DIR__, "..", "data", "PSISystems", "5_bus_matpower_DA")
-    if require_corpus_file(path)
+    for name in PSY6_SYSTEMS
+        path = joinpath(@__DIR__, "..", "data", "PSISystems", name)
+        require_corpus_file(path) || continue
         case = PSU.read_psy5(path)
-        base = PSU.system_base_power(case)
         items = filter(
             i -> haskey(PSY6_OWNER_TYPES, i.row["owner_type"]),
             psy5_profiles(case),
@@ -586,8 +595,7 @@ const PSY6_OWNER_TYPES = Dict(
                 owner = PSY.get_component(
                     PSY6_OWNER_TYPES[item.row["owner_type"]], sys, item.owner["name"],
                 )
-                factor = PSU.scale_factor(psy5_multiplier_of(item), item.owner, base)
-                expected = item.profile .* factor .* item.owner["base_power"]
+                expected = item.profile .* raw_cu_factor(item) .* item.owner["base_power"]
                 @test PSY.get_time_series_values(
                     PSY.SingleTimeSeries, owner, string(item.row["name"]), u"MW",
                 ) ≈ expected
