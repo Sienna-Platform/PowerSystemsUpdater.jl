@@ -33,22 +33,54 @@ const CIRCUIT_FIELDS = Set([
 ])
 
 """
-PSY6 `TransformerCircuit` names its regulated bus by id (`regulated_bus`) and states the tap
-direction in `regulated_bus_orientation`. PSY5 stores a bus number whose sign is the
-direction. Zero means no regulated bus and maps to the schema defaults. A non-zero number
-needs a bus-number lookup this package does not have, so it raises an error.
+Objectives under which a `TransformerCircuit` states the bus its tap regulates; under any
+other the schema leaves `regulated_bus` unset.
 """
-function _check_no_regulated_bus!(raw::AbstractDict)
+const REGULATED_BUS_OBJECTIVES = Set(["VOLTAGE", "VOLTAGE_DISABLED"])
+
+"""
+PSY5's `regulated_bus_number` (PSS/E CONT) in PSY6's form. PSY6 names the bus by id
+(`regulated_bus`) and gives the tap direction in `regulated_bus_orientation`, which PSY5 holds
+in the number's sign: following PSS/E, a positive CONT adjusts the tap as if the bus were on
+the winding-two side (`TO`), a negative one on the winding-one side (`FROM`). The orientation
+is stated only for a remote bus; for an end of the arc it is `UNDEFINED`, as the schema
+requires.
+
+0 means no regulated bus. Under an objective that does not regulate a bus
+(`REGULATED_BUS_OBJECTIVES`) the number has no PSY6 field, so it is kept in ext and reported.
+"""
+function _regulated_bus_fields(
+    raw::AbstractDict,
+    objective,
+    ctx::TranslationContext,
+)
     number = get(raw, "regulated_bus_number", 0)
-    if !iszero(number)
-        throw(
-            Psy5FormatError(
-                "transformer \"$(get(raw, "name", "<unnamed>"))\": regulated_bus_number=" *
-                "$number has no conversion to TransformerCircuit.regulated_bus",
-            ),
-        )
+    if iszero(number)
+        return Dict{Symbol, Any}()
     end
-    return nothing
+    if !(objective in REGULATED_BUS_OBJECTIVES)
+        record_unmapped_field!(ctx.report, component_type(raw), "regulated_bus_number")
+        keep_unmapped!(ctx.ledger, "regulated_bus_number", number)
+        return Dict{Symbol, Any}()
+    end
+    name = get(raw, "name", "<unnamed>")
+    regulated = bus_id_for_number(
+        ctx,
+        abs(number),
+        "transformer \"$name\" regulated_bus_number",
+    )
+    ends = ctx.buses.arcs[reference_uuid(raw["arc"])]
+    end_numbers = (bus_number(ctx, ends[1]), bus_number(ctx, ends[2]))
+    orientation = "UNDEFINED"
+    if !(abs(number) in end_numbers) && number > 0
+        orientation = "TO"
+    elseif !(abs(number) in end_numbers)
+        orientation = "FROM"
+    end
+    return Dict{Symbol, Any}(
+        :regulated_bus => regulated,
+        :regulated_bus_orientation => orientation,
+    )
 end
 
 function _circuit_source(raw::AbstractDict)
@@ -326,7 +358,6 @@ summed.
 Returns the circuit and the PSY5 keys its control block consumed (see `_control_block`).
 """
 function _build_circuit(raw::AbstractDict, ctx::TranslationContext, alpha::Float64)
-    _check_no_regulated_bus!(raw)
     circuit_id = allocate_id!(ctx.ledger)
     base_power = base_power_for(raw, ctx.system_base)
     objective, bands, consumed =
@@ -337,6 +368,7 @@ function _build_circuit(raw::AbstractDict, ctx::TranslationContext, alpha::Float
         :base_power => base_power,
         :power_units => "COMPONENT_BASE",
         bands...,
+        _regulated_bus_fields(raw, objective, ctx)...,
     )
     if !isnothing(objective)
         extra[:control_objective] = objective

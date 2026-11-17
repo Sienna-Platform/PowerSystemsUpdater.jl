@@ -74,6 +74,25 @@ series_name(row::IS.TimeSeriesMetadata) = row.name
 read_series(owner, row::IS.TimeSeriesMetadata) =
     IS.get_time_series(owner, IS.get_time_series_key(row))
 
+"""
+The factor that takes a series' stored values to natural units, as PowerSystems reads it: from
+its units labels (CU of `base_power` multiplies by the base, a natural `units` label by 1), in
+its quantity's natural unit. 1.0 for a series without labels, whose values are taken as stored.
+"""
+function natural_scale(owner, row::IS.TimeSeriesMetadata)
+    quantity = PSY._ts_quantity(row)
+    if isnothing(quantity)
+        return 1.0
+    end
+    kind = PSY.TIME_SERIES_QUANTITIES[quantity]
+    return PSY._ts_conversion_factor(
+        owner,
+        kind,
+        PSY._ts_source_units(row),
+        PSY._ts_natural_unit(kind),
+    )
+end
+
 # A forecast's length is the count of its windows, not a series length: IS4 may fill both
 # columns, but only one applies, as in PSY5's keys.
 _length(::IS.TimeSeriesMetadata{<:IS.Forecast}) = nothing

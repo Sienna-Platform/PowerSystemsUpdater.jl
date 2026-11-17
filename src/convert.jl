@@ -49,7 +49,31 @@ function build_document(case::Psy5Case, report::ConversionReport)
     _add_supplemental_attributes!(doc, case, ctx)
     _add_service_associations!(doc, case, ctx)
     _record_time_series_skips!(case, ledger, report)
+    doc = _apply_bus_voltage_setpoints(doc, ledger)
+    PCOM.reserve_ids!(doc, ledger.counter)
     return doc, ledger
+end
+
+"""
+`doc` with each bus's `voltage_setpoint` set from the setpoints devices elsewhere recorded for
+it during translation (`record_bus_voltage_setpoint!`): a bus is translated before the
+converter that regulates it, so its setpoint is filled in afterwards, through the document
+tree, the same round trip `resolve_series_refs` makes.
+"""
+function _apply_bus_voltage_setpoints(doc::PCOM.SystemDocument, ledger::Ledger)
+    if isempty(ledger.bus_voltage_setpoints)
+        return doc
+    end
+    setpoints = Dict{Int, Float64}(
+        lookup_id(ledger, uuid) => value for (uuid, value) in ledger.bus_voltage_setpoints
+    )
+    tree = PCOM.document_tree(doc)
+    for bus in get(tree["components"], "ACBus", Any[])
+        if haskey(setpoints, bus["id"])
+            bus["voltage_setpoint"] = setpoints[bus["id"]]
+        end
+    end
+    return PCOM.document_from_json(tree)
 end
 
 """

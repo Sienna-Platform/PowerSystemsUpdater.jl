@@ -8,6 +8,51 @@ end
 TranslationContext(ledger::Ledger, report::ConversionReport, system_base::Real) =
     TranslationContext(ledger, report, Float64(system_base), BusIndex())
 
+"""
+The PSY6 id of the PSY5 `ACBus` numbered `number`, for a field PSY5 names a bus by number and
+PSY6 by id. `context` names the field in the error when no bus has that number.
+"""
+function bus_id_for_number(
+    ctx::TranslationContext,
+    number::Integer,
+    context::AbstractString,
+)
+    if !haskey(ctx.buses.uuid_by_number, Int(number))
+        throw(Psy5FormatError("$context: no ACBus has number $number"))
+    end
+    return lookup_id(ctx.ledger, ctx.buses.uuid_by_number[Int(number)])
+end
+
+"""The number of the PSY5 `ACBus` whose UUID is `uuid`."""
+function bus_number(ctx::TranslationContext, uuid::AbstractString)
+    if !haskey(ctx.buses.number_by_uuid, uuid)
+        throw(Psy5FormatError("no ACBus has UUID $uuid"))
+    end
+    return ctx.buses.number_by_uuid[uuid]
+end
+
+"""
+Record `setpoint` as the `voltage_setpoint` of the bus `bus_uuid` regulates to, for
+`_apply_bus_voltage_setpoints`. A second, different setpoint for the same bus keeps the first
+and is reported under approximate mappings: PSY6 has one setpoint per bus.
+"""
+function record_bus_voltage_setpoint!(
+    ctx::TranslationContext,
+    bus_uuid::AbstractString,
+    setpoint::Real,
+    source::AbstractString,
+)
+    setpoints = ctx.ledger.bus_voltage_setpoints
+    if haskey(setpoints, bus_uuid) && !isapprox(setpoints[bus_uuid], setpoint)
+        record_approximate_mapping!(ctx.report, "ACBus", "voltage_setpoint")
+        @warn "ACBus $(bus_number(ctx, bus_uuid)): $source sets voltage_setpoint $setpoint, " *
+              "but $(setpoints[bus_uuid]) is already set; keeping the first"
+        return nothing
+    end
+    setpoints[String(bus_uuid)] = Float64(setpoint)
+    return nothing
+end
+
 """What converting `raw`'s fields into their declared units needs (`convert_units`)."""
 component_units(raw::AbstractDict, ctx::TranslationContext) = ComponentUnits(
     component_type(raw),
@@ -205,8 +250,8 @@ end
 # TModelHVDCLine's `r`/`l`/`c` in ohm, H and F, and documents its required `base_current` as
 # informational: "No field of this component is per-unit on it" (PowerSystems 404b0d571). PSY5
 # records no current base anywhere on the type, the schema gives no default, and the system
-# base is a power, not a current, so the required field has nothing to fill it. (The schema
-# says kA, PowerSystems' docstring says A.) Converting `l`/`c` from PSY5's system-base per unit
+# base is a power, not a current, so the required field has nothing to fill it (kA in both the
+# schema and PowerSystems). Converting `l`/`c` from PSY5's system-base per unit
 # would also need a time-base convention PSY5 does not document. Until the schema makes
 # `base_current` optional or a convention is agreed, this throws rather than invent a value.
 # `KNOWN_CONVERSION_GAPS` in test/test_corpus.jl records the corpus systems this takes out.
@@ -292,8 +337,9 @@ PSY5's `SwitchedAdmittance`, mapped as PowerFlowFileParser's PSS/E reader maps t
 
 Where this is known not to reproduce PSY5, the component is reported under approximate
 mappings (`_warn_switched_admittance_approximations`). A non-zero conductance (`real(Y)`) has no
-PSY6 field: `Y` is kept in ext whole. PSY6 names a remote regulated bus by id, so a zero
-`regulated_bus_number` (no remote bus) is dropped and a non-zero one raises an error.
+PSY6 field: `Y` is kept in ext whole. PSY6 names a remote regulated bus by id
+(`remote_regulated_bus`), unset for the shunt's own bus: a `regulated_bus_number` of 0 or of
+the shunt's own bus writes none, any other the id of the bus with that number.
 """
 function translate(::Val{:SwitchedAdmittance}, raw::AbstractDict, ctx::TranslationContext)
     _warn_switched_admittance_approximations(raw, ctx)
@@ -312,12 +358,12 @@ function translate(::Val{:SwitchedAdmittance}, raw::AbstractDict, ctx::Translati
     end
     renamed["y_increase"] = pop!(renamed, "Y_increase")
     regulated_number = pop!(renamed, "regulated_bus_number", 0)
-    if !iszero(regulated_number)
-        throw(
-            Psy5FormatError(
-                "SwitchedAdmittance \"$(raw["name"])\": regulated_bus_number=" *
-                "$regulated_number has no conversion to remote_regulated_bus",
-            ),
+    if !iszero(regulated_number) &&
+       regulated_number != bus_number(ctx, reference_uuid(raw["bus"]))
+        renamed["remote_regulated_bus"] = bus_id_for_number(
+            ctx,
+            regulated_number,
+            "SwitchedAdmittance \"$(raw["name"])\" regulated_bus_number",
         )
     end
     limits_field =
@@ -452,7 +498,8 @@ end
 """
 PSY5's VSC `dc_setpoint_*` and `ac_setpoint_*` each hold whichever quantity the converter's
 control mode regulates; PSY6 has one field per quantity, selected by the same mode. An
-`AC_VOLTAGE` setpoint belongs to `ACBus.voltage_setpoint` in PSY6, so it raises an error.
+`AC_VOLTAGE` setpoint is the regulated bus's `ACBus.voltage_setpoint` in PSY6
+(`_vsc_ac_voltage!`).
 """
 const VSC_SETPOINT_FIELDS = (
     (
@@ -471,23 +518,66 @@ const VSC_SETPOINT_FIELDS = (
     ),
 )
 
-function _vsc_setpoints(raw::AbstractDict)
-    derived = copy(raw)
-    # PSY5 (PSS/E) spells "regulates its own terminal bus" as remote bus 0; PSY6 as no remote
-    # bus, and rejects 0 as a bus number.
-    for side in ("from", "to")
-        if get(derived, "remote_bus_control_$side", nothing) == 0
-            delete!(derived, "remote_bus_control_$side")
+"""Which end of a VSC line's arc each side's converter sits at."""
+const VSC_SIDE_END = Dict("from" => 1, "to" => 2)
+
+"""
+One `AC_VOLTAGE` converter end of a PSY5 VSC line, moved onto `derived` in PSY6's form. PSY5
+names the bus the converter regulates by number (`remote_bus_control_<side>`, 0 for its own
+terminal) and holds its target in `ac_setpoint_<side>`; PSY6 names a remote bus by id
+(`remote_regulated_bus_<side>`, unset for the terminal) and keeps the target on that bus
+(`ACBus.voltage_setpoint`, recorded here and written by `_apply_bus_voltage_setpoints`).
+
+A remote bus number no `ACBus` in the case has (a dangling reference in the source data) has no
+bus to name or to carry the target: the number and the setpoint are kept in ext and reported
+under INVALID VALUES DROPPED, and the converter is left regulating no stated bus.
+"""
+function _vsc_ac_voltage!(
+    derived::AbstractDict,
+    raw::AbstractDict,
+    side::AbstractString,
+    ctx::TranslationContext,
+)
+    name = get(raw, "name", "<unnamed>")
+    ends = ctx.buses.arcs[reference_uuid(raw["arc"])]
+    terminal_uuid = ends[VSC_SIDE_END[side]]
+    regulated_uuid = terminal_uuid
+    remote = pop!(derived, "remote_bus_control_$side", 0)
+    if !iszero(remote) && !haskey(ctx.buses.uuid_by_number, Int(remote))
+        for field in ("remote_bus_control_$side", "ac_setpoint_$side")
+            record_dropped_invalid_value!(ctx.report, "TwoTerminalVSCLine", field)
+            keep_unmapped!(ctx.ledger, field, get(raw, field, nothing))
         end
+        delete!(derived, "ac_setpoint_$side")
+        return derived
     end
+    if !iszero(remote) && remote != bus_number(ctx, terminal_uuid)
+        derived["remote_regulated_bus_$side"] = bus_id_for_number(
+            ctx,
+            remote,
+            "TwoTerminalVSCLine \"$name\" remote_bus_control_$side",
+        )
+        regulated_uuid = ctx.buses.uuid_by_number[Int(remote)]
+    end
+    record_bus_voltage_setpoint!(
+        ctx,
+        regulated_uuid,
+        pop!(derived, "ac_setpoint_$side"),
+        "TwoTerminalVSCLine \"$name\" ($side)",
+    )
+    return derived
+end
+
+function _vsc_setpoints(raw::AbstractDict, ctx::TranslationContext)
+    derived = copy(raw)
     for side in ("from", "to")
         if get(raw, "ac_control_$side", nothing) == "AC_VOLTAGE"
-            throw(
-                Psy5FormatError(
-                    "TwoTerminalVSCLine \"$(get(raw, "name", "<unnamed>"))\": " *
-                    "ac_control_$side=AC_VOLTAGE has no conversion to a converter field",
-                ),
-            )
+            _vsc_ac_voltage!(derived, raw, side, ctx)
+        elseif get(derived, "remote_bus_control_$side", nothing) == 0
+            # PSY5 (PSS/E) spells "regulates its own terminal bus" as remote bus 0; PSY6 as
+            # no remote bus. A remote bus outside AC_VOLTAGE has no PSY6 use and is kept in
+            # ext like any unmapped field.
+            delete!(derived, "remote_bus_control_$side")
         end
     end
     for side in ("from", "to"), (setpoint, control, targets) in VSC_SETPOINT_FIELDS
@@ -501,7 +591,7 @@ function _vsc_setpoints(raw::AbstractDict)
 end
 
 function translate(::Val{:TwoTerminalVSCLine}, raw::AbstractDict, ctx::TranslationContext)
-    derived = _vsc_setpoints(raw)
+    derived = _vsc_setpoints(raw, ctx)
     return direct_translate(
         openapi_type(:TwoTerminalVSCLine),
         _wrap_loss_curves(derived),

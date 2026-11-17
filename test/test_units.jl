@@ -74,6 +74,20 @@ end
     @test isempty(rep.unverified_units)
 end
 
+@testset "DC converter currents: PSY5 amperes to the schema's kA" begin
+    @test PSU.psy5_storage("TwoTerminalVSCLine", "dc_current") isa PSU.Amperes
+    @test PSU.psy5_storage("InterconnectingConverter", "max_dc_current") isa PSU.Amperes
+    units = PSU.ComponentUnits(
+        "TwoTerminalVSCLine", Dict{String, Any}(), 100.0, 100.0, PSU.BusIndex(),
+    )
+    @test PSU.convert_units(PSU.Amperes(), "kA", -1200.0, units) ≈ -1.2
+    # Both of PSY5's "no limit" values become the schema's 9999 kA, unscaled.
+    @test PSU.convert_units(PSU.Amperes(), "kA", 9999.0, units) == 9999.0
+    @test PSU.convert_units(PSU.Amperes(), "kA", 1.0e8, units) == 9999.0
+    @test PSU.convert_units(PSU.Amperes(), "A", 1200.0, units) == 1200.0
+    @test PSU.convert_units(PSU.Amperes(), "MW", 1200.0, units) isa PSU.UnverifiedUnit
+end
+
 @testset "HydroReservoir: fraction levels to absolute, flows per hour to per second" begin
     ctx, _, rep = _units_ctx()
     raw = Dict{String, Any}(
@@ -176,6 +190,30 @@ end
     @test rep.dropped_invalid_values[("TwoTerminalVSCLine", "dc_voltage_setpoint_from")] ==
           1
     @test isempty(rep.unverified_units)
+end
+
+@testset "VSC DC quantities on rated_dc_voltage: limits in kV (no-limit 999.9 kept), g in S" begin
+    ctx, led, rep = _units_ctx()
+    led.owner = "uuid-c"
+    raw = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "TwoTerminalVSCLine"),
+        "internal" => Dict("uuid" => Dict("value" => "uuid-c")),
+        "arc" => Dict("value" => "uuid-arc"),
+        "rated_dc_voltage" => 150.0,
+        "g" => 0.5,
+        "voltage_limits_from" => Dict("min" => 0.9, "max" => 1.1),
+        "voltage_limits_to" => Dict("min" => 0.0, "max" => 999.9),
+    )
+    kwargs = PSU.build_kwargs(
+        PSU.POOM.TwoTerminalVSCLine, raw, led, rep;
+        units = PSU.component_units(raw, ctx),
+    )
+    @test (kwargs[:voltage_limits_from].min, kwargs[:voltage_limits_from].max) ==
+          (135.0, 165.0)
+    # 999.9 is "no limit" in both versions, not 999.9 x 150 kV.
+    @test (kwargs[:voltage_limits_to].min, kwargs[:voltage_limits_to].max) == (0.0, 999.9)
+    # Conductance on the DC voltage base: 0.5 pu / (150^2 / 100) ohm.
+    @test kwargs[:g] ≈ 0.5 / 225
 end
 
 @testset "unverified units: reported, never silently copied" begin

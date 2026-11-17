@@ -21,17 +21,9 @@ PowerSystemsUpdater = {path = "../../.."}
 # the comparison loads with (currently jp/updater_fixes). For the published branch use
 # `{url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "psy6"}`.
 PowerSystems = {path = "../../../../PowerSystems.jl"}
-# Held at the last IS4 commit before its InfraStore 0.15 bump (0ea15bae2): PowerSystems psy6
-# and PowerSystemsUpdater both still require InfraStore 0.14, so IS4 head cannot resolve
-# with them. Return to `rev = "IS4"` once both move to 0.15.
-InfrastructureSystems = {url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git", rev = "eafc6f3550a40f2687fec2808c7b47016b2cef52"}
-InfrastructureCoreOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "main", subdir = "InfrastructureCoreOpenAPIModels.jl"}
-InfrastructureTimeSeriesOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "main", subdir = "InfrastructureTimeSeriesOpenAPIModels.jl"}
-PowerCoreOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "main", subdir = "PowerCoreOpenAPIModels.jl"}
-PowerDynamicsOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "main", subdir = "PowerDynamicsOpenAPIModels.jl"}
-PowerInvestmentsOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "main", subdir = "PowerInvestmentsOpenAPIModels.jl"}
-PowerOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "main", subdir = "PowerOpenAPIModels.jl"}
-PowerOperationsOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "main", subdir = "PowerOperationsOpenAPIModels.jl"}
+InfrastructureSystems = {url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git", rev = "IS4"}
+# The OpenAPI model packages resolve to their registered releases (0.5, the compat both
+# PowerSystems and PowerSystemsUpdater declare), so they need no pin here.
 
 [compat]
 HDF5 = "0.17"

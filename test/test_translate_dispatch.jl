@@ -351,7 +351,10 @@ end
         "ac_control_to" => "AC_REACTIVE_POWER", "ac_setpoint_to" => 1.0,
         "remote_bus_control_to" => 0,
     )
-    split = PSU._vsc_setpoints(vsc)
+    split = PSU._vsc_setpoints(
+        vsc,
+        PSU.TranslationContext(PSU.Ledger(), PSU.ConversionReport(), 100.0),
+    )
     @test split["dc_voltage_setpoint_from"] == 1.05
     @test split["power_factor_setpoint_from"] == 0.9
     @test split["dc_power_setpoint_to"] == 0.4

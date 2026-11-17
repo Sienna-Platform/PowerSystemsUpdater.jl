@@ -66,6 +66,18 @@ series_type(key::IS.TimeSeriesKey) = key.time_series_type
 series_name(key::IS.TimeSeriesKey) = key.name
 read_series(owner, key::IS.TimeSeriesKey) = IS.get_time_series(owner, key)
 
+"""
+The factor that takes a series' stored values to natural units: its scaling-factor
+multiplier's value on the owner, read in natural units (MW, MWh, ...), or 1.0 for a series
+without one.
+"""
+natural_scale(owner, key::IS.TimeSeriesKey) =
+    _natural_scale(owner, IS.get_scaling_factor_multiplier(read_series(owner, key)))
+_natural_scale(_, ::Nothing) = 1.0
+_natural_scale(::PSY.Component, ::Nothing) = 1.0
+_natural_scale(owner::PSY.Component, multiplier) =
+    PSY.with_units_base(() -> Float64(multiplier(owner)), owner, "NATURAL_UNITS")
+
 function series_metadata(key::IS.StaticTimeSeriesKey)
     return Dict{String, Any}(
         "initial_timestamp" => key.initial_timestamp,

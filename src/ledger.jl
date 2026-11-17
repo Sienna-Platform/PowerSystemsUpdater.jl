@@ -29,6 +29,11 @@ They are written to the component's `ext` (`_carry_ext!` in convert.jl) rather t
 `series_refs` holds the time series references deferred during translation
 (`defer_series_ref!`): a field that names a time series by its association id, which exists
 only once the sidecar's catalog is written.
+
+`bus_voltage_setpoints` holds, by bus UUID, the voltage setpoint a device elsewhere gives the
+bus it regulates (a VSC converter's AC setpoint becomes the regulated bus's
+`voltage_setpoint`), written onto the buses once every component is translated
+(`_apply_bus_voltage_setpoints` in convert.jl).
 """
 mutable struct Ledger
     ids::Dict{String, Int}
@@ -37,6 +42,7 @@ mutable struct Ledger
     owner::Union{Nothing, String}
     unmapped::Dict{String, Dict{String, Any}}
     series_refs::Vector{SeriesRef}
+    bus_voltage_setpoints::Dict{String, Float64}
 end
 
 Ledger() = Ledger(
@@ -46,6 +52,7 @@ Ledger() = Ledger(
     nothing,
     Dict{String, Dict{String, Any}}(),
     SeriesRef[],
+    Dict{String, Float64}(),
 )
 
 """

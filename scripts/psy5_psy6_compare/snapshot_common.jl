@@ -150,8 +150,11 @@ end
 
 """
 Metadata for one time series, from its catalog entry rather than its data, with its values
-written to `writer`. Values are read raw — PSY5 scaling-factor multipliers are not applied,
-matching what the updater carries across.
+written to `writer`. Values are written raw, as stored; `natural_scale` (defined by each
+environment's snapshot script) is the factor that takes them to natural units — a PSY5
+scaling-factor multiplier's value on the owner, or PSY6's own read factor for the series'
+units labels — so the comparison checks the physical series even where the updater rescales
+what it stores.
 """
 function time_series_record(writer::ValuesWriter, owner, handle)
     T = series_type(handle)
@@ -165,6 +168,7 @@ function time_series_record(writer::ValuesWriter, owner, handle)
         record[key] = attempt(() -> snapshot_value(value))
     end
     record["values"] = attempt(() -> values_record(writer, T, owner, handle))
+    record["natural_scale"] = attempt(() -> natural_scale(owner, handle))
     return record
 end
 

@@ -84,14 +84,11 @@ end
         "ac_control_from" => "AC_REACTIVE_POWER", "ac_setpoint_from" => 1.01,
         "ac_control_to" => "AC_REACTIVE_POWER", "ac_setpoint_to" => 0.95,
     )
-    derived = PSU._vsc_setpoints(raw)
+    ctx0 = PSU.TranslationContext(PSU.Ledger(), PSU.ConversionReport(), 100.0)
+    derived = PSU._vsc_setpoints(raw, ctx0)
     @test derived["dc_voltage_setpoint_from"] == 1.02
     @test derived["dc_power_setpoint_to"] == -0.5
     @test derived["power_factor_setpoint_from"] == 1.01
-    # An AC voltage setpoint is the bus's `voltage_setpoint` in PSY6: no converter field.
-    @test_throws PSU.Psy5FormatError PSU._vsc_setpoints(
-        Dict{String, Any}("ac_control_from" => "AC_VOLTAGE", "ac_setpoint_from" => 1.01),
-    )
     @test derived["power_factor_setpoint_to"] == 0.95
     @test !any(
         haskey(derived, k) for
@@ -99,10 +96,10 @@ end
     )
     # PSY5's remote bus 0 ("its own terminal bus") is PSY6's unset remote bus.
     @test !haskey(
-        PSU._vsc_setpoints(Dict{String, Any}("remote_bus_control_from" => 0)),
+        PSU._vsc_setpoints(Dict{String, Any}("remote_bus_control_from" => 0), ctx0),
         "remote_bus_control_from",
     )
-    @test PSU._vsc_setpoints(Dict{String, Any}("remote_bus_control_to" => 7))["remote_bus_control_to"] ==
+    @test PSU._vsc_setpoints(Dict{String, Any}("remote_bus_control_to" => 7), ctx0)["remote_bus_control_to"] ==
           7
 
     # Units: DC voltage on `rated_dc_voltage`.

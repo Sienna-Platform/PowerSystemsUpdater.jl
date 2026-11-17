@@ -451,9 +451,17 @@ function diff_series!(
     b::AbstractDict,
     files::ValueFiles,
 )
-    diff_values!(out, site, path, without(a, "values"), without(b, "values"))
+    diff_values!(
+        out,
+        site,
+        path,
+        without(without(a, "values"), "natural_scale"),
+        without(without(b, "values"), "natural_scale"),
+    )
     values_a = get(a, "values", nothing)
     values_b = get(b, "values", nothing)
+    scale_a = get(a, "natural_scale", 1.0)
+    scale_b = get(b, "natural_scale", 1.0)
     values_path = "$path.values"
     diff_values!(
         out,
@@ -464,16 +472,35 @@ function diff_series!(
     )
     if has_dataset(values_a) && has_dataset(values_b) &&
        values_a["shape"] == values_b["shape"]
-        diff_arrays!(
+        diff_scaled_arrays!(
             out,
             site,
             values_path,
             read(files.psy5[values_a["dataset"]]),
             read(files.psy6[values_b["dataset"]]),
+            scale_a,
+            scale_b,
             values_a["window_starts"],
         )
     end
 end
+
+"""
+Compare two series in natural units: each side's stored values times its `natural_scale`.
+A scale either snapshot could not compute is recorded as unreadable and the raw values are
+compared, so the failure stays visible.
+"""
+function diff_scaled_arrays!(out, site::Site, path, a, b, scale_a::Real, scale_b::Real, starts)
+    return diff_arrays!(out, site, path, _scaled(a, scale_a), _scaled(b, scale_b), starts)
+end
+
+function diff_scaled_arrays!(out, site::Site, path, a, b, scale_a, scale_b, starts)
+    diff_values!(out, site, "$path.natural_scale", scale_a, scale_b)
+    return diff_arrays!(out, site, path, a, b, starts)
+end
+
+_scaled(values::AbstractArray{<:Real}, scale::Real) = values .* scale
+_scaled(values::AbstractArray, ::Real) = values
 
 # An `attempt` error record on either side: nothing to read, compared as values.
 diff_series!(out, site::Site, path, a, b, ::ValueFiles) =
@@ -646,6 +673,7 @@ end
 function compare_snapshots(psy5::AbstractDict, psy6::AbstractDict, files::ValueFiles)
     out = Difference[]
     diff_system!(out, psy5["system"], psy6["system"])
+    index_psy6_buses!(psy6["components"], psy6["system"])
     diff_components!(out, psy5["components"], psy6["components"], psy6["system"])
     diff_time_series!(out, psy5["time_series"], psy6["time_series"], files)
     diff_keyed!(

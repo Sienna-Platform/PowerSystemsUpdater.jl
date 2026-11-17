@@ -30,6 +30,9 @@ struct Natural <: Psy5Storage end
 """Natural, but per hour where PSY6 is per second (`m3/h` against `m3/s`)."""
 struct PerHour <: Psy5Storage end
 
+"""Natural current in A (PSY5's DC converter currents), where the schema declares kA."""
+struct Amperes <: Psy5Storage end
+
 """Natural power (MW, MVA, MVAr), which a per-unit PSY6 field takes on the component's base."""
 struct NaturalPower <: Psy5Storage end
 
@@ -48,6 +51,13 @@ or a voltage in per unit of `rated_dc_voltage`. `path` names that value in the P
 struct RelativeTo <: Psy5Storage
     path::Vector{String}
 end
+
+"""
+A VSC converter's DC voltage limits: per unit of `rated_dc_voltage`, like `RelativeTo`, except
+that the no-limit maximum `DC_VOLTAGE_NO_LIMIT` (PSY5's and PSY6's default) stays as it is
+rather than being scaled into a real voltage.
+"""
+struct DCVoltageLimits <: Psy5Storage end
 
 """
 Per unit on the system base power and the voltage (kV) named by `path` in the PSY5 record,
@@ -122,9 +132,11 @@ const PSY5_STORAGE = Dict{Tuple{String, String}, Psy5Storage}(
     # Two-terminal VSC: "series conductance ... in pu (SYSTEM_BASE)"; DC voltage limits "in per
     # unit" of the link's DC voltage base, `rated_dc_voltage` ("Rated (base) DC voltage ... in
     # kV"), not of the AC buses either end; DC currents "(A)".
-    ("TwoTerminalVSCLine", "g") => SystemBasePU(),
-    ("TwoTerminalVSCLine", "voltage_limits_from") => RelativeTo(["rated_dc_voltage"]),
-    ("TwoTerminalVSCLine", "voltage_limits_to") => RelativeTo(["rated_dc_voltage"]),
+    # PSY5's PSS/E parser puts the DC circuit's RDC, and so `g`, on the DC voltage base
+    # (`DCSET`, which becomes `rated_dc_voltage`), not an AC bus's.
+    ("TwoTerminalVSCLine", "g") => SystemBasePUOnVoltage(["rated_dc_voltage"]),
+    ("TwoTerminalVSCLine", "voltage_limits_from") => DCVoltageLimits(),
+    ("TwoTerminalVSCLine", "voltage_limits_to") => DCVoltageLimits(),
     ("TwoTerminalVSCLine", "rated_dc_voltage") => Natural(),
     # From PSY5's `dc_setpoint_*` / `ac_setpoint_*` (`_vsc_setpoints`): DC power "in per-unit
     # (SYSTEM_BASE)", DC voltage "in per-unit of `rated_dc_voltage`", AC voltage "entered in
@@ -139,11 +151,11 @@ const PSY5_STORAGE = Dict{Tuple{String, String}, Psy5Storage}(
     ("TwoTerminalVSCLine", "rated_ac_voltage_from") => Natural(),
     ("TwoTerminalVSCLine", "rated_ac_voltage_to") => Natural(),
     ("TwoTerminalVSCLine", "power_factor_setpoint_to") => Natural(),
-    ("TwoTerminalVSCLine", "dc_current") => Natural(),
-    ("TwoTerminalVSCLine", "max_dc_current_from") => Natural(),
-    ("TwoTerminalVSCLine", "max_dc_current_to") => Natural(),
-    ("InterconnectingConverter", "dc_current") => Natural(),
-    ("InterconnectingConverter", "max_dc_current") => Natural(),
+    ("TwoTerminalVSCLine", "dc_current") => Amperes(),
+    ("TwoTerminalVSCLine", "max_dc_current_from") => Amperes(),
+    ("TwoTerminalVSCLine", "max_dc_current_to") => Amperes(),
+    ("InterconnectingConverter", "dc_current") => Amperes(),
+    ("InterconnectingConverter", "max_dc_current") => Amperes(),
     # TModelHVDCLine: "in p.u. (SYSTEM_BASE)".
     ("TModelHVDCLine", "r") => SystemBasePU(),
     # "Load-frequency damping parameter ... (MW/Hz)".
@@ -247,18 +259,36 @@ end
 
 # ── Conversion ────────────────────────────────────────────────────────────────────────────
 
-"""Bus voltage bases and arc endpoints of a PSY5 case, for impedance and voltage bases."""
+"""
+Bus voltage bases, bus numbers and arc endpoints of a PSY5 case: the voltage bases for
+impedance and voltage conversions, the numbers for fields PSY5 names a bus by number and PSY6
+by id (a regulated bus).
+"""
 struct BusIndex
     base_voltage::Dict{String, Float64}
     arcs::Dict{String, Tuple{String, String}}
+    uuid_by_number::Dict{Int, String}
+    number_by_uuid::Dict{String, Int}
 end
 
 BusIndex() = BusIndex(Dict{String, Float64}(), Dict{String, Tuple{String, String}}())
+
+"""A `BusIndex` with voltage bases and arcs but no bus numbers."""
+function BusIndex(
+    base_voltage::AbstractDict{String, Float64},
+    arcs::AbstractDict{String, Tuple{String, String}},
+)
+    return BusIndex(base_voltage, arcs, Dict{Int, String}(), Dict{String, Int}())
+end
 
 function BusIndex(components)
     index = BusIndex()
     for raw in components
         type_name = component_type(raw)
+        if type_name == "ACBus" && haskey(raw, "number")
+            index.uuid_by_number[Int(raw["number"])] = component_uuid(raw)
+            index.number_by_uuid[component_uuid(raw)] = Int(raw["number"])
+        end
         kv = get(raw, "base_voltage", nothing)
         if type_name in ("ACBus", "DCBus") && !isnothing(kv) && kv > 0
             # A non-physical base (0) is no base: a field needing it is reported, not scaled
@@ -374,6 +404,31 @@ convert_units(::Natural, ::AbstractString, value, ::ComponentUnits) = value
 convert_units(storage::RelativeTo, ::AbstractString, value, units::ComponentUnits) =
     _relative(value, _lookup(units.raw, storage.path), storage)
 
+"""
+The "no limit" maximum of a VSC DC voltage band: 999.9 in PSY5 (per unit) and in PSY6 (kV).
+"""
+const DC_VOLTAGE_NO_LIMIT = 999.9
+
+function convert_units(
+    ::DCVoltageLimits,
+    unit::AbstractString,
+    value::AbstractDict,
+    units::ComponentUnits,
+)
+    converted = convert_units(RelativeTo(["rated_dc_voltage"]), unit, value, units)
+    return _keep_no_limit(converted, get(value, "max", nothing))
+end
+convert_units(::DCVoltageLimits, unit::AbstractString, value, units::ComponentUnits) =
+    convert_units(RelativeTo(["rated_dc_voltage"]), unit, value, units)
+
+function _keep_no_limit(converted::AbstractDict, original_max)
+    if original_max == DC_VOLTAGE_NO_LIMIT
+        converted["max"] = DC_VOLTAGE_NO_LIMIT
+    end
+    return converted
+end
+_keep_no_limit(converted, _) = converted
+
 _relative(value, reference::Real, storage::RelativeTo) =
     if reference > 0
         _scale(value, reference)
@@ -382,6 +437,29 @@ _relative(value, reference::Real, storage::RelativeTo) =
     end
 _relative(_, ::Any, storage::RelativeTo) =
     UnverifiedUnit("relative to $(join(storage.path, ".")), which is missing")
+
+"""
+The schema's "no limit" DC current, 9999 kA (PowerSystems' `INFINITE_CURRENT`).
+"""
+const NO_CURRENT_LIMIT_KA = 9999.0
+
+"""
+PSY5's "no limit" DC currents: 9999 (its PSS/E parser's value for an IMAX of 0) and 1e8 A (its
+constructor default). Each becomes `NO_CURRENT_LIMIT_KA` rather than a scaled number.
+"""
+const PSY5_NO_CURRENT_LIMITS = (9999.0, 1.0e8)
+
+function convert_units(::Amperes, unit::AbstractString, value::Real, ::ComponentUnits)
+    if unit == "A"
+        return value
+    elseif unit != "kA"
+        return UnverifiedUnit("no conversion from A to $unit")
+    elseif value in PSY5_NO_CURRENT_LIMITS
+        return NO_CURRENT_LIMIT_KA
+    end
+    return value / 1000
+end
+convert_units(::Amperes, ::AbstractString, value, ::ComponentUnits) = value
 
 convert_units(::PerHour, unit::AbstractString, value, ::ComponentUnits) =
     endswith(unit, "/s") ? _scale(value, 1 / 3600) : value
