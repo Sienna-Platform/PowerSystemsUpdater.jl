@@ -1,3 +1,6 @@
+import PowerSystems as PSY
+using PowerSystems: @u_str
+
 const InfraStore = PSU.InfraStore
 const Dates = PSU.Dates
 
@@ -488,4 +491,107 @@ end
         @test_throws part piecewise_scale()
     end
     @test_throws PSU.Psy5FormatError piecewise_scale()
+end
+
+# ── Corpus magnitudes ──────────────────────────────────────────────────────────
+
+"""
+Every `SingleTimeSeries` of `case` that has a PSY5 multiplier, as `(row, owner, profile)`:
+the association row, the raw owner and the normalized array PSY5 stored.
+"""
+function psy5_profiles(case)
+    owners = Dict(PSU.component_uuid(raw) => raw for raw in PSU.all_components(case))
+    rows = filter(
+        r ->
+            r["time_series_type"] == "SingleTimeSeries" &&
+                !isnothing(PSU._scaling_factor_multiplier(r)),
+        PSU.read_associations(case.time_series_path),
+    )
+    return PSU.HDF5.h5open(case.time_series_path, "r") do file
+        [
+            (
+                row = row,
+                owner = owners[row["owner_uuid"]],
+                profile = first(PSU._legacy_array(file, row)),
+            ) for row in rows
+        ]
+    end
+end
+
+function psy5_multiplier_of(item)
+    return PSU.psy5_multiplier(PSU._scaling_factor_multiplier(item.row))
+end
+
+is_static_series(::Type{<:InfraStore.SingleTimeSeries}) = true
+is_static_series(::Type) = false
+
+@testset "time series corpus magnitudes" begin
+    dir = joinpath(@__DIR__, "..", "data")
+    for path in (
+        joinpath(dir, "PSISystems", "5_bus_matpower_DA"),
+        joinpath(dir, "PSITestSystems", "c_sys5_all_components"),
+    )
+        require_corpus_file(path) || continue
+        case = PSU.read_psy5(path)
+        base = PSU.system_base_power(case)
+        _, ledger = PSU.build_document(case, PSU.ConversionReport())
+        items = psy5_profiles(case)
+        @test !isempty(items)
+        mktempdir() do tmp
+            PSU.convert_system(path, tmp; force = true)
+            entries = catalog_entries(tmp)
+            store = InfraStore.open_store(
+                joinpath(tmp, PSU.TIME_SERIES_FILENAME); read_only = true,
+            )
+            try
+                by_key = Dict(
+                    (e.owner_id, e.name) => e for
+                    e in entries if is_static_series(e.time_series_type)
+                )
+                for item in items
+                    factor = PSU.scale_factor(psy5_multiplier_of(item), item.owner, base)
+                    entry = by_key[(
+                        PSU.lookup_id(ledger, item.row["owner_uuid"]),
+                        string(item.row["name"]),
+                    )]
+                    @test InfraStore.read_by_id(store, entry.id).data ≈
+                          item.profile .* factor
+                end
+            finally
+                InfraStore.close!(store)
+            end
+        end
+    end
+end
+
+const PSY6_OWNER_TYPES = Dict(
+    "PowerLoad" => PSY.PowerLoad,
+    "RenewableDispatch" => PSY.RenewableDispatch,
+)
+
+@testset "time series PSY6 magnitudes" begin
+    path = joinpath(@__DIR__, "..", "data", "PSISystems", "5_bus_matpower_DA")
+    if require_corpus_file(path)
+        case = PSU.read_psy5(path)
+        base = PSU.system_base_power(case)
+        items = filter(
+            i -> haskey(PSY6_OWNER_TYPES, i.row["owner_type"]),
+            psy5_profiles(case),
+        )
+        @test !isempty(items)
+        mktempdir() do tmp
+            PSU.convert_system(path, tmp; force = true)
+            sys = PSY.from_file(joinpath(tmp, "system.json"))
+            for item in items
+                owner = PSY.get_component(
+                    PSY6_OWNER_TYPES[item.row["owner_type"]], sys, item.owner["name"],
+                )
+                factor = PSU.scale_factor(psy5_multiplier_of(item), item.owner, base)
+                expected = item.profile .* factor .* item.owner["base_power"]
+                @test PSY.get_time_series_values(
+                    PSY.SingleTimeSeries, owner, string(item.row["name"]), u"MW",
+                ) ≈ expected
+            end
+        end
+    end
 end
