@@ -135,8 +135,6 @@ const PSY5_STORAGE = Dict{Tuple{String, String}, Psy5Storage}(
         RelativeTo(["rated_dc_voltage"]),
     ("TwoTerminalVSCLine", "dc_voltage_setpoint_to") =>
         RelativeTo(["rated_dc_voltage"]),
-    ("TwoTerminalVSCLine", "ac_voltage_setpoint_from") => ArcEndVoltagePU(1),
-    ("TwoTerminalVSCLine", "ac_voltage_setpoint_to") => ArcEndVoltagePU(2),
     ("TwoTerminalVSCLine", "power_factor_setpoint_from") => Natural(),
     ("TwoTerminalVSCLine", "rated_ac_voltage_from") => Natural(),
     ("TwoTerminalVSCLine", "rated_ac_voltage_to") => Natural(),

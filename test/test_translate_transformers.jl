@@ -142,7 +142,7 @@ end
         "name" => "pst1", "available" => true,
         "arc" => Dict("value" => "uuid-arc"),
         "r" => 0.01, "x" => 0.1, "tap" => 1.02, "α" => 0.05,
-        "base_power" => 100.0,
+        "rating" => 2.0, "base_power" => 100.0,
         "active_power_flow" => 0.0, "reactive_power_flow" => 0.0,
     )
 
@@ -166,7 +166,7 @@ end
         "name" => "pst_neg", "available" => true,
         "arc" => Dict("value" => "uuid-arc-neg"),
         "r" => 0.01, "x" => 0.1, "tap" => 0.98, "α" => -0.37,
-        "base_power" => 100.0,
+        "rating" => 2.0, "base_power" => 100.0,
         "active_power_flow" => 0.0, "reactive_power_flow" => 0.0,
     )
 
@@ -189,7 +189,7 @@ end
         "arc" => Dict("value" => "uuid-arc-shunt"),
         "r" => 0.01, "x" => 0.1,
         "primary_shunt" => Dict("real" => 0.001, "imag" => 0.02),
-        "base_power" => 100.0,
+        "rating" => 2.0, "base_power" => 100.0,
         "winding_group_number" => "GROUP_0",
         "active_power_flow" => 0.0, "reactive_power_flow" => 0.0,
     )
@@ -214,7 +214,7 @@ end
         "arc" => Dict("value" => "uuid-arc-tap-limits"),
         "r" => 0.02, "x" => 0.2, "tap" => 1.0,
         "primary_shunt" => Dict("real" => 0.0, "imag" => 0.0),
-        "base_power" => 100.0,
+        "rating" => 2.0, "base_power" => 100.0,
         "winding_group_number" => "UNDEFINED",
         "tap_limits" => Dict("min" => 0.9, "max" => 1.1),
         "active_power_flow" => 0.0, "reactive_power_flow" => 0.0,

@@ -32,10 +32,29 @@ const CIRCUIT_FIELDS = Set([
     "regulated_bus_number", "number_of_tap_positions", "available",
 ])
 
+"""
+PSY6 `TransformerCircuit` names its regulated bus by id (`regulated_bus`) and states the tap
+direction in `regulated_bus_orientation`. PSY5 stores a bus number whose sign is the
+direction. Zero means no regulated bus and maps to the schema defaults. A non-zero number
+needs a bus-number lookup this package does not have, so it raises an error.
+"""
+function _check_no_regulated_bus!(raw::AbstractDict)
+    number = get(raw, "regulated_bus_number", 0)
+    if !iszero(number)
+        throw(
+            Psy5FormatError(
+                "transformer \"$(get(raw, "name", "<unnamed>"))\": regulated_bus_number=" *
+                "$number has no conversion to TransformerCircuit.regulated_bus",
+            ),
+        )
+    end
+    return nothing
+end
+
 function _circuit_source(raw::AbstractDict)
     source = Dict{String, Any}("__metadata__" => raw["__metadata__"])
     for (key, value) in raw
-        if key in CIRCUIT_FIELDS
+        if key in CIRCUIT_FIELDS && key != "regulated_bus_number"
             source[key] = value
         end
     end
@@ -307,6 +326,7 @@ summed.
 Returns the circuit and the PSY5 keys its control block consumed (see `_control_block`).
 """
 function _build_circuit(raw::AbstractDict, ctx::TranslationContext, alpha::Float64)
+    _check_no_regulated_bus!(raw)
     circuit_id = allocate_id!(ctx.ledger)
     base_power = base_power_for(raw, ctx.system_base)
     objective, bands, consumed =

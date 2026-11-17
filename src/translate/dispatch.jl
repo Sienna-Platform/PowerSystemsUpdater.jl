@@ -292,7 +292,8 @@ PSY5's `SwitchedAdmittance`, mapped as PowerFlowFileParser's PSS/E reader maps t
 
 Where this is known not to reproduce PSY5, the component is reported under approximate
 mappings (`_warn_switched_admittance_approximations`). A non-zero conductance (`real(Y)`) has no
-PSY6 field: `Y` is kept in ext whole.
+PSY6 field: `Y` is kept in ext whole. PSY6 names a remote regulated bus by id, so a zero
+`regulated_bus_number` (no remote bus) is dropped and a non-zero one raises an error.
 """
 function translate(::Val{:SwitchedAdmittance}, raw::AbstractDict, ctx::TranslationContext)
     _warn_switched_admittance_approximations(raw, ctx)
@@ -310,6 +311,15 @@ function translate(::Val{:SwitchedAdmittance}, raw::AbstractDict, ctx::Translati
         renamed["number_engaged"] = pop!(renamed, "initial_status")
     end
     renamed["y_increase"] = pop!(renamed, "Y_increase")
+    regulated_number = pop!(renamed, "regulated_bus_number", 0)
+    if !iszero(regulated_number)
+        throw(
+            Psy5FormatError(
+                "SwitchedAdmittance \"$(raw["name"])\": regulated_bus_number=" *
+                "$regulated_number has no conversion to remote_regulated_bus",
+            ),
+        )
+    end
     limits_field =
         get(SWITCHED_ADMITTANCE_LIMITS_FIELD, get(raw, "control_mode", "FIXED"), nothing)
     if !isnothing(limits_field)
@@ -441,7 +451,8 @@ end
 
 """
 PSY5's VSC `dc_setpoint_*` and `ac_setpoint_*` each hold whichever quantity the converter's
-control mode regulates; PSY6 has one field per quantity, selected by the same mode.
+control mode regulates; PSY6 has one field per quantity, selected by the same mode. An
+`AC_VOLTAGE` setpoint belongs to `ACBus.voltage_setpoint` in PSY6, so it raises an error.
 """
 const VSC_SETPOINT_FIELDS = (
     (
@@ -456,10 +467,7 @@ const VSC_SETPOINT_FIELDS = (
     (
         "ac_setpoint",
         "ac_control",
-        Dict(
-            "AC_VOLTAGE" => "ac_voltage_setpoint",
-            "AC_REACTIVE_POWER" => "power_factor_setpoint",
-        ),
+        Dict("AC_REACTIVE_POWER" => "power_factor_setpoint"),
     ),
 )
 
@@ -472,6 +480,16 @@ function _vsc_setpoints(raw::AbstractDict)
             delete!(derived, "remote_bus_control_$side")
         end
     end
+    for side in ("from", "to")
+        if get(raw, "ac_control_$side", nothing) == "AC_VOLTAGE"
+            throw(
+                Psy5FormatError(
+                    "TwoTerminalVSCLine \"$(get(raw, "name", "<unnamed>"))\": " *
+                    "ac_control_$side=AC_VOLTAGE has no conversion to a converter field",
+                ),
+            )
+        end
+    end
     for side in ("from", "to"), (setpoint, control, targets) in VSC_SETPOINT_FIELDS
         key = "$(setpoint)_$side"
         target = get(targets, string(get(raw, "$(control)_$side", "")), nothing)
@@ -482,29 +500,8 @@ function _vsc_setpoints(raw::AbstractDict)
     return derived
 end
 
-"""
-PSY6 interprets a kV `ac_voltage_setpoint_*` against that side's `rated_ac_voltage_*` ("0.0
-means unspecified"), which PSY5 does not record. The setpoint is converted on the AC bus's
-base voltage (`ArcEndVoltagePU`), so that base is recorded as the rated voltage.
-"""
-function _vsc_rated_ac_voltages(raw::AbstractDict, ctx::TranslationContext)
-    derived = raw
-    for (end_index, side) in ((1, "from"), (2, "to"))
-        if !haskey(raw, "ac_voltage_setpoint_$side") ||
-           haskey(raw, "rated_ac_voltage_$side")
-            continue
-        end
-        kv = arc_end_voltage(component_units(raw, ctx), end_index)
-        if !isnothing(kv)
-            derived = derived === raw ? copy(raw) : derived
-            derived["rated_ac_voltage_$side"] = kv
-        end
-    end
-    return derived
-end
-
 function translate(::Val{:TwoTerminalVSCLine}, raw::AbstractDict, ctx::TranslationContext)
-    derived = _vsc_rated_ac_voltages(_vsc_setpoints(raw), ctx)
+    derived = _vsc_setpoints(raw)
     return direct_translate(
         openapi_type(:TwoTerminalVSCLine),
         _wrap_loss_curves(derived),

@@ -25,6 +25,10 @@ const KNOWN_ROUNDTRIP_GAPS = Dict{String, String}()
 # The two `TModelHVDCLine` entries: PSY6 requires a `base_current` (informational; no field is
 # per-unit on it) which PSY5 does not record and the schema gives no default for. See the
 # `translate(::Val{:TModelHVDCLine}, ...)` header in src/translate/dispatch.jl.
+#
+# `c_sys14_hvdc_vsc`: a `TwoTerminalVSCLine` controls DC voltage with `rated_dc_voltage` of
+# 0.0. PSY5 stores the setpoint per unit of that voltage and PSY6 stores it in kV, so there is
+# no base to convert against.
 const KNOWN_CONVERSION_GAPS = Dict(
     "c_market_bid_cost" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
     "c_sys5_hybrid" => "MarketBidCost.incremental_offer_curves is a time-series pointer",

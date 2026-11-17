@@ -24,14 +24,14 @@ TimeZones = "f269a46b-ccf7-5d73-abea-4c690281aa53"
 InfrastructureSystems = {url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git", rev = "IS4"}
 
 [compat]
-InfrastructureCoreOpenAPIModels = "0.2"
-InfrastructureTimeSeriesOpenAPIModels = "0.2"
-PowerCoreOpenAPIModels = "0.2"
-PowerOperationsOpenAPIModels = "0.2"
+InfrastructureCoreOpenAPIModels = "0.5"
+InfrastructureTimeSeriesOpenAPIModels = "0.5"
+PowerCoreOpenAPIModels = "0.5"
+PowerOperationsOpenAPIModels = "0.5"
 Dates = "1"
 DocStringExtensions = "~0.8, ~0.9"
 HDF5 = "0.17"
-InfraStore = "0.14"
+InfraStore = "0.17"
 InfrastructureSystems = "3.6"
 JSON = "1"
 # Bumped from 0.2: the generated OpenAPI packages now require OpenAPI.jl 1.1's native

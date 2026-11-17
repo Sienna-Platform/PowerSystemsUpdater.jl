@@ -81,13 +81,17 @@ end
     raw = Dict{String, Any}(
         "dc_control_from" => "DC_VOLTAGE", "dc_setpoint_from" => 1.02,
         "dc_control_to" => "DC_POWER", "dc_setpoint_to" => -0.5,
-        "ac_control_from" => "AC_VOLTAGE", "ac_setpoint_from" => 1.01,
+        "ac_control_from" => "AC_REACTIVE_POWER", "ac_setpoint_from" => 1.01,
         "ac_control_to" => "AC_REACTIVE_POWER", "ac_setpoint_to" => 0.95,
     )
     derived = PSU._vsc_setpoints(raw)
     @test derived["dc_voltage_setpoint_from"] == 1.02
     @test derived["dc_power_setpoint_to"] == -0.5
-    @test derived["ac_voltage_setpoint_from"] == 1.01
+    @test derived["power_factor_setpoint_from"] == 1.01
+    # An AC voltage setpoint is the bus's `voltage_setpoint` in PSY6: no converter field.
+    @test_throws PSU.Psy5FormatError PSU._vsc_setpoints(
+        Dict{String, Any}("ac_control_from" => "AC_VOLTAGE", "ac_setpoint_from" => 1.01),
+    )
     @test derived["power_factor_setpoint_to"] == 0.95
     @test !any(
         haskey(derived, k) for
@@ -101,7 +105,7 @@ end
     @test PSU._vsc_setpoints(Dict{String, Any}("remote_bus_control_to" => 7))["remote_bus_control_to"] ==
           7
 
-    # Units: DC voltage on `rated_dc_voltage`, AC voltage on each converter's own bus.
+    # Units: DC voltage on `rated_dc_voltage`.
     index = PSU.BusIndex(
         Dict("uuid-b1" => 230.0, "uuid-b2" => 138.0),
         Dict("uuid-arc" => ("uuid-b1", "uuid-b2")),
@@ -115,8 +119,6 @@ end
         "rated_dc_voltage" => 500.0,
         "dc_voltage_setpoint_from" => 1.02,
         "dc_power_setpoint_to" => -0.5,
-        "ac_voltage_setpoint_from" => 1.01,
-        "ac_voltage_setpoint_to" => 0.99,
     )
     kwargs = PSU.build_kwargs(
         TwoTerminalVSCLine, raw, ctx.ledger, ctx.report;
@@ -124,14 +126,7 @@ end
     )
     @test kwargs[:dc_voltage_setpoint_from] ≈ 510.0
     @test kwargs[:dc_power_setpoint_to] ≈ -0.5        # pu on the system base, unchanged
-    @test kwargs[:ac_voltage_setpoint_from] ≈ 1.01 * 230.0
-    @test kwargs[:ac_voltage_setpoint_to] ≈ 0.99 * 138.0
     @test isempty(ctx.report.unverified_units)
-
-    # The AC bus base the setpoint was converted on is recorded as each side's rated voltage.
-    rated = PSU._vsc_rated_ac_voltages(raw, ctx)
-    @test rated["rated_ac_voltage_from"] == 230.0
-    @test rated["rated_ac_voltage_to"] == 138.0
 end
 
 @testset "ImpedanceCorrectionData curve → per-mode field" begin
