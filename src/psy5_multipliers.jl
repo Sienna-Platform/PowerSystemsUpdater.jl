@@ -70,8 +70,9 @@ function _standard_load_active(raw::AbstractDict)
            _field(raw, "max_current_active_power")
 end
 
-_generic_active(raw::AbstractDict) =
-    _field_or_limits_max(raw, "max_active_power", "active_power_limits")
+function _generic_active(raw::AbstractDict)
+    return _field_or_limits_max(raw, "max_active_power", "active_power_limits")
+end
 
 function _renewable_reactive(raw::AbstractDict)
     return _field(raw, "rating") * sin(acos(_field(raw, "power_factor")))
@@ -84,8 +85,9 @@ function _renewable_dispatch_reactive(raw::AbstractDict)
     return _renewable_reactive(raw)
 end
 
-_generic_reactive(raw::AbstractDict) =
-    _field_or_limits_max(raw, "max_reactive_power", "reactive_power_limits")
+function _generic_reactive(raw::AbstractDict)
+    return _field_or_limits_max(raw, "max_reactive_power", "reactive_power_limits")
+end
 
 const MAX_ACTIVE_POWER_RULES = Dict{String, Function}(
     "RenewableDispatch" => _renewable_active,
@@ -99,14 +101,18 @@ const MAX_REACTIVE_POWER_RULES = Dict{String, Function}(
     "RenewableDispatch" => _renewable_dispatch_reactive,
 )
 
-_factor(::MaxActivePower, raw::AbstractDict, ::Float64) =
-    get(MAX_ACTIVE_POWER_RULES, component_type(raw), _generic_active)(raw)
-_factor(::MaxReactivePower, raw::AbstractDict, ::Float64) =
-    get(MAX_REACTIVE_POWER_RULES, component_type(raw), _generic_reactive)(raw)
-_factor(::Requirement, raw::AbstractDict, system_base::Float64) =
-    _field(raw, "requirement") * system_base
-_factor(::PeakActivePower, raw::AbstractDict, system_base::Float64) =
-    _field(raw, "peak_active_power") * system_base
+function _factor(::MaxActivePower, raw::AbstractDict, ::Float64)
+    return get(MAX_ACTIVE_POWER_RULES, component_type(raw), _generic_active)(raw)
+end
+function _factor(::MaxReactivePower, raw::AbstractDict, ::Float64)
+    return get(MAX_REACTIVE_POWER_RULES, component_type(raw), _generic_reactive)(raw)
+end
+function _factor(::Requirement, raw::AbstractDict, system_base::Float64)
+    return _field(raw, "requirement") * system_base
+end
+function _factor(::PeakActivePower, raw::AbstractDict, system_base::Float64)
+    return _field(raw, "peak_active_power") * system_base
+end
 _factor(::ReservoirMultiplier, ::AbstractDict, ::Float64) = 1.0
 
 """
@@ -133,9 +139,12 @@ function scale_factor(m::Psy5Multiplier, raw::AbstractDict, system_base::Float64
     return factor
 end
 
-store_labels(::MaxActivePower) =
-    (units = nothing, quantity_kind = "ActivePower", per_unit_of = "base_power")
-store_labels(::MaxReactivePower) =
-    (units = nothing, quantity_kind = "ReactivePower", per_unit_of = "base_power")
-store_labels(::Union{Requirement, PeakActivePower}) =
-    (units = "MW", quantity_kind = "ActivePower", per_unit_of = nothing)
+function store_labels(::MaxActivePower)
+    return (units = nothing, quantity_kind = "ActivePower", per_unit_of = "base_power")
+end
+function store_labels(::MaxReactivePower)
+    return (units = nothing, quantity_kind = "ReactivePower", per_unit_of = "base_power")
+end
+function store_labels(::Union{Requirement, PeakActivePower})
+    return (units = "MW", quantity_kind = "ActivePower", per_unit_of = nothing)
+end

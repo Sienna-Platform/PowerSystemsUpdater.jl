@@ -105,15 +105,10 @@
             "get_peak_active_power", "get_requirement", "get_storage_capacity",
             "get_storage_target",
         ]
-        @test PSU.psy5_multiplier("get_requirement") isa PSU.Requirement
-        @test PSU.psy5_multiplier("get_inflow") isa PSU.ReservoirMultiplier
-        err = try
-            PSU.psy5_multiplier("get_bogus")
-        catch e
-            e
-        end
-        @test err isa PSU.Psy5FormatError
-        @test occursin("get_bogus", err.msg)
+        @test PSU.psy5_multiplier("get_requirement") === PSU.Requirement()
+        @test PSU.psy5_multiplier("get_inflow") === PSU.ReservoirMultiplier()
+        @test_throws PSU.Psy5FormatError PSU.psy5_multiplier("get_bogus")
+        @test_throws r"get_bogus" PSU.psy5_multiplier("get_bogus")
     end
 
     @testset "store_labels" begin
