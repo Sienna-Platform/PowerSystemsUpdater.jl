@@ -372,7 +372,12 @@ end
 Multiply the stored array by the declaration's factor. A factor of exactly 1.0 returns the
 array itself, so the bytes and the content hash stay.
 """
-function _scale_values(::ScalarLayout, array::AbstractArray, declaration::StoreDeclaration)
+function _scale_values(
+    ::ScalarLayout,
+    array::AbstractArray,
+    declaration::StoreDeclaration,
+    ::AbstractDict,
+)
     if isone(declaration.factor)
         return array
     end
@@ -383,12 +388,15 @@ function _scale_values(
     ::PiecewiseStepLayout,
     array::AbstractArray,
     declaration::StoreDeclaration,
+    row::AbstractDict,
 )
     if declaration.scaled
         throw(
             Psy5FormatError(
                 "a scaling factor multiplier on a piecewise-step series has no scalar " *
-                "to multiply",
+                "to multiply (owner_type=$(row["owner_type"]) " *
+                "owner_uuid=$(row["owner_uuid"]) name=$(row["name"]) " *
+                "multiplier=$(_scaling_factor_multiplier(row)))",
             ),
         )
     end
@@ -465,7 +473,7 @@ function _stage_time_series!(
     declaration = _declaration(
         _scaling_factor_multiplier(row), row, owners, system_base, report,
     )
-    array = _scale_values(layout, values, declaration)
+    array = _scale_values(layout, values, declaration, row)
     series = InfraStore.SingleTimeSeries(
         _psy5_initial_timestamp(row),
         _required_duration(row, "resolution"),
@@ -504,7 +512,7 @@ function _stage_time_series!(
     declaration = _declaration(
         _scaling_factor_multiplier(row), row, owners, system_base, report,
     )
-    array = _scale_values(layout, values, declaration)
+    array = _scale_values(layout, values, declaration, row)
     series = InfraStore.Deterministic(
         _psy5_initial_timestamp(row),
         _required_duration(row, "resolution"),
@@ -689,20 +697,19 @@ function _drop_unscaled_rows(
     system_base::Float64,
     report::ConversionReport,
 ) where {R <: AbstractDict}
+    multipliers = [_scaling_factor_multiplier(row) for row in rows]
     unscaled = [
-        !_has_scale(_scaling_factor_multiplier(row), row, owners, system_base) for
-        row in rows
+        !_has_scale(name, row, owners, system_base) for
+        (row, name) in zip(rows, multipliers)
     ]
     names = Dict{Tuple{String, String}, String}(
-        _row_identity(row) => _scaling_factor_multiplier(row) for
-        (row, gone) in zip(rows, unscaled) if gone
+        _row_identity(row) => name for
+        (row, name, gone) in zip(rows, multipliers, unscaled) if gone
     )
     kept = R[]
-    for (row, gone) in zip(rows, unscaled)
+    for (row, name, gone) in zip(rows, multipliers, unscaled)
         if gone
-            record_dropped_time_series!(
-                report, string(row["owner_type"]), _scaling_factor_multiplier(row),
-            )
+            record_dropped_time_series!(report, string(row["owner_type"]), name)
         elseif _follows_source(_time_series_kind(row)) &&
                haskey(names, _row_identity(row))
             record_dropped_time_series!(

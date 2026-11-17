@@ -271,6 +271,7 @@ end
 # ── Scale, label, drop ─────────────────────────────────────────────────────────
 
 const MAX_ACTIVE_MARKER = """{"__metadata__":{"module":"PowerSystems","function":"get_max_active_power"}}"""
+const INFLOW_MARKER = """{"__metadata__":{"module":"PowerSystems","function":"get_inflow"}}"""
 const REQUIREMENT_MARKER = """{"__metadata__":{"module":"PowerSystems","function":"get_requirement"}}"""
 
 function synthetic_owner(type_name, uuid, fields)
@@ -282,11 +283,22 @@ function synthetic_owner(type_name, uuid, fields)
     )
 end
 
-function synthetic_row(id, uuid, owner_uuid, owner_type, marker; name = "ts")
+function synthetic_row(
+    id,
+    uuid,
+    owner_uuid,
+    owner_type,
+    marker;
+    name = "ts",
+    type = "SingleTimeSeries",
+    horizon = nothing,
+    interval = nothing,
+    window_count = nothing,
+)
     return Dict{String, Any}(
-        "id" => id, "time_series_uuid" => uuid, "time_series_type" => "SingleTimeSeries",
+        "id" => id, "time_series_uuid" => uuid, "time_series_type" => type,
         "initial_timestamp" => "2020-01-01T00:00:00", "resolution" => "P0DT1H",
-        "horizon" => nothing, "interval" => nothing, "window_count" => nothing,
+        "horizon" => horizon, "interval" => interval, "window_count" => window_count,
         "length" => 3, "name" => name, "owner_uuid" => owner_uuid,
         "owner_type" => owner_type, "owner_category" => "Component",
         "features" => "[]", "scaling_factor_multiplier" => marker, "units" => nothing,
@@ -356,6 +368,7 @@ end
         "u-res" =>
             synthetic_owner("VariableReserve", "u-res", Dict("requirement" => 0.5)),
         "u-adm" => synthetic_owner("FixedAdmittance", "u-adm", Dict()),
+        "u-hyd" => synthetic_owner("HydroReservoir", "u-hyd", Dict()),
     )
     profile = [0.2, 0.4, 0.8]
     rows = [
@@ -363,8 +376,38 @@ end
         synthetic_row(2, "ts-unit", "u-unit", "ThermalStandard", MAX_ACTIVE_MARKER),
         synthetic_row(3, "ts-res", "u-res", "VariableReserve", REQUIREMENT_MARKER),
         synthetic_row(4, "ts-adm", "u-adm", "FixedAdmittance", MAX_ACTIVE_MARKER),
+        synthetic_row(
+            5, "fc-adm", "u-adm", "FixedAdmittance", MAX_ACTIVE_MARKER;
+            name = "fc", type = "Deterministic", horizon = "P0DT2H",
+            interval = "P0DT1H",
+            window_count = 2,
+        ),
+        synthetic_row(
+            6, "dst-adm", "u-adm", "FixedAdmittance", nothing;
+            name = "ts", type = "DeterministicSingleTimeSeries", horizon = "P0DT2H",
+            interval = "P0DT1H",
+        ),
+        synthetic_row(
+            7, "fc-gen", "u-gen", "ThermalStandard", MAX_ACTIVE_MARKER;
+            name = "fc", type = "Deterministic", horizon = "P0DT2H",
+            interval = "P0DT1H",
+            window_count = 2,
+        ),
+        synthetic_row(
+            8,
+            "ts-hyd",
+            "u-hyd",
+            "HydroReservoir",
+            INFLOW_MARKER;
+            name = "inflow",
+        ),
     ]
-    arrays = Dict(r["time_series_uuid"] => profile for r in rows)
+    windows = [0.2 0.4; 0.6 0.8]
+    arrays = Dict(
+        r["time_series_uuid"] =>
+            (r["time_series_type"] == "Deterministic" ? windows : profile)
+        for r in rows
+    )
     mktempdir() do tmp
         case, ledger = synthetic_case(tmp, rows, arrays, owners)
         out = joinpath(tmp, "out")
@@ -372,21 +415,23 @@ end
         report = PSU.ConversionReport()
         _, associations = PSU.convert_time_series(case, ledger, out, report)
         entries = catalog_entries(out)
-        @test length(entries) == 3
-        @test length(associations) == 3
+        @test length(entries) == 5
+        @test length(associations) == 5
 
         store = InfraStore.open_store(
             joinpath(out, PSU.TIME_SERIES_FILENAME); read_only = true,
         )
         try
-            by_owner = Dict(e.owner_id => e for e in entries)
-            gen = by_owner[PSU.lookup_id(ledger, "u-gen")]
+            by_owner = Dict(
+                (e.owner_id, e.name) => e for e in entries
+            )
+            gen = by_owner[(PSU.lookup_id(ledger, "u-gen"), "ts")]
             @test InfraStore.read_by_id(store, gen.id).data == profile .* 0.25
             @test gen.per_unit_of == "base_power"
             @test gen.unit_system === InfraStore.ComponentBase
             @test gen.quantity_kind == "ActivePower"
 
-            unit = by_owner[PSU.lookup_id(ledger, "u-unit")]
+            unit = by_owner[(PSU.lookup_id(ledger, "u-unit"), "ts")]
             @test InfraStore.read_by_id(store, unit.id).data == profile
             plain = InfraStore.Store(; path = joinpath(tmp, "plain.h5"), overwrite = true)
             try
@@ -404,22 +449,30 @@ end
                 InfraStore.close!(plain)
             end
 
-            res = by_owner[PSU.lookup_id(ledger, "u-res")]
+            res = by_owner[(PSU.lookup_id(ledger, "u-res"), "ts")]
             @test InfraStore.read_by_id(store, res.id).data == profile .* 50.0
             @test res.units == "MW"
             @test isnothing(res.per_unit_of)
             @test res.unit_system === InfraStore.NaturalUnits
+
+            forecast = by_owner[(PSU.lookup_id(ledger, "u-gen"), "fc")]
+            @test InfraStore.read_by_id(store, forecast.id).data == windows .* 0.25
+
+            inflow = by_owner[(PSU.lookup_id(ledger, "u-hyd"), "inflow")]
+            @test InfraStore.read_by_id(store, inflow.id).data == profile
+            @test inflow.unit_system === InfraStore.ComponentBase
+            @test isnothing(inflow.per_unit_of)
         finally
             InfraStore.close!(store)
         end
 
         @test report.dropped_time_series ==
-              Dict(("FixedAdmittance", "get_max_active_power") => 1)
+              Dict(("FixedAdmittance", "get_max_active_power") => 3)
         @test PSU.has_findings(report)
     end
 
     # A multiplier on a piecewise layout has no scalar to multiply.
-    @test_throws PSU.Psy5FormatError PSU._scale_values(
+    piecewise_scale() = PSU._scale_values(
         PSU.PiecewiseStepLayout(),
         zeros(2, 4),
         PSU._declaration(
@@ -429,5 +482,10 @@ end
             100.0,
             PSU.ConversionReport(),
         ),
+        rows[1],
     )
+    for part in ("ThermalStandard", "u-gen", "name=ts", "get_max_active_power")
+        @test_throws part piecewise_scale()
+    end
+    @test_throws PSU.Psy5FormatError piecewise_scale()
 end
