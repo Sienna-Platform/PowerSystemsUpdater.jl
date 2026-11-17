@@ -8,6 +8,8 @@ Base.@kwdef mutable struct ConversionReport
     cascaded_skips::Dict{String, Int} = Dict{String, Int}()
     unmapped_fields::Dict{Tuple{String, String}, Int} =
         Dict{Tuple{String, String}, Int}()
+    dropped_time_series::Dict{Tuple{String, String}, Int} =
+        Dict{Tuple{String, String}, Int}()
     systems::Vector{String} = String[]
 end
 
@@ -28,10 +30,17 @@ record_unmapped_field!(
     field::AbstractString,
 ) = _bump!(report.unmapped_fields, (String(type_name), String(field)))
 
+record_dropped_time_series!(
+    report::ConversionReport,
+    owner_type::AbstractString,
+    multiplier_name::AbstractString,
+) = _bump!(report.dropped_time_series, (String(owner_type), String(multiplier_name)))
+
 function has_findings(report::ConversionReport)
     return !isempty(report.unmapped_types) ||
            !isempty(report.cascaded_skips) ||
-           !isempty(report.unmapped_fields)
+           !isempty(report.unmapped_fields) ||
+           !isempty(report.dropped_time_series)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
@@ -41,6 +50,10 @@ function Base.show(io::IO, ::MIME"text/plain", report::ConversionReport)
     _show_section(
         io, "UNMAPPED FIELDS", report.unmapped_fields;
         label = key -> "$(key[1]).$(key[2])",
+    )
+    _show_section(
+        io, "DROPPED TIME SERIES (no PSY5 scale)", report.dropped_time_series;
+        label = key -> "$(key[1]) $(key[2])",
     )
     if !has_findings(report)
         println(io, "  no findings")

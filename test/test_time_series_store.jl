@@ -221,7 +221,11 @@ end
                 scaled = filter(m -> !isnothing(m.unit_system), metadata)
                 @test !isempty(scaled)
                 for entry in scaled
-                    @test entry.unit_system === InfraStore.ComponentBase
+                    if entry.units == "MW"
+                        @test entry.unit_system === InfraStore.NaturalUnits
+                    else
+                        @test entry.unit_system === InfraStore.ComponentBase
+                    end
                 end
                 for entry in metadata
                     @test entry.owner_id > 0
@@ -262,4 +266,168 @@ end
             end
         end
     end
+end
+
+# ── Scale, label, drop ─────────────────────────────────────────────────────────
+
+const MAX_ACTIVE_MARKER = """{"__metadata__":{"module":"PowerSystems","function":"get_max_active_power"}}"""
+const REQUIREMENT_MARKER = """{"__metadata__":{"module":"PowerSystems","function":"get_requirement"}}"""
+
+function synthetic_owner(type_name, uuid, fields)
+    return Dict{String, Any}(
+        "__metadata__" => Dict("type" => type_name),
+        "internal" => Dict("uuid" => Dict("value" => uuid)),
+        "name" => uuid,
+        fields...,
+    )
+end
+
+function synthetic_row(id, uuid, owner_uuid, owner_type, marker; name = "ts")
+    return Dict{String, Any}(
+        "id" => id, "time_series_uuid" => uuid, "time_series_type" => "SingleTimeSeries",
+        "initial_timestamp" => "2020-01-01T00:00:00", "resolution" => "P0DT1H",
+        "horizon" => nothing, "interval" => nothing, "window_count" => nothing,
+        "length" => 3, "name" => name, "owner_uuid" => owner_uuid,
+        "owner_type" => owner_type, "owner_category" => "Component",
+        "features" => "[]", "scaling_factor_multiplier" => marker, "units" => nothing,
+    )
+end
+
+"""
+Write a PSY5 sidecar holding `rows` and one array per row UUID, and return a `Psy5Case` over
+`owners`, with every owner assigned an id in the returned ledger.
+"""
+function synthetic_case(dir, rows, arrays, owners; base = 100.0)
+    path = joinpath(dir, "ts_psy5.h5")
+    db_path = joinpath(dir, "assoc.sqlite")
+    db = PSU.SQLite.DB(db_path)
+    columns = collect(keys(first(rows)))
+    PSU.SQLite.DBInterface.execute(
+        db,
+        "CREATE TABLE time_series_associations (" * join(columns, ", ") * ")",
+    )
+    for row in rows
+        PSU.SQLite.DBInterface.execute(
+            db,
+            "INSERT INTO time_series_associations VALUES (" *
+            join(fill("?", length(columns)), ", ") * ")",
+            [row[c] for c in columns],
+        )
+    end
+    PSU.SQLite.DBInterface.close!(db)
+    PSU.HDF5.h5open(path, "w") do file
+        file[PSU.PSY5_TS_METADATA_ROOT_PATH] = read(db_path)
+        group = PSU.HDF5.create_group(file, PSU.PSY5_TS_ROOT_PATH)
+        for (uuid, data) in arrays
+            sub = PSU.HDF5.create_group(group, uuid)
+            sub["data"] = data
+            PSU.HDF5.attributes(sub)["data_type"] = "CONSTANT"
+        end
+    end
+    raw = Dict{String, Any}(
+        "units_settings" => Dict("base_value" => base),
+        "data" => Dict("components" => collect(values(owners))),
+    )
+    ledger = PSU.Ledger()
+    for uuid in keys(owners)
+        PSU.assign_id!(ledger, uuid)
+    end
+    return PSU.Psy5Case(raw, path, path), ledger
+end
+
+function catalog_entries(out)
+    catalog =
+        InfraStore.open_store(joinpath(out, PSU.TIME_SERIES_FILENAME); read_only = true)
+    try
+        return InfraStore.list_metadata(catalog)
+    finally
+        InfraStore.close!(catalog)
+    end
+end
+
+@testset "time series scale, label, drop" begin
+    owners = Dict(
+        "u-gen" => synthetic_owner(
+            "ThermalStandard", "u-gen", Dict("max_active_power" => 0.25),
+        ),
+        "u-unit" => synthetic_owner(
+            "ThermalStandard", "u-unit", Dict("max_active_power" => 1.0),
+        ),
+        "u-res" =>
+            synthetic_owner("VariableReserve", "u-res", Dict("requirement" => 0.5)),
+        "u-adm" => synthetic_owner("FixedAdmittance", "u-adm", Dict()),
+    )
+    profile = [0.2, 0.4, 0.8]
+    rows = [
+        synthetic_row(1, "ts-gen", "u-gen", "ThermalStandard", MAX_ACTIVE_MARKER),
+        synthetic_row(2, "ts-unit", "u-unit", "ThermalStandard", MAX_ACTIVE_MARKER),
+        synthetic_row(3, "ts-res", "u-res", "VariableReserve", REQUIREMENT_MARKER),
+        synthetic_row(4, "ts-adm", "u-adm", "FixedAdmittance", MAX_ACTIVE_MARKER),
+    ]
+    arrays = Dict(r["time_series_uuid"] => profile for r in rows)
+    mktempdir() do tmp
+        case, ledger = synthetic_case(tmp, rows, arrays, owners)
+        out = joinpath(tmp, "out")
+        mkpath(out)
+        report = PSU.ConversionReport()
+        _, associations = PSU.convert_time_series(case, ledger, out, report)
+        entries = catalog_entries(out)
+        @test length(entries) == 3
+        @test length(associations) == 3
+
+        store = InfraStore.open_store(
+            joinpath(out, PSU.TIME_SERIES_FILENAME); read_only = true,
+        )
+        try
+            by_owner = Dict(e.owner_id => e for e in entries)
+            gen = by_owner[PSU.lookup_id(ledger, "u-gen")]
+            @test InfraStore.read_by_id(store, gen.id).data == profile .* 0.25
+            @test gen.per_unit_of == "base_power"
+            @test gen.unit_system === InfraStore.ComponentBase
+            @test gen.quantity_kind == "ActivePower"
+
+            unit = by_owner[PSU.lookup_id(ledger, "u-unit")]
+            @test InfraStore.read_by_id(store, unit.id).data == profile
+            plain = InfraStore.Store(; path = joinpath(tmp, "plain.h5"), overwrite = true)
+            try
+                InfraStore.add_time_series!(
+                    plain, 1, "ThermalStandard", InfraStore.Component,
+                    InfraStore.SingleTimeSeries(
+                        Dates.DateTime(2020, 1, 1), Dates.Hour(1), profile, "ts";
+                        unit_system = InfraStore.ComponentBase,
+                        quantity_kind = "ActivePower", per_unit_of = "base_power",
+                    ),
+                )
+                InfraStore.flush!(plain)
+                @test only(InfraStore.list_metadata(plain)).data_hash == unit.data_hash
+            finally
+                InfraStore.close!(plain)
+            end
+
+            res = by_owner[PSU.lookup_id(ledger, "u-res")]
+            @test InfraStore.read_by_id(store, res.id).data == profile .* 50.0
+            @test res.units == "MW"
+            @test isnothing(res.per_unit_of)
+            @test res.unit_system === InfraStore.NaturalUnits
+        finally
+            InfraStore.close!(store)
+        end
+
+        @test report.dropped_time_series ==
+              Dict(("FixedAdmittance", "get_max_active_power") => 1)
+        @test PSU.has_findings(report)
+    end
+
+    # A multiplier on a piecewise layout has no scalar to multiply.
+    @test_throws PSU.Psy5FormatError PSU._scale_values(
+        PSU.PiecewiseStepLayout(),
+        zeros(2, 4),
+        PSU._declaration(
+            "get_max_active_power",
+            rows[1],
+            Dict{String, Any}("u-gen" => owners["u-gen"]),
+            100.0,
+            PSU.ConversionReport(),
+        ),
+    )
 end

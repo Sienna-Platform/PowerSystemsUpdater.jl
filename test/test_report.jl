@@ -25,3 +25,16 @@ end
 @testset "report shows empty state" begin
     @test occursin("no findings", sprint(show, MIME("text/plain"), PSU.ConversionReport()))
 end
+
+@testset "report dropped time series" begin
+    rep = PSU.ConversionReport()
+    @test !PSU.has_findings(rep)
+    PSU.record_dropped_time_series!(rep, "FixedAdmittance", "get_max_active_power")
+    PSU.record_dropped_time_series!(rep, "FixedAdmittance", "get_max_active_power")
+    @test PSU.has_findings(rep)
+    @test rep.dropped_time_series[("FixedAdmittance", "get_max_active_power")] == 2
+    text = sprint(show, MIME("text/plain"), rep)
+    @test occursin("DROPPED TIME SERIES (no PSY5 scale)", text)
+    @test occursin("FixedAdmittance", text)
+    @test occursin("x2", text)
+end

@@ -262,12 +262,13 @@ function _owner_category(row::AbstractDict)
 end
 
 """
-The basis InfraStore records for values a PSY5 multiplier normalized — the store's own
-spelling of the `COMPONENT_BASE` the document's association row declares: a multiplier means
-the values are per-unit on the owner's own base.
+The basis InfraStore records for the labels a series carries, the store's own spelling of the
+unit system the document's association row declares. A `per_unit_of` label means the values
+are per unit on the component base. With only `units`, the values are in natural units.
 """
-_store_unit_system(::Nothing) = nothing
-_store_unit_system(::AbstractString) = InfraStore.ComponentBase
+_store_unit_system(per_unit_of::AbstractString, ::Union{Nothing, AbstractString}) =
+    InfraStore.ComponentBase
+_store_unit_system(::Nothing, ::AbstractString) = InfraStore.NaturalUnits
 
 """
 The store's feature dictionary for a row, which is always empty.
@@ -278,6 +279,121 @@ through [`convert_time_series`](@ref) keeps the same guarantee — features are 
 series' identity in InfraStore, so a dropped one would silently rename the series.
 """
 _store_features(row::AbstractDict) = _features(row)
+
+"""
+What one row writes to the store: the factor that multiplies its array and the four labels.
+`scaled` is `true` when the row has a PSY5 multiplier.
+"""
+struct StoreDeclaration
+    scaled::Bool
+    factor::Float64
+    units::Union{Nothing, String}
+    quantity_kind::Union{Nothing, String}
+    unit_system::Union{Nothing, InfraStore.UnitSystem}
+    per_unit_of::Union{Nothing, String}
+end
+
+function _owner_raw(owners::AbstractDict, row::AbstractDict)
+    uuid = string(row["owner_uuid"])
+    if !haskey(owners, uuid)
+        throw(
+            Psy5FormatError(
+                "association id=$(row["id"]) has a scaling factor multiplier but its owner " *
+                "$uuid (owner_type=$(row["owner_type"])) is not a PSY5 component",
+            ),
+        )
+    end
+    return owners[uuid]
+end
+
+function _declaration(
+    ::Nothing,
+    row::AbstractDict,
+    ::AbstractDict,
+    ::Float64,
+    ::ConversionReport,
+)
+    return StoreDeclaration(
+        false, 1.0, _optional_string_field(row, "units"), nothing, nothing, nothing,
+    )
+end
+
+function _declaration(
+    name::AbstractString,
+    row::AbstractDict,
+    owners::AbstractDict,
+    system_base::Float64,
+    report::ConversionReport,
+)
+    return _declaration(
+        psy5_multiplier(name), name, row, _owner_raw(owners, row), system_base, report,
+    )
+end
+
+# Reservoir multipliers keep the labels PSU wrote before it scaled any series.
+function _declaration(
+    ::ReservoirMultiplier,
+    name::AbstractString,
+    row::AbstractDict,
+    ::AbstractDict,
+    ::Float64,
+    report::ConversionReport,
+)
+    return StoreDeclaration(
+        true,
+        1.0,
+        _optional_string_field(row, "units"),
+        _quantity_kind(name, row, report),
+        InfraStore.ComponentBase,
+        nothing,
+    )
+end
+
+function _declaration(
+    m::Psy5Multiplier,
+    ::AbstractString,
+    ::AbstractDict,
+    owner::AbstractDict,
+    system_base::Float64,
+    ::ConversionReport,
+)
+    labels = store_labels(m)
+    return StoreDeclaration(
+        true,
+        scale_factor(m, owner, system_base),
+        labels.units,
+        labels.quantity_kind,
+        _store_unit_system(labels.per_unit_of, labels.units),
+        labels.per_unit_of,
+    )
+end
+
+"""
+Multiply the stored array by the declaration's factor. A factor of exactly 1.0 returns the
+array itself, so the bytes and the content hash stay.
+"""
+function _scale_values(::ScalarLayout, array::AbstractArray, declaration::StoreDeclaration)
+    if isone(declaration.factor)
+        return array
+    end
+    return array .* declaration.factor
+end
+
+function _scale_values(
+    ::PiecewiseStepLayout,
+    array::AbstractArray,
+    declaration::StoreDeclaration,
+)
+    if declaration.scaled
+        throw(
+            Psy5FormatError(
+                "a scaling factor multiplier on a piecewise-step series has no scalar " *
+                "to multiply",
+            ),
+        )
+    end
+    return array
+end
 
 # ── Staging one association ─────────────────────────────────────────────────────
 
@@ -327,11 +443,12 @@ end
 """
 Stage one association's array onto `batch`.
 
-`units`, `quantity_kind` and `unit_system` are the same three declarations the document's
-`TimeSeriesAssociation` carries, written into the catalog because that is the copy PSY6's
+`units`, `quantity_kind`, `unit_system` and `per_unit_of` are the same four declarations the
+document's `TimeSeriesAssociation` carries, written into the catalog because that is the copy PSY6's
 importer reads: it adopts the sidecar's catalog as the System's store rather than replaying
 the document's rows. InfraStore has always spelled it `quantity_kind`, so unlike the document
-side this needs no rename.
+side this needs no rename. The array is multiplied by the factor of the row's PSY5
+multiplier, computed from the raw owner in `owners`; `psy5_multipliers.jl` states the rules.
 """
 function _stage_time_series!(
     ::SingleKind,
@@ -339,20 +456,26 @@ function _stage_time_series!(
     file::HDF5.File,
     row::AbstractDict,
     owner_id::Int,
+    owners::AbstractDict,
+    system_base::Float64,
     report::ConversionReport,
 )
     data, layout = _legacy_array(file, row)
-    array, element_type = _static_values(layout, data)
-    multiplier = _scaling_factor_multiplier(row)
+    values, element_type = _static_values(layout, data)
+    declaration = _declaration(
+        _scaling_factor_multiplier(row), row, owners, system_base, report,
+    )
+    array = _scale_values(layout, values, declaration)
     series = InfraStore.SingleTimeSeries(
         _psy5_initial_timestamp(row),
         _required_duration(row, "resolution"),
         array,
         string(row["name"]);
         element_type = element_type,
-        units = _optional_string_field(row, "units"),
-        quantity_kind = _quantity_kind(multiplier, row, report),
-        unit_system = _store_unit_system(multiplier),
+        units = declaration.units,
+        quantity_kind = declaration.quantity_kind,
+        unit_system = declaration.unit_system,
+        per_unit_of = declaration.per_unit_of,
     )
     InfraStore.add_time_series!(
         batch,
@@ -371,12 +494,17 @@ function _stage_time_series!(
     file::HDF5.File,
     row::AbstractDict,
     owner_id::Int,
+    owners::AbstractDict,
+    system_base::Float64,
     report::ConversionReport,
 )
     data, layout = _legacy_array(file, row)
-    array, element_type = _window_values(layout, data)
-    windows = _window_count(row, size(array, 2))
-    multiplier = _scaling_factor_multiplier(row)
+    values, element_type = _window_values(layout, data)
+    windows = _window_count(row, size(values, 2))
+    declaration = _declaration(
+        _scaling_factor_multiplier(row), row, owners, system_base, report,
+    )
+    array = _scale_values(layout, values, declaration)
     series = InfraStore.Deterministic(
         _psy5_initial_timestamp(row),
         _required_duration(row, "resolution"),
@@ -386,9 +514,10 @@ function _stage_time_series!(
         array,
         string(row["name"]);
         element_type = element_type,
-        units = _optional_string_field(row, "units"),
-        quantity_kind = _quantity_kind(multiplier, row, report),
-        unit_system = _store_unit_system(multiplier),
+        units = declaration.units,
+        quantity_kind = declaration.quantity_kind,
+        unit_system = declaration.unit_system,
+        per_unit_of = declaration.per_unit_of,
     )
     InfraStore.add_time_series!(
         batch,
@@ -409,6 +538,8 @@ function _stage_time_series!(
     ::HDF5.File,
     ::AbstractDict,
     ::Int,
+    ::AbstractDict,
+    ::Float64,
     ::ConversionReport,
 )
     return nothing
@@ -528,6 +659,62 @@ function _association_identities(rows::AbstractVector{<:AbstractDict})
     return identities
 end
 
+# ── Dropping rows with no scale ─────────────────────────────────────────────────
+
+_has_scale(::Nothing, ::AbstractDict, ::AbstractDict, ::Float64) = true
+
+function _has_scale(
+    name::AbstractString,
+    row::AbstractDict,
+    owners::AbstractDict,
+    system_base::Float64,
+)
+    return has_scale_factor(psy5_multiplier(name), _owner_raw(owners, row), system_base)
+end
+
+# A derived forecast shares the array of its `SingleTimeSeries`, so it goes with its source.
+_follows_source(::DerivedDeterministicKind) = true
+_follows_source(::Psy5TimeSeriesKind) = false
+
+_row_identity(row::AbstractDict) = (String(row["owner_uuid"]), String(row["name"]))
+
+"""
+Remove the rows whose PSY5 multiplier has no value for the owner, and the derived forecasts
+with the same `(owner, name)`. PSY5 could not read these series. Each removed row adds one
+entry to `report.dropped_time_series`, keyed by the owner type and the multiplier name.
+"""
+function _drop_unscaled_rows(
+    rows::AbstractVector{R},
+    owners::AbstractDict,
+    system_base::Float64,
+    report::ConversionReport,
+) where {R <: AbstractDict}
+    unscaled = [
+        !_has_scale(_scaling_factor_multiplier(row), row, owners, system_base) for
+        row in rows
+    ]
+    names = Dict{Tuple{String, String}, String}(
+        _row_identity(row) => _scaling_factor_multiplier(row) for
+        (row, gone) in zip(rows, unscaled) if gone
+    )
+    kept = R[]
+    for (row, gone) in zip(rows, unscaled)
+        if gone
+            record_dropped_time_series!(
+                report, string(row["owner_type"]), _scaling_factor_multiplier(row),
+            )
+        elseif _follows_source(_time_series_kind(row)) &&
+               haskey(names, _row_identity(row))
+            record_dropped_time_series!(
+                report, string(row["owner_type"]), names[_row_identity(row)],
+            )
+        else
+            push!(kept, row)
+        end
+    end
+    return kept
+end
+
 # ── Entry point ─────────────────────────────────────────────────────────────────
 
 """
@@ -554,10 +741,17 @@ function convert_time_series(
     report::ConversionReport,
 )
     destination = joinpath(out_dir, TIME_SERIES_FILENAME)
-    rows = [
-        row for row in read_associations(case.time_series_path) if
-        owner_translated(ledger, row)
-    ]
+    owners = Dict{String, Any}(component_uuid(raw) => raw for raw in all_components(case))
+    system_base = system_base_power(case)
+    rows = _drop_unscaled_rows(
+        [
+            row for row in read_associations(case.time_series_path) if
+            owner_translated(ledger, row)
+        ],
+        owners,
+        system_base,
+        report,
+    )
     raw_store = InfraStore.Store(; path = destination, in_memory = false, overwrite = true)
     associations = ITSOM.TimeSeriesAssociation[]
     try
@@ -570,6 +764,8 @@ function convert_time_series(
                     file,
                     row,
                     lookup_id(ledger, row["owner_uuid"]),
+                    owners,
+                    system_base,
                     report,
                 )
             end
