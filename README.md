@@ -61,7 +61,9 @@ One behavior changes. PSY5 read the multiplier at each read, so a later change o
 follow that change.
 
 Known limit: a series with no PSY5 multiplier stays unlabeled. PowerOperationsModels rejects
-an unlabeled physical series with an error.
+an unlabeled physical series with an error. Reservoir multiplier series
+(`get_storage_capacity`, `get_storage_target`, `get_inflow`) keep their values and
+component-base labels with no `per_unit_of`, and PSY6 rejects them at load.
 
 ## Local setup
 

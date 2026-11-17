@@ -406,11 +406,14 @@ end
         ),
     ]
     windows = [0.2 0.4; 0.6 0.8]
-    arrays = Dict(
-        r["time_series_uuid"] =>
-            (r["time_series_type"] == "Deterministic" ? windows : profile)
-        for r in rows
-    )
+    arrays = Dict{String, Array{Float64}}()
+    for r in rows
+        if r["time_series_type"] == "Deterministic"
+            arrays[r["time_series_uuid"]] = windows
+        else
+            arrays[r["time_series_uuid"]] = profile
+        end
+    end
     mktempdir() do tmp
         case, ledger = synthetic_case(tmp, rows, arrays, owners)
         out = joinpath(tmp, "out")
@@ -491,6 +494,34 @@ end
         @test_throws part piecewise_scale()
     end
     @test_throws PSU.Psy5FormatError piecewise_scale()
+end
+
+@testset "time series unknown accessor and reservoir piecewise" begin
+    owners = Dict{String, Any}(
+        "u-gen" => synthetic_owner(
+            "ThermalStandard", "u-gen", Dict("max_active_power" => 0.25),
+        ),
+        "u-hyd" => synthetic_owner("HydroReservoir", "u-hyd", Dict()),
+    )
+    bad_marker = """{"__metadata__":{"module":"PowerSystems","function":"get_nonexistent"}}"""
+    bad = synthetic_row(7, "ts-bad", "u-gen", "ThermalStandard", bad_marker; name = "bad")
+    for part in ("id=7", "ThermalStandard", "u-gen", "name=bad", "get_nonexistent")
+        @test_throws part PSU._has_scale("get_nonexistent", bad, owners, 100.0)
+    end
+    @test_throws PSU.Psy5FormatError PSU._has_scale("get_nonexistent", bad, owners, 100.0)
+
+    hydro = synthetic_row(
+        8, "ts-hyd", "u-hyd", "HydroReservoir", INFLOW_MARKER; name = "inflow",
+    )
+    declaration = PSU._declaration(
+        "get_inflow", hydro, owners, 100.0, PSU.ConversionReport(),
+    )
+    @test isone(declaration.factor)
+    @test declaration.unit_system === InfraStore.ComponentBase
+    @test isnothing(declaration.per_unit_of)
+    values = zeros(2, 4)
+    @test PSU._scale_values(PSU.PiecewiseStepLayout(), values, declaration, hydro) ===
+          values
 end
 
 # ── Corpus magnitudes ──────────────────────────────────────────────────────────
@@ -588,6 +619,10 @@ const PSY6_SYSTEMS = ("5_bus_matpower_DA", "modified_RTS_GMLC_DA_sys")
             psy5_profiles(case),
         )
         @test !isempty(items)
+        if name == "modified_RTS_GMLC_DA_sys"
+            system_base = case.raw["units_settings"]["base_value"]
+            @test any(i -> i.owner["base_power"] != system_base, items)
+        end
         mktempdir() do tmp
             PSU.convert_system(path, tmp; force = true)
             sys = PSY.from_file(joinpath(tmp, "system.json"))

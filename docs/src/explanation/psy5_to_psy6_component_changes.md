@@ -21,7 +21,8 @@ association, owner and `ext` keys.
 PSY5 offers `SYSTEM_BASE`, `DEVICE_BASE`, `NATURAL_UNITS`. **PSY6 drops `SYSTEM_BASE`.**
 
 Stored PSY5 values are already device base — `_get_multiplier(…, ::Val{DEVICE_BASE}, ::Any) = 1.0`,
-with the other two derived at access time. So no rescaling is needed to emit `DEVICE_BASE`.
+with the other two derived at access time. So no component field needs rescaling to emit
+`DEVICE_BASE`. PSU does rescale some time series; see the time-series section of this page.
 
 PSY6 now records `base_power` on `Line`, `MonitoredLine`, and ten other components whose base
 is the *system* base (`Area`, `LoadZone`, `FixedAdmittance`, `AreaInterchange`,

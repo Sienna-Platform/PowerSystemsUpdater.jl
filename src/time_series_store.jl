@@ -282,7 +282,8 @@ _store_features(row::AbstractDict) = _features(row)
 
 """
 What one row writes to the store: the factor that multiplies its array and the four labels.
-`scaled` is `true` when the row has a PSY5 multiplier.
+`scaled` is `true` when the row has a PSY5 multiplier that scales the array. A reservoir
+multiplier does not.
 """
 struct StoreDeclaration
     scaled::Bool
@@ -340,7 +341,7 @@ function _declaration(
     report::ConversionReport,
 )
     return StoreDeclaration(
-        true,
+        false,
         1.0,
         _optional_string_field(row, "units"),
         _quantity_kind(name, row, report),
@@ -677,6 +678,15 @@ function _has_scale(
     owners::AbstractDict,
     system_base::Float64,
 )
+    if !haskey(PSY5_MULTIPLIERS, name)
+        throw(
+            Psy5FormatError(
+                "unknown PSY5 scaling factor multiplier accessor $name " *
+                "(association id=$(row["id"]) owner_type=$(row["owner_type"]) " *
+                "owner_uuid=$(row["owner_uuid"]) name=$(row["name"]))",
+            ),
+        )
+    end
     return has_scale_factor(psy5_multiplier(name), _owner_raw(owners, row), system_base)
 end
 
