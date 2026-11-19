@@ -33,7 +33,14 @@ function _translate_reserve(raw::AbstractDict, ctx::TranslationContext)
         :id => id,
         :reserve_direction => reserve_direction(raw),
     )
-    kwargs = build_kwargs(POOM.OnlineReserve, raw, ctx.ledger, ctx.report; extra = extra)
+    kwargs = build_kwargs(
+        POOM.OnlineReserve,
+        raw,
+        ctx.ledger,
+        ctx.report;
+        extra = extra,
+        units = component_units(raw, ctx),
+    )
     return ICOM.APIModel[POOM.OnlineReserve(; kwargs...)]
 end
 

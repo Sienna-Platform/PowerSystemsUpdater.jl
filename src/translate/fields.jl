@@ -1,10 +1,15 @@
 """
-PSY5 keys that never become PSY6 properties on the entity itself. `services` is carried
-separately as `ServiceAssociation` rows (`_add_service_associations!` in convert.jl), not as
-a field on the component; `ext` is routed through `set_ext!` rather than a field; `internal`
-and `__metadata__` are serialization scaffolding.
+PSY5 keys that never become PSY6 properties on the entity. `services` becomes
+`ServiceAssociation` rows (`_add_service_associations!`) and `ext` goes to the document's `ext`
+table (`_carry_ext!`); `internal` and `__metadata__` are serialization scaffolding.
 """
 const PSY5_INTERNAL_FIELDS = Set(["__metadata__", "internal", "services", "ext"])
+
+"""
+PSY5 fields linking a static device to its dynamic model. The schema has no dynamic models, so
+the link is dropped (and reported) and the static device kept.
+"""
+const DYNAMIC_REFERENCE_FIELDS = Set(["dynamic_injector"])
 
 struct SkippedReferenceSignal <: Exception
     msg::String
@@ -53,11 +58,42 @@ _is_start_up_stages_shape(dict::AbstractDict) =
     Set(keys(dict)) == Set(("hot", "warm", "cold"))
 
 """
-PSY6 has no field type that can hold a live time-series reference, but PSY5 sometimes embeds
-one in a value field. Dropping it would yield a document that validates while having lost data
-nothing downstream could recover, so this errors instead.
+PSY5 sometimes embeds a time series key in a value field. Where PSY6 names the series by
+association id (`SERIES_REF_FIELDS`) the key is carried across as that id; anywhere else
+dropping it would silently lose data, so it is an error.
 """
 const TIME_SERIES_POINTER_TYPES = Set(["ForecastKey", "StaticTimeSeriesKey"])
+
+"""
+PSY5 fields that may hold a time series key, by owner type, and the PSY6 field that replaces it.
+"""
+const SERIES_REF_FIELDS = Dict{Tuple{String, String}, String}(
+    ("FuelCurve", "fuel_cost") => "fuel_cost_time_series",
+)
+
+"""
+`value` with each embedded series key in `SERIES_REF_FIELDS` moved to its PSY6 field as a
+placeholder, resolved once the catalog exists (`resolve_series_refs`).
+"""
+function _defer_series_refs(
+    value::AbstractDict,
+    owner_type::Union{Nothing, AbstractString},
+    ledger::Ledger,
+)
+    deferred = value
+    for (key, v) in value
+        target = get(SERIES_REF_FIELDS, (something(owner_type, ""), key), nothing)
+        if isnothing(target) || isnothing(_time_series_pointer_type(v))
+            continue
+        end
+        if deferred === value
+            deferred = Dict{String, Any}(value)
+        end
+        delete!(deferred, key)
+        deferred[target] = defer_series_ref!(ledger, v)
+    end
+    return deferred
+end
 
 _time_series_pointer_type(::Any) = nothing
 function _time_series_pointer_type(value::AbstractDict)
@@ -90,7 +126,7 @@ function _check_no_time_series_pointers!(
             throw(
                 Psy5FormatError(
                     "$(_owner_label(owner_type)).$key holds an embedded $pointer_type; " *
-                    "PSY6 has no field type that can represent an embedded time-series reference",
+                    "the updater does not yet carry a time series reference in this field",
                 ),
             )
         end
@@ -174,6 +210,11 @@ const MARKET_BID_COST_DEFAULTED_FIELDS = Dict{String, Function}(
     "minimum_energy_offer" => _zero_cost_curve,
     "incremental_offer_curves" => _zero_offer_curve,
     "decremental_offer_curves" => _zero_offer_curve,
+    # Schema-optional with defaults, written because PowerSystems' importer requires them.
+    "incremental_slope" => () -> false,
+    "decremental_slope" => () -> false,
+    "curve_style" => () -> 0,
+    "curve_multistep" => () -> 0,
 )
 
 function _promote_market_bid_cost_scalar(scalar::Real)
@@ -191,6 +232,7 @@ end
 function _promote_market_bid_cost_scalars(
     value::AbstractDict,
     owner_type::Union{Nothing, AbstractString},
+    report::ConversionReport,
 )
     if owner_type != "MarketBidCost"
         return value
@@ -211,6 +253,7 @@ function _promote_market_bid_cost_scalars(
                 promoted = copy(value)
             end
             promoted[field] = zero_value()
+            record_schema_default!(report, "MarketBidCost", field)
         end
     end
     return promoted
@@ -260,7 +303,8 @@ translate_value(value, ::Ledger, ::ConversionReport) = value
 """
 Record every key on a resolved nested composite (`type_name` from `__metadata__.type`, or
 `"StartUpStages"` for the untagged shape) that is not one of `ICOM.model_type(type_name)`'s
-fieldnames — the nested analogue of `build_kwargs`'s unmapped-field guard.
+fieldnames — the nested analogue of `build_kwargs`'s unmapped-field guard. The value is kept in
+the owner's `ext` as `Type.field`.
 
 Only fires when `type_name` resolves to a registered PSY6 model; an unresolved nested dict
 (no `__metadata__.type`, or a PSY5 type with no PSY6 counterpart) is forwarded unchanged, as
@@ -270,6 +314,7 @@ schemas allow the extra key.
 function _record_unmapped_nested_fields!(
     translated::AbstractDict,
     type_name::Union{Nothing, AbstractString},
+    ledger::Ledger,
     report::ConversionReport,
 )
     if isnothing(type_name) || !ICOM.has_model_type(type_name)
@@ -282,6 +327,7 @@ function _record_unmapped_nested_fields!(
         end
         if !(Symbol(key) in targets)
             record_unmapped_field!(report, type_name, key)
+            keep_unmapped!(ledger, "$type_name.$key", translated[key])
         end
     end
     return nothing
@@ -324,8 +370,9 @@ function translate_value(value::AbstractDict, ledger::Ledger, report::Conversion
         return lookup_id(ledger, reference_uuid(value))
     end
     owner_type = _psy5_type_name(value)
+    value = _defer_series_refs(value, owner_type, ledger)
     _check_no_time_series_pointers!(value, owner_type)
-    promoted = _promote_market_bid_cost_scalars(value, owner_type)
+    promoted = _promote_market_bid_cost_scalars(value, owner_type, report)
     promoted = _rename_variable_operation_cost(promoted, owner_type)
     promoted = _supply_fuel_units(promoted, owner_type)
     translated = Dict{String, Any}(
@@ -343,7 +390,7 @@ function translate_value(value::AbstractDict, ledger::Ledger, report::Conversion
         type_name = "StartUpStages"
         translated["startup_stages_type"] = "STAGES"
     end
-    _record_unmapped_nested_fields!(translated, type_name, report)
+    _record_unmapped_nested_fields!(translated, type_name, ledger, report)
     return translated
 end
 
@@ -352,13 +399,13 @@ function translate_value(value::AbstractVector, ledger::Ledger, report::Conversi
 end
 
 """
-True when any reference on `raw` points at a component that was skipped. Such a component
-must itself be skipped: `validate_document` does not check ordinary component references,
-so a dangling integer would otherwise reach the output.
+True when any reference on `raw` points at a skipped component, which must then be skipped
+too (`validate_document` does not check references). Dynamic model links are never written,
+so they do not count.
 """
 function references_skipped(raw::AbstractDict, ledger::Ledger)
     for (key, value) in raw
-        if key in PSY5_INTERNAL_FIELDS
+        if key in PSY5_INTERNAL_FIELDS || key in DYNAMIC_REFERENCE_FIELDS
             continue
         end
         if _points_at_skipped(value, ledger)
@@ -414,15 +461,30 @@ function _operational_state(status::Bool)
     return "OFFLINE"
 end
 
+"""
+Whether `value` is a non-physical base voltage for a transformer winding
+(`base_voltage_*`) or VSC `rated_dc_voltage`. PSY5 accepts `0.0`, PSY6 needs a positive base;
+`build_kwargs` leaves such a value unset and reports it.
+
+A bus `base_voltage` is excluded: PowerSystems 6's `Line` check cannot handle an unset one.
+"""
+_non_physical_base(key::AbstractString, value::Real) =
+    (startswith(key, "base_voltage_") || key == "rated_dc_voltage") && value <= 0
+_non_physical_base(::AbstractString, ::Any) = false
+
 _is_bool(::Bool) = true
 _is_bool(::Any) = false
 
 """
 Build the keyword arguments for `T` from a PSY5 component dict.
 
-Copies by name for every field `T` declares, resolving UUID references to integer ids.
-Values are never rescaled. PSY5 keys with no counterpart on `T` are recorded on `report`
-rather than dropped silently — an unmapped field is a finding about the schemas.
+Copies by name for every field `T` declares, resolving UUID references to integer ids. PSY5
+keys with no counterpart on `T` are recorded on `report` rather than dropped silently — an
+unmapped field is a finding about the schemas.
+
+With `units`, each value is first converted to the unit the schema declares
+(`convert_units`) and the chosen unit-basis field is written (`admittance_units`, ...).
+Without it, values are copied as stored.
 """
 function build_kwargs(
     ::Type{T},
@@ -430,6 +492,7 @@ function build_kwargs(
     ledger::Ledger,
     report::ConversionReport;
     extra::AbstractDict = Dict{Symbol, Any}(),
+    units::Union{Nothing, ComponentUnits} = nothing,
 ) where {T <: ICOM.APIModel}
     targets = Set(fieldnames(T))
     kwargs = Dict{Symbol, Any}()
@@ -438,22 +501,130 @@ function build_kwargs(
         if key in PSY5_INTERNAL_FIELDS
             continue
         end
+        if key in DYNAMIC_REFERENCE_FIELDS
+            if !isnothing(value)
+                record_dropped_dynamic_model!(report, type_name)
+            end
+            continue
+        end
         symbol = Symbol(key)
         if !(symbol in targets)
             record_unmapped_field!(report, type_name, key)
+            keep_unmapped!(ledger, key, value)
             continue
         end
         if isnothing(value)
+            continue
+        end
+        if _non_physical_base(key, value)
+            record_dropped_invalid_value!(report, type_name, key)
+            keep_unmapped!(ledger, key, value)
             continue
         end
         if symbol === :status && _is_bool(value)
             kwargs[symbol] = _operational_state(value)
             continue
         end
-        kwargs[symbol] = translate_value(value, ledger, report)
+        value, write =
+            _in_declared_units(T, symbol, key, value, units, kwargs, ledger, report)
+        if write
+            kwargs[symbol] = translate_value(value, ledger, report)
+        end
     end
     for (key, value) in extra
         kwargs[key] = value
     end
     return _decode_kwargs(T, kwargs)
 end
+
+_in_declared_units(::Type, ::Symbol, ::AbstractString, value, ::Nothing, args...) =
+    (value, true)
+
+"""
+`(value, write)`: `value` converted to the unit `T` declares for `field`, and whether to write
+it. The chosen unit basis goes into `kwargs`. A value that could not be converted is reported;
+an optional field is then left unset (PSY5 value kept in ext), a required one written as stored.
+"""
+function _in_declared_units(
+    ::Type{T},
+    field::Symbol,
+    key::AbstractString,
+    value,
+    units::ComponentUnits,
+    kwargs::AbstractDict,
+    ledger::Ledger,
+    report::ConversionReport,
+) where {T}
+    unit, basis = target_unit(T, field, units.raw)
+    if !isnothing(basis) && !haskey(kwargs, first(basis))
+        kwargs[first(basis)] = last(basis)
+    end
+    converted = convert_units(psy5_storage(units.psy5_type, key), unit, value, units)
+    return _settle(converted, T, field, key, value, units, ledger, report)
+end
+
+_settle(converted, ::Type, ::Symbol, ::AbstractString, _, ::ComponentUnits, args...) =
+    (converted, true)
+
+function _settle(
+    ::UnverifiedUnit,
+    ::Type{T},
+    field::Symbol,
+    key::AbstractString,
+    value,
+    units::ComponentUnits,
+    ledger::Ledger,
+    report::ConversionReport,
+) where {T}
+    record_unverified_unit!(report, units.psy5_type, key)
+    return _unset_or_as_stored(T, field, key, value, ledger)
+end
+
+"""A value on a non-physical base is reported as an invalid value; handled like `UnverifiedUnit`."""
+function _settle(
+    ::NonPhysicalBase,
+    ::Type{T},
+    field::Symbol,
+    key::AbstractString,
+    value,
+    units::ComponentUnits,
+    ledger::Ledger,
+    report::ConversionReport,
+) where {T}
+    record_dropped_invalid_value!(report, units.psy5_type, key)
+    return _unset_or_as_stored(T, field, key, value, ledger)
+end
+
+function _unset_or_as_stored(
+    ::Type{T},
+    field::Symbol,
+    key::AbstractString,
+    value,
+    ledger::Ledger,
+) where {T}
+    if _may_leave_unset(T, field, key)
+        keep_unmapped!(ledger, key, value)
+        return (nothing, false)
+    end
+    return (value, true)
+end
+
+"""
+VSC setpoints the schema requires only for the quantity the control mode selects, which their
+optional type does not show (`VSC_SETPOINT_FIELDS`).
+"""
+const CONDITIONALLY_REQUIRED_FIELDS = Set([
+    "dc_power_setpoint_from", "dc_power_setpoint_to",
+    "dc_voltage_setpoint_from", "dc_voltage_setpoint_to",
+    "power_factor_setpoint_from", "power_factor_setpoint_to",
+])
+
+"""Whether a value that could not be converted may be left unset rather than written."""
+_may_leave_unset(::Type{T}, field::Symbol, key::AbstractString) where {T} =
+    _accepts_absent(fieldtype(T, field)) && !(key in CONDITIONALLY_REQUIRED_FIELDS)
+
+"""
+Whether a model field is optional: the generator types it as a union with `Absent`.
+"""
+_accepts_absent(field_type::Type) =
+    typeintersect(field_type, OpenAPI.Runtime.Absent) !== Union{}

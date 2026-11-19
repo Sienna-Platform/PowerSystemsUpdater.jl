@@ -16,28 +16,24 @@ const KNOWN_ROUNDTRIP_GAPS = Dict{String, String}()
 # no way to represent, and the translator throws `Psy5FormatError` rather than converting or
 # dropping it — intentional, not a bug in the translator.
 #
-# Most entries: a PSY5 value field holds an embedded time-series pointer
-# (`__metadata__.type` of `ForecastKey` or `StaticTimeSeriesKey`) instead of a literal value,
-# and PSY6 has no field type for an embedded time-series reference.
+# The `MarketBidCost` entries: `incremental_offer_curves` holds an embedded time-series pointer
+# (`__metadata__.type` of `ForecastKey` or `StaticTimeSeriesKey`). PSY6's counterpart,
+# `MarketBidTimeSeriesCost`, needs every other cost field as a time series too, which PSY5
+# holds as scalars, so the updater does not carry it yet. (`FuelCurve.fuel_cost` pointers are
+# carried, as `fuel_cost_time_series`.)
 #
-# The two `TModelHVDCLine` entries: PSY6 per-unitizes that type against a required
-# `base_current` (A) which PSY5 does not record and the schema gives no default for. See the
+# The two `TModelHVDCLine` entries: PSY6 requires a `base_current` (informational; no field is
+# per-unit on it) which PSY5 does not record and the schema gives no default for. See the
 # `translate(::Val{:TModelHVDCLine}, ...)` header in src/translate/dispatch.jl.
 #
 # `c_sys14_hvdc_vsc`: a `TwoTerminalVSCLine` controls DC voltage with `rated_dc_voltage` of
 # 0.0. PSY5 stores the setpoint per unit of that voltage and PSY6 stores it in kV, so there is
 # no base to convert against.
 const KNOWN_CONVERSION_GAPS = Dict(
-    "c_linear_fuel_test_ts" => "FuelCurve.fuel_cost is a time-series pointer",
     "c_market_bid_cost" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
-    "c_pwl_incremental_fuel_test_ts" => "FuelCurve.fuel_cost is a time-series pointer",
-    "c_pwl_io_fuel_test_ts" => "FuelCurve.fuel_cost is a time-series pointer",
-    "c_quadratic_fuel_test_ts" => "FuelCurve.fuel_cost is a time-series pointer",
     "c_sys5_hybrid" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
     "c_sys5_hybrid_ed" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
     "c_sys5_hybrid_uc" => "MarketBidCost.incremental_offer_curves is a time-series pointer",
-    "c_sys5_re_fuel_cost" => "FuelCurve.fuel_cost is a time-series pointer",
-    "c_sys14_hvdc_vsc" => "TwoTerminalVSCLine dc_setpoint has no rated_dc_voltage base",
     "MTHVDC_two_RTS_DA_sys_noForecast" => "TModelHVDCLine has no base_current",
     "sys10_pjm_ac_dc" => "TModelHVDCLine has no base_current",
 )
@@ -77,6 +73,13 @@ function _corpus_systems()
     return paths
 end
 
+"""
+A corpus system's name, as `REQUIRED_SYSTEMS` and the gap tables spell it: the file name
+without a `.json` extension. `scripts/psy5_case_generator/psb_case_generator.jl` writes
+`<name>.json`; `test/fixtures/generate_fixtures.jl` writes `<name>` with no extension.
+"""
+_system_name(path::AbstractString) = replace(basename(path), r"\.json$" => "")
+
 @testset "corpus conversion" begin
     systems = _corpus_systems()
     if !require_corpus_systems(
@@ -97,12 +100,12 @@ end
                 try
                     PSU.convert_system(path, out; report = report, force = true)
                 catch e
-                    push!(failures, (basename(path), sprint(showerror, e)))
+                    push!(failures, (_system_name(path), sprint(showerror, e)))
                 end
             end
         end
 
-        present = Set(basename.(systems))
+        present = Set(_system_name.(systems))
         missing_required = setdiff(REQUIRED_SYSTEMS, present)
         if !isempty(missing_required)
             @error "required system(s) missing from the corpus" missing =
@@ -159,7 +162,7 @@ end
         broke = Tuple{String, String}[]
         mktempdir() do tmp
             for path in systems
-                name = basename(path)
+                name = _system_name(path)
                 out = joinpath(tmp, name)
                 try
                     PSU.convert_system(path, out; force = true)
@@ -197,7 +200,7 @@ end
         # entry rather than leaving a stale exemption that hides a future regression.
         # Restricted to gaps this run actually swept: the smaller fixture corpus
         # legitimately omits some of them, and an omitted system is not a passing one.
-        present = Set(basename.(systems))
+        present = Set(_system_name.(systems))
         applicable_gaps = filter(k -> k in present, collect(keys(KNOWN_ROUNDTRIP_GAPS)))
         stale = [k for k in applicable_gaps if !any(p -> p[1] == k, broke)]
         for name in stale

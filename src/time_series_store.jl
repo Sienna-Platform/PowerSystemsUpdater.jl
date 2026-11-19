@@ -104,8 +104,11 @@ self-describing matrix row, so the padding has to be read off and the row rebuil
 """
 struct PiecewiseStepLayout <: Psy5ElementLayout end
 
+# PSY5 labels a Float64 element "CONSTANT", but some writers store the type name instead;
+# PSY5's reader resolves both to Float64.
 const PSY5_ELEMENT_LAYOUTS = Dict{String, Psy5ElementLayout}(
     "CONSTANT" => ScalarLayout(),
+    "Float64" => ScalarLayout(),
     "PiecewiseStepData" => PiecewiseStepLayout(),
 )
 
@@ -269,16 +272,6 @@ the values are per-unit on the owner's own base.
 _store_unit_system(::Nothing) = nothing
 _store_unit_system(::AbstractString) = InfraStore.ComponentBase
 
-"""
-The store's feature dictionary for a row, which is always empty.
-
-[`_features`](@ref) is what makes that true: it refuses a populated features list rather than
-dropping it. Called here as well as on the document side so a conversion driven straight
-through [`convert_time_series`](@ref) keeps the same guarantee — features are part of a
-series' identity in InfraStore, so a dropped one would silently rename the series.
-"""
-_store_features(row::AbstractDict) = _features(row)
-
 # ── Staging one association ─────────────────────────────────────────────────────
 
 """
@@ -342,6 +335,7 @@ function _stage_time_series!(
     report::ConversionReport,
 )
     data, layout = _legacy_array(file, row)
+    _record_feature_renames!(row, report)
     array, element_type = _static_values(layout, data)
     multiplier = _scaling_factor_multiplier(row)
     series = InfraStore.SingleTimeSeries(
@@ -360,7 +354,7 @@ function _stage_time_series!(
         string(row["owner_type"]),
         _owner_category(row),
         series;
-        features = _store_features(row),
+        features = _features(row),
     )
     return nothing
 end
@@ -374,6 +368,7 @@ function _stage_time_series!(
     report::ConversionReport,
 )
     data, layout = _legacy_array(file, row)
+    _record_feature_renames!(row, report)
     array, element_type = _window_values(layout, data)
     windows = _window_count(row, size(array, 2))
     multiplier = _scaling_factor_multiplier(row)
@@ -396,7 +391,7 @@ function _stage_time_series!(
         string(row["owner_type"]),
         _owner_category(row),
         series;
-        features = _store_features(row),
+        features = _features(row),
     )
     return nothing
 end
@@ -446,11 +441,14 @@ end
 """
 Re-derive the `DeterministicSingleTimeSeries` rows as InfraStore derivations.
 
-`InfraStore.transform_single_time_series!` works on every `SingleTimeSeries` at a resolution
-at once, so it can only reproduce a PSY5 sidecar whose derived rows cover all of them. Both
-preconditions are checked before anything is written — one `(horizon, interval)` per
-resolution, and one derived row per static row — and a sidecar that breaks either aborts
-rather than silently gaining or losing forecasts.
+`InfraStore.transform_single_time_series!` works on every `SingleTimeSeries` of one owner
+category at a resolution at once, so it can only reproduce a PSY5 sidecar whose derived rows
+cover all of them. Both preconditions are checked before anything is written — one
+`(horizon, interval)` per category and resolution, and one derived row per static row — and a
+sidecar that breaks either aborts rather than silently gaining or losing forecasts.
+
+Only components get derived forecasts, as in IS (`owner_category = InfraStore.Component`): a
+supplemental attribute's static series must not gain one.
 
 `normalize_single_window` and `require_uniform_forecast_grid` are set the way IS sets them,
 because IS is what reads the result.
@@ -458,26 +456,30 @@ because IS is what reads the result.
 function _derive_forecasts!(store::InfraStore.Store, rows::AbstractVector{<:AbstractDict})
     derived = _rows_of_kind(rows, DerivedDeterministicKind())
     isempty(derived) && return nothing
-    static_owners = _association_identities(_rows_of_kind(rows, SingleKind()))
-    for (resolution, group) in _group_by_resolution(derived)
+    statics = _rows_of_kind(rows, SingleKind())
+    for ((category, resolution), group) in _group_by_category_and_resolution(derived)
+        static_owners = _association_identities(
+            [row for row in statics if _owner_category(row) == category],
+        )
         windows = unique((row["horizon"], row["interval"]) for row in group)
         if length(windows) != 1
             throw(
                 Psy5FormatError(
-                    "resolution $resolution carries derived forecasts over " *
+                    "$category resolution $resolution carries derived forecasts over " *
                     "$(length(windows)) distinct (horizon, interval) pairs; InfraStore " *
                     "derives one window shape per resolution",
                 ),
             )
         end
-        sources = get(static_owners, resolution, Set{Tuple{String, String}}())
+        sources = get(static_owners, resolution, Set{AssociationIdentity}())
         covered = _association_identities(group)[resolution]
         if covered != sources
             throw(
                 Psy5FormatError(
-                    "resolution $resolution has $(length(covered)) derived forecasts over " *
-                    "$(length(sources)) SingleTimeSeries; InfraStore derives from every " *
-                    "series at a resolution or none, so a partial set cannot be " *
+                    "$category resolution $resolution has $(length(covered)) derived " *
+                    "forecasts over $(length(sources)) SingleTimeSeries; InfraStore " *
+                    "derives from every series of an owner category at a resolution or " *
+                    "none, so a partial set cannot be " *
                     "reproduced (missing: $(collect(setdiff(sources, covered))))",
                 ),
             )
@@ -486,6 +488,7 @@ function _derive_forecasts!(store::InfraStore.Store, rows::AbstractVector{<:Abst
             store,
             _required_duration(first(group), "horizon"),
             _required_duration(first(group), "interval");
+            owner_category = category,
             resolution = _psy5_duration(resolution),
             normalize_single_window = true,
             require_uniform_forecast_grid = true,
@@ -505,30 +508,46 @@ end
 _rows_of_kind(rows::AbstractVector{<:AbstractDict}, kind::Psy5TimeSeriesKind) =
     [row for row in rows if _time_series_kind(row) === kind]
 
-function _group_by_resolution(rows::AbstractVector{R}) where {R <: AbstractDict}
-    grouped = Dict{String, Vector{R}}()
+function _group_by_category_and_resolution(
+    rows::AbstractVector{R},
+) where {R <: AbstractDict}
+    grouped = Dict{Tuple{InfraStore.OwnerCategory, String}, Vector{R}}()
     for row in rows
-        push!(get!(grouped, string(row["resolution"]), R[]), row)
+        key = (_owner_category(row), string(row["resolution"]))
+        push!(get!(grouped, key, R[]), row)
     end
     return grouped
 end
 
-# Association identity within a resolution: the (owner, name) pair, which is what InfraStore
-# addresses a series by. Features are not part of it because `_features` has already refused
-# any row that carries them.
+const AssociationIdentity = Tuple{String, String, Dict{String, Any}}
+
+# Association identity within a resolution: owner, name and features, which is what InfraStore
+# addresses a series by.
 function _association_identities(rows::AbstractVector{<:AbstractDict})
-    identities = Dict{String, Set{Tuple{String, String}}}()
+    identities = Dict{String, Set{AssociationIdentity}}()
     for row in rows
-        key = (String(row["owner_uuid"]), String(row["name"]))
-        push!(
-            get!(identities, string(row["resolution"]), Set{Tuple{String, String}}()),
-            key,
-        )
+        key = (String(row["owner_uuid"]), String(row["name"]), _features(row))
+        push!(get!(Set{AssociationIdentity}, identities, string(row["resolution"])), key)
     end
     return identities
 end
 
 # ── Entry point ─────────────────────────────────────────────────────────────────
+
+"""
+The document's supplemental attribute associations as catalog rows. The catalog must hold
+them all already: under `time_series_read_only` PSY6 cannot add the ones it lacks.
+"""
+_store_supplemental_associations(
+    rows::AbstractVector{ICOM.SupplementalAttributeAssociation},
+) = [
+    InfraStore.SupplementalAttributeAssociation(
+        Int64(row.component_id),
+        String(row.component_type),
+        Int64(row.attribute_id),
+        String(row.attribute_type),
+    ) for row in rows
+]
 
 """
 Rewrite `case`'s PSY5 sidecar as the InfraStore pair PSY6 reads: `out_dir/time_series.h5`
@@ -546,12 +565,16 @@ must add to the document: they carry the `uri`/`data_hash`/`element_type`/`eleme
 the store itself computed, so they are guaranteed to match what PSY6's importer will find in
 the catalog. Rows whose owner was skipped are left out; their loss is recorded by
 `_record_time_series_skips!`, which walks the same PSY5 rows to build the document.
+
+`supplemental_associations` are the document's supplemental attribute association rows,
+written into the catalog as well (see [`_store_supplemental_associations`](@ref)).
 """
 function convert_time_series(
     case::Psy5Case,
     ledger::Ledger,
     out_dir::AbstractString,
-    report::ConversionReport,
+    report::ConversionReport;
+    supplemental_associations::AbstractVector{ICOM.SupplementalAttributeAssociation} = ICOM.SupplementalAttributeAssociation[],
 )
     destination = joinpath(out_dir, TIME_SERIES_FILENAME)
     rows = [
@@ -576,6 +599,12 @@ function convert_time_series(
         end
         iszero(length(batch)) || InfraStore.add_time_series_bulk!(raw_store, batch)
         _derive_forecasts!(raw_store, rows)
+        if !isempty(supplemental_associations)
+            InfraStore.add_supplemental_attribute_associations!(
+                raw_store,
+                _store_supplemental_associations(supplemental_associations),
+            )
+        end
         InfraStore.flush!(raw_store)
         associations = IS.openapi_time_series_association_rows(IS.Store(raw_store))
     finally

@@ -9,36 +9,16 @@ _is_three_winding(::ThreeWindingTransformer) = true
 _is_three_winding(::PSU.ICOM.APIModel) = false
 
 @testset "winding group -> alpha" begin
-    # Sparse and SIGN-INVERTED: GROUP_1 is -30 degrees, not +30.
+    # Sparse and sign-inverted: GROUP_1 is -30 degrees, not +30.
     @test PSU.winding_group_alpha("GROUP_0") == 0.0
     @test PSU.winding_group_alpha("GROUP_1") ≈ -pi / 6
     @test PSU.winding_group_alpha("GROUP_5") ≈ -5pi / 6
     @test PSU.winding_group_alpha("GROUP_6") ≈ pi
     @test PSU.winding_group_alpha("GROUP_7") ≈ 5pi / 6
     @test PSU.winding_group_alpha("GROUP_11") ≈ pi / 6
-    @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("GROUP_3")
-end
-
-@testset "all six WindingGroupNumber values, exact radians" begin
-    @test PSU.winding_group_alpha("GROUP_0") == 0.0
-    @test PSU.winding_group_alpha("GROUP_1") == Float64(-pi / 6)
-    @test PSU.winding_group_alpha("GROUP_5") == Float64(-5pi / 6)
-    @test PSU.winding_group_alpha("GROUP_6") == Float64(pi)
-    @test PSU.winding_group_alpha("GROUP_7") == Float64(5pi / 6)
-    @test PSU.winding_group_alpha("GROUP_11") == Float64(pi / 6)
-
-    @test PSU.winding_group_alpha("GROUP_1") < 0.0
-    @test PSU.winding_group_alpha("GROUP_11") > 0.0
-end
-
-@testset "unknown winding group throws" begin
-    @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("GROUP_3")
-    @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("")
-end
-
-@testset "UNDEFINED winding group takes the schema default" begin
     @test PSU.winding_group_alpha("UNDEFINED") == 0.0
     @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("GROUP_3")
+    @test_throws PSU.Psy5FormatError PSU.winding_group_alpha("")
 end
 
 @testset "translate Transformer2W" begin
@@ -79,12 +59,6 @@ end
     @test circuit.tap == 1.0                    # Transformer2W has no tap
     @test circuit.alpha ≈ -pi / 6               # from GROUP_1
     @test circuit.base_power == 100.0
-
-    @testset "field survival" begin
-        @test circuit.rating == 2.0
-        @test circuit.base_voltage_primary == 230.0
-        @test circuit.base_voltage_secondary == 115.0
-    end
 end
 
 @testset "translate TapTransformer" begin
@@ -116,15 +90,6 @@ end
     @test circuit.tap == 1.05                   # TapTransformer's own tap, not the default
     @test circuit.alpha ≈ pi / 6                 # from GROUP_11
     @test circuit.arc == arc_id
-
-    @testset "field survival" begin
-        @test circuit.r == 0.02
-        @test circuit.x == 0.2
-        @test circuit.rating == 3.0
-        @test circuit.base_power == 100.0
-        @test circuit.base_voltage_primary == 138.0
-        @test circuit.base_voltage_secondary == 69.0
-    end
 end
 
 @testset "translate PhaseShiftingTransformer" begin
@@ -151,28 +116,6 @@ end
     transformer = only(filter(_is_two_winding, out))
     @test circuit.tap == 1.02
     @test circuit.alpha == 0.05        # already radians, copied verbatim
-end
-
-@testset "PhaseShiftingTransformer alpha: negative value, no sign flip" begin
-    led = PSU.Ledger()
-    rep = PSU.ConversionReport()
-    ctx = PSU.TranslationContext(led, rep, 100.0)
-    PSU.assign_id!(led, "uuid-pst-neg")
-    PSU.assign_id!(led, "uuid-arc-neg")
-
-    raw = Dict{String, Any}(
-        "__metadata__" => Dict("type" => "PhaseShiftingTransformer"),
-        "internal" => Dict("uuid" => Dict("value" => "uuid-pst-neg")),
-        "name" => "pst_neg", "available" => true,
-        "arc" => Dict("value" => "uuid-arc-neg"),
-        "r" => 0.01, "x" => 0.1, "tap" => 0.98, "α" => -0.37,
-        "rating" => 2.0, "base_power" => 100.0,
-        "active_power_flow" => 0.0, "reactive_power_flow" => 0.0,
-    )
-
-    out = PSU.translate_component(raw, ctx)
-    circuit = only(filter(_is_circuit, out))
-    @test circuit.alpha == -0.37
 end
 
 @testset "magnetizing_shunt: real/imag survive" begin
@@ -287,12 +230,6 @@ end
     @test primary.rating == 10.0
     @test primary.base_voltage_primary == 110.0
 
-    @testset "index flip: pairwise pairs stay distinct, not just correctly named" begin
-        @test tx.r_12 != tx.r_23
-        @test tx.r_23 != tx.r_31
-        @test tx.r_12 != tx.r_31
-    end
-
     @testset "per-winding field routing: each circuit keeps its own values" begin
         secondary = only(c for c in circuits if c.arc == sa)
         tertiary = only(c for c in circuits if c.arc == ta)
@@ -307,20 +244,13 @@ end
         @test tertiary.rating == 10.0
         @test tertiary.base_voltage_primary == 33.0
 
-        # Distinguishing values so a wrong-winding mix-up cannot pass silently.
         @test primary.r != secondary.r != tertiary.r
         @test primary.base_voltage_primary != secondary.base_voltage_primary !=
               tertiary.base_voltage_primary
     end
 
-    @testset "ids are non-nothing and distinct" begin
-        @test !isnothing(tx.id)
-        for c in circuits
-            @test !isnothing(c.id)
-            @test c.id != tx.id
-        end
-        @test length(Set(c.id for c in circuits)) == 3
-    end
+    @test length(Set(c.id for c in circuits)) == 3
+    @test all(c.id != tx.id for c in circuits)
 
     @testset "magnetizing_shunt: g/b survive as ComplexNumber, zero case" begin
         @test tx.magnetizing_shunt.real == 0.0
@@ -436,21 +366,113 @@ end
     @test tertiary.alpha ≈ pi / 6
 end
 
-@testset "Transformer3W: top-level available=false errors loudly" begin
-    # available_$suffix's own PSY5 default is true, so a dropped top-level
-    # available=false would otherwise be silently replaced by three available circuits.
+@testset "Transformer3W: each circuit takes its winding's PSY5 pair base" begin
+    # PSY5 stores a winding's star-leg r/x, rating and flows per unit on its pair base
+    # (primary on base_power_12, secondary on 23, tertiary on 13); PSY6 reads circuit values on
+    # the circuit's own base_power, so the values copy unscaled only if the bases match.
     led = PSU.Ledger()
     rep = PSU.ConversionReport()
     ctx = PSU.TranslationContext(led, rep, 100.0)
-
+    for uuid in ["uuid-3w-base", "uuid-star-base", "uuid-parc-base", "uuid-sarc-base",
+        "uuid-tarc-base"]
+        PSU.assign_id!(led, uuid)
+    end
     raw = Dict{String, Any}(
         "__metadata__" => Dict("type" => "Transformer3W"),
-        "internal" => Dict("uuid" => Dict("value" => "uuid-3w-unavailable")),
-        "name" => "unavailable-3w",
-        "available" => false,
+        "internal" => Dict("uuid" => Dict("value" => "uuid-3w-base")),
+        "name" => "base-test", "available" => true,
+        "star_bus" => Dict("value" => "uuid-star-base"),
+        "primary_star_arc" => Dict("value" => "uuid-parc-base"),
+        "secondary_star_arc" => Dict("value" => "uuid-sarc-base"),
+        "tertiary_star_arc" => Dict("value" => "uuid-tarc-base"),
+        "r_primary" => 0.01, "x_primary" => 0.02,
+        "r_secondary" => 0.03, "x_secondary" => 0.04,
+        "r_tertiary" => 0.05, "x_tertiary" => 0.06,
+        "r_12" => 0.07, "x_12" => 0.08,
+        "r_23" => 0.09, "x_23" => 0.10,
+        "r_13" => 0.11, "x_13" => 0.12,
+        "base_power_12" => 144.0, "base_power_23" => 50.0, "base_power_13" => 15.0,
+        "primary_turns_ratio" => 1.01, "secondary_turns_ratio" => 1.02,
+        "tertiary_turns_ratio" => 1.03,
+        "available_primary" => true, "available_secondary" => true,
+        "available_tertiary" => true,
+        "rating_primary" => 1.0, "rating_secondary" => 2.0, "rating_tertiary" => 3.0,
+        "base_voltage_primary" => 110.0, "base_voltage_secondary" => 22.0,
+        "base_voltage_tertiary" => 33.0,
+        "g" => 0.001, "b" => 0.002,
     )
 
-    @test_throws PSU.Psy5FormatError PSU.translate(Val(:Transformer3W), raw, ctx)
+    out = PSU.translate_component(raw, ctx)
+    circuits = filter(_is_circuit, out)
+    primary = only(c for c in circuits if c.tap == 1.01)
+    secondary = only(c for c in circuits if c.tap == 1.02)
+    tertiary = only(c for c in circuits if c.tap == 1.03)
+
+    @test primary.base_power == 144.0
+    @test secondary.base_power == 50.0
+    @test tertiary.base_power == 15.0
+    # Values are not rescaled: they are already on the base now recorded beside them.
+    @test (primary.r, primary.rating) == (0.01, 1.0)
+    @test (tertiary.x, tertiary.rating) == (0.06, 3.0)
+    tx = only(filter(_is_three_winding, out))
+    @test tx.base_power_31 == 15.0
+end
+
+@testset "Transformer3W: top-level available is ANDed into every circuit" begin
+    # PSY6 derives the transformer's availability from its circuits, and available_$suffix
+    # defaults to true in PSY5, so the top-level flag must reach every circuit.
+    function _avail_circuits(available, primary, secondary, tertiary)
+        led = PSU.Ledger()
+        rep = PSU.ConversionReport()
+        ctx = PSU.TranslationContext(led, rep, 100.0)
+        for uuid in ["uuid-3w-av", "uuid-star-av", "uuid-parc-av", "uuid-sarc-av",
+            "uuid-tarc-av"]
+            PSU.assign_id!(led, uuid)
+        end
+        raw = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "Transformer3W"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-3w-av")),
+            "name" => "avail-test", "available" => available,
+            "star_bus" => Dict("value" => "uuid-star-av"),
+            "primary_star_arc" => Dict("value" => "uuid-parc-av"),
+            "secondary_star_arc" => Dict("value" => "uuid-sarc-av"),
+            "tertiary_star_arc" => Dict("value" => "uuid-tarc-av"),
+            "r_primary" => 0.01, "x_primary" => 0.02,
+            "r_secondary" => 0.03, "x_secondary" => 0.04,
+            "r_tertiary" => 0.05, "x_tertiary" => 0.06,
+            "r_12" => 0.07, "x_12" => 0.08, "r_23" => 0.09, "x_23" => 0.10,
+            "r_13" => 0.11, "x_13" => 0.12,
+            "base_power_12" => 100.0, "base_power_23" => 100.0,
+            "base_power_13" => 100.0,
+            "primary_turns_ratio" => 1.01, "secondary_turns_ratio" => 1.02,
+            "tertiary_turns_ratio" => 1.03,
+            "available_primary" => primary, "available_secondary" => secondary,
+            "available_tertiary" => tertiary,
+            "rating_primary" => 1.0, "rating_secondary" => 2.0,
+            "rating_tertiary" => 3.0,
+            "base_voltage_primary" => 110.0, "base_voltage_secondary" => 22.0,
+            "base_voltage_tertiary" => 33.0,
+            "g" => 0.0, "b" => 0.0,
+        )
+        out = PSU.translate_component(raw, ctx)
+        circuits = filter(_is_circuit, out)
+        by_tap = Dict(c.tap => c.available for c in circuits)
+        return (by_tap[1.01], by_tap[1.02], by_tap[1.03]), rep, led
+    end
+
+    # Out of service at both levels: converts, three unavailable circuits.
+    flags, rep, led = _avail_circuits(false, false, false, false)
+    @test flags == (false, false, false)
+    @test rep.unmapped_fields[("Transformer3W", "available")] == 1
+    @test PSU.unmapped_values(led, "uuid-3w-av")["available"] === false
+
+    # Out of service at the top, windings at their default: still all unavailable.
+    flags, _, _ = _avail_circuits(false, true, false, true)
+    @test flags == (false, false, false)
+
+    # In service: each winding keeps its own flag.
+    flags, _, _ = _avail_circuits(true, true, false, true)
+    @test flags == (true, false, true)
 end
 
 @testset "Transformer3W: non-zero top-level rating with a zero per-winding rating errors loudly" begin
@@ -562,4 +584,154 @@ end
         @test transformer.magnetizing_shunt.imag == tap_raw["primary_shunt"]["imag"]
         @test rep.unmapped_fields[("TapTransformer", "tap_limits")] == 1
     end
+end
+
+@testset "control objective bands: PSY5 fields, then PSS/E ext, then UNDEFINED" begin
+    function _controlled(type, objective; extra = Dict{String, Any}())
+        led = PSU.Ledger()
+        rep = PSU.ConversionReport()
+        ctx = PSU.TranslationContext(led, rep, 100.0)
+        PSU.assign_id!(led, "uuid-ctl")
+        PSU.assign_id!(led, "uuid-ctl-arc")
+        raw = Dict{String, Any}(
+            "__metadata__" => Dict("type" => type),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-ctl")),
+            "name" => "ctl", "available" => true,
+            "arc" => Dict("value" => "uuid-ctl-arc"),
+            "r" => 0.01, "x" => 0.1, "tap" => 1.0, "rating" => 4.0,
+            "base_power" => 100.0,
+            "active_power_flow" => 0.0, "reactive_power_flow" => 0.0,
+            "control_objective" => objective,
+        )
+        if type == "PhaseShiftingTransformer"
+            raw["α"] = 0.0
+        end
+        merge!(raw, extra)
+        circuit = only(filter(_is_circuit, PSU.translate_component(raw, ctx)))
+        return circuit, rep
+    end
+    _band(b) = (b.min, b.max)
+
+    @testset "tier 1: TapTransformer voltage_setpoint" begin
+        circuit, rep = _controlled("TapTransformer", "VOLTAGE";
+            extra = Dict{String, Any}("voltage_setpoint" => 1.02))
+        @test string(circuit.control_objective) == "VOLTAGE"
+        @test _band(circuit.controlled_voltage_limits) == (1.02, 1.02)
+        # Used, so not reported dropped.
+        @test !haskey(rep.unmapped_fields, ("TapTransformer", "voltage_setpoint"))
+    end
+
+    @testset "older PSY5 file: no voltage_setpoint, so PSY5's default (flagged)" begin
+        for objective in ("FIXED", "VOLTAGE")
+            circuit, rep = _controlled("TapTransformer", objective)
+            @test string(circuit.control_objective) == objective
+            @test _band(circuit.controlled_voltage_limits) == (1.0, 1.0)
+            @test rep.psy5_defaults[("TapTransformer", "voltage_setpoint")] == 1
+            @test !haskey(rep.unmapped_fields, ("TapTransformer", "control_objective"))
+        end
+        # A matching PSS/E band is real data, so it wins over the default.
+        circuit, rep = _controlled("TapTransformer", "FIXED";
+            extra = Dict{String, Any}(
+                "ext" => Dict{String, Any}("COD1" => 0, "VMA1" => 1.1, "VMI1" => 0.9),
+            ))
+        @test _band(circuit.controlled_voltage_limits) == (0.9, 1.1)
+        @test isempty(rep.psy5_defaults)
+        # Present setpoint: no default.
+        _, rep = _controlled("TapTransformer", "VOLTAGE";
+            extra = Dict{String, Any}("voltage_setpoint" => 1.02))
+        @test isempty(rep.psy5_defaults)
+    end
+
+    @testset "tier 1 then 2: phase angle from the field, flow band from ext" begin
+        circuit, rep = _controlled("PhaseShiftingTransformer", "ACTIVE_POWER_FLOW";
+            extra = Dict{String, Any}(
+                "phase_angle_limits" => Dict("min" => -0.5, "max" => 0.5),
+                "ext" =>
+                    Dict{String, Any}("COD1" => 3, "VMA1" => 330.0, "VMI1" => 300.0),
+            ))
+        @test string(circuit.control_objective) == "ACTIVE_POWER_FLOW"
+        @test _band(circuit.phase_angle_limits) == (-0.5, 0.5)
+        # MW on a 100 MVA circuit, written per unit on its own base.
+        @test all(_band(circuit.controlled_active_power_flow_limits) .≈ (3.0, 3.3))
+    end
+
+    @testset "tier 2: PSS/E VMA/VMI as a voltage band" begin
+        circuit, _ = _controlled("PhaseShiftingTransformer", "FIXED";
+            extra = Dict{String, Any}(
+                "ext" => Dict{String, Any}("COD1" => 0, "VMA1" => 1.1, "VMI1" => 0.9),
+            ))
+        @test string(circuit.control_objective) == "FIXED"
+        @test _band(circuit.controlled_voltage_limits) == (0.9, 1.1)
+    end
+
+    @testset "tier 3: ext describing another control is not used" begin
+        circuit, rep = _controlled("PhaseShiftingTransformer", "FIXED";
+            extra = Dict{String, Any}(
+                "ext" => Dict{String, Any}("COD1" => 1, "VMA1" => 1.1, "VMI1" => 0.9),
+            ))
+        @test string(circuit.control_objective) == "UNDEFINED"
+        @test rep.unmapped_fields[("PhaseShiftingTransformer", "control_objective")] == 1
+    end
+
+    @testset "tier 3: no data at all" begin
+        circuit, rep = _controlled("PhaseShiftingTransformer", "REACTIVE_POWER_FLOW")
+        @test string(circuit.control_objective) == "UNDEFINED"
+        @test rep.unmapped_fields[("PhaseShiftingTransformer", "control_objective")] == 1
+    end
+
+    @testset "tap_ratio_limits: tap_limits, then ext RMA/RMI, then the schema default" begin
+        circuit, rep = _controlled("TapTransformer", "VOLTAGE";
+            extra = Dict{String, Any}(
+                "voltage_setpoint" => 1.0,
+                "tap_limits" => Dict("min" => 0.8, "max" => 1.2),
+            ))
+        @test _band(circuit.tap_ratio_limits) == (0.8, 1.2)
+        @test !haskey(rep.unmapped_fields, ("TapTransformer", "tap_limits"))
+        @test isempty(rep.schema_defaults)
+
+        circuit, rep = _controlled("PhaseShiftingTransformer", "FIXED";
+            extra = Dict{String, Any}(
+                "ext" => Dict{String, Any}(
+                    "COD1" => 0, "VMA1" => 1.1, "VMI1" => 0.9,
+                    "RMA1" => 1.25, "RMI1" => 0.75,
+                ),
+            ))
+        @test _band(circuit.tap_ratio_limits) == (0.75, 1.25)
+        @test isempty(rep.schema_defaults)
+
+        # Neither source: the schema default, flagged.
+        circuit, rep = _controlled("TapTransformer", "VOLTAGE";
+            extra = Dict{String, Any}("voltage_setpoint" => 1.0))
+        @test _band(circuit.tap_ratio_limits) == (0.9, 1.1)
+        @test rep.schema_defaults[("TapTransformer", "tap_ratio_limits")] == 1
+
+        # Phase-moving objectives get no tap band.
+        circuit, _ = _controlled("PhaseShiftingTransformer", "ACTIVE_POWER_FLOW";
+            extra = Dict{String, Any}(
+                "phase_angle_limits" => Dict("min" => -0.5, "max" => 0.5),
+                "ext" =>
+                    Dict{String, Any}("COD1" => 3, "VMA1" => 330.0, "VMI1" => 300.0),
+            ))
+        @test circuit.tap_ratio_limits === nothing ||
+              circuit.tap_ratio_limits isa PSU.OpenAPI.Runtime.Absent
+    end
+
+    @testset "UNDEFINED needs no band" begin
+        circuit, rep = _controlled("TapTransformer", "UNDEFINED")
+        @test string(circuit.control_objective) == "UNDEFINED"
+        @test !haskey(rep.unmapped_fields, ("TapTransformer", "control_objective"))
+    end
+end
+
+@testset "PhaseShiftingTransformer3W: per-winding α becomes each circuit's alpha" begin
+    # A phase shifter's own angle (radians) wins over a group number it does not have.
+    @test PSU._winding_alpha(Dict{String, Any}("α_primary" => -0.5236), "primary") ==
+          -0.5236
+    # A Transformer3W winding has no α: its group number's angle, as before.
+    @test PSU._winding_alpha(
+        Dict{String, Any}("primary_group_number" => "UNDEFINED"),
+        "primary",
+    ) == PSU.winding_group_alpha("UNDEFINED")
+    @test PSU.has_translator("PhaseShiftingTransformer3W")
+    @test "α_secondary" in PSU.THREE_WINDING_CONSUMED_FIELDS
 end

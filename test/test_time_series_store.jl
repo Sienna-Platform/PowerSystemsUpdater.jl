@@ -50,6 +50,7 @@ end
     )
     @test_throws PSU.Psy5FormatError PSU._element_layout("PiecewiseLinearData", unmapped)
     @test PSU._element_layout("CONSTANT", unmapped) === PSU.ScalarLayout()
+    @test PSU._element_layout("Float64", unmapped) === PSU.ScalarLayout()
 
     # Scalars carry no element_type: InfraStore derives the dtype from the array itself.
     values, element_type = PSU._static_values(PSU.ScalarLayout(), [1.0, 2.0, 3.0])
@@ -178,13 +179,62 @@ end
         @test found == 1
     end
 
+    # ── Features ───────────────────────────────────────────────────────────────
+    # Two series with one owner and name, told apart only by a feature, both reach the
+    # store with their features; the derived-forecast coverage check tells them apart too.
+    let
+        rows = [
+            Dict{String, Any}(
+                "id" => i, "time_series_uuid" => "ts-$year",
+                "time_series_type" => "SingleTimeSeries",
+                "initial_timestamp" => "2024-01-01T00:00:00",
+                "resolution" => "P0DT3600.000S", "horizon" => nothing,
+                "interval" => nothing, "name" => "max_active_power",
+                "owner_uuid" => "uuid-load", "owner_type" => "PowerLoad",
+                "owner_category" => "Component", "features" => "[{\"year\":$year}]",
+                "scaling_factor_multiplier" => nothing, "units" => nothing,
+            ) for (i, year) in ((1, 2024), (2, 2030))
+        ]
+        mktempdir() do tmp
+            legacy = joinpath(tmp, "legacy.h5")
+            PSU.HDF5.h5open(legacy, "w") do file
+                for (year, scale) in ((2024, 1.0), (2030, 2.0))
+                    group = PSU.HDF5.create_group(file, "$(PSU.PSY5_TS_ROOT_PATH)/ts-$year")
+                    group["data"] = scale .* [1.0, 2.0, 3.0]
+                    PSU.HDF5.attributes(group)["data_type"] = "CONSTANT"
+                end
+            end
+            store = InfraStore.Store(; in_memory = true)
+            try
+                batch = InfraStore.AddBatch()
+                PSU.HDF5.h5open(legacy, "r") do file
+                    for row in rows
+                        PSU._stage_time_series!(
+                            PSU.SingleKind(), batch, file, row, 1, PSU.ConversionReport(),
+                        )
+                    end
+                end
+                InfraStore.add_time_series_bulk!(store, batch)
+                stored = Dict(
+                    m.features["year"] => InfraStore.read_by_id(store, m.id).data for
+                    m in InfraStore.list_metadata(store)
+                )
+                @test stored == Dict(2024 => [1.0, 2.0, 3.0], 2030 => [2.0, 4.0, 6.0])
+            finally
+                InfraStore.close!(store)
+            end
+        end
+        identities = PSU._association_identities(rows)["P0DT3600.000S"]
+        @test length(identities) == 2
+    end
+
     # ── Round trip through the reader PSY6 actually uses ───────────────────────
     # `IS.open_deserialized_infrastore_store` is the call `from_openapi` makes to adopt a
     # bundle's sidecar as the System's store, so a sidecar it can open with every declared
     # series present is one PSY6 can read. A byte-copied PSY5 sidecar cannot get here at
     # all: it has no catalog, and its arrays are keyed by a UUID nothing addresses any more.
     dir = joinpath(@__DIR__, "..", "data", "PSISystems")
-    path = joinpath(dir, "5_bus_hydro_ed_sys")
+    path = joinpath(dir, "5_bus_hydro_ed_sys.json")
     if require_corpus_file(path)
         case = PSU.read_psy5(path)
         rows = PSU.read_associations(case.time_series_path)
@@ -232,10 +282,74 @@ end
         end
     end
 
-    # A sidecar whose derived forecasts cover only some of the SingleTimeSeries at a
-    # resolution cannot be reproduced: InfraStore derives from every series at a resolution
-    # or none. Dropping one static row from the corpus's row set makes the derived set
-    # over-cover, and that must abort rather than write a store with extra forecasts.
+    # The catalog must hold the supplemental attribute associations, or PSY6 cannot load it
+    # read-only.
+    outage = joinpath(
+        @__DIR__,
+        "..",
+        "data",
+        "SPISystems",
+        "RTS_GMLC_Hourly with Static Outage Data.json",
+    )
+    if require_corpus_file(outage)
+        mktempdir() do tmp
+            result = PSU.convert_system(outage, tmp; force = true)
+            declared = Set(
+                (a.component_id, a.attribute_id) for
+                a in result.document.supplemental_attribute_associations
+            )
+            @test !isempty(declared)
+            catalog = InfraStore.open_store(
+                joinpath(tmp, PSU.TIME_SERIES_FILENAME); read_only = true,
+            )
+            try
+                stored = Set(
+                    (a.component_id, a.attribute_id) for
+                    a in InfraStore.list_supplemental_attribute_associations(catalog)
+                )
+                @test stored == declared
+            finally
+                InfraStore.close!(catalog)
+            end
+        end
+    end
+
+    # Only components get derived forecasts, not an outage attribute's series.
+    ts_outage = joinpath(
+        @__DIR__,
+        "..",
+        "data",
+        "SPISystems",
+        "RTS_GMLC_Hourly with TimeSeries Outage Data.json",
+    )
+    if require_corpus_file(ts_outage)
+        rows = PSU.read_associations(PSU.read_psy5(ts_outage).time_series_path)
+        attribute_statics = count(
+            r ->
+                r["owner_category"] == "SupplementalAttribute" &&
+                    r["time_series_type"] == "SingleTimeSeries",
+            rows,
+        )
+        @test attribute_statics > 0
+        derived = count(r -> r["time_series_type"] == "DeterministicSingleTimeSeries", rows)
+        mktempdir() do tmp
+            PSU.convert_system(ts_outage, tmp; force = true)
+            catalog = InfraStore.open_store(
+                joinpath(tmp, PSU.TIME_SERIES_FILENAME); read_only = true,
+            )
+            try
+                counts = InfraStore.get_counts(catalog)
+                @test counts.forecasts == derived
+                @test counts.static_time_series ==
+                      count(r -> r["time_series_type"] == "SingleTimeSeries", rows)
+            finally
+                InfraStore.close!(catalog)
+            end
+        end
+    end
+
+    # InfraStore derives from every series of a category at a resolution or none, so a partial
+    # set must abort.
     if isfile(path)
         case = PSU.read_psy5(path)
         rows = PSU.read_associations(case.time_series_path)

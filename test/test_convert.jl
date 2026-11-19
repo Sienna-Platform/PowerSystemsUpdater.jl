@@ -148,7 +148,8 @@ end
     dir = joinpath(@__DIR__, "..", "data", "PSITestSystems")
     # c_sys5_hybrid/_uc/_ed also carry a MarketBidCost.incremental_offer_curves that is an
     # embedded time-series pointer, a distinct defect the scalar promotion above does not
-    # touch — PSY6 has no field type for that, so conversion now throws loudly
+    # touch — PSY6's `MarketBidTimeSeriesCost` needs every other cost field as a time series,
+    # which PSY5 holds as scalars, so conversion throws loudly
     # (KNOWN_CONVERSION_GAPS in test_corpus.jl documents this for the whole corpus sweep).
     for name in ("c_sys5_hybrid", "c_sys5_hybrid_uc", "c_sys5_hybrid_ed")
         path = joinpath(dir, name)
@@ -167,6 +168,42 @@ end
             report = PSU.convert_system(path, tmp).report
             @test isfile(joinpath(tmp, "system.json"))
             @test isempty(report.unmapped_types)
+        end
+    end
+end
+
+@testset "convert_system: FuelCurve.fuel_cost time series key" begin
+    @test PSU._milliseconds(Dict("value" => 1, "type" => "Hour")) == 3_600_000
+    @test PSU._milliseconds(Dict("value" => 3600000, "type" => "Millisecond")) == 3_600_000
+    @test PSU._milliseconds("PT1H") == 3_600_000
+    @test PSU._milliseconds("P1DT0.5S") == 86_400_500
+
+    # PSY5 holds the fuel price as a key into its time series; PSY6 names the same series by
+    # its association id in `fuel_cost_time_series`.
+    path = joinpath(@__DIR__, "..", "data", "PSITestSystems", "c_linear_fuel_test_ts.json")
+    if require_corpus_file(path)
+        mktempdir() do tmp
+            doc = PSU.convert_system(path, tmp; force = true).document
+            tree = PSU.PCOM.document_tree(doc)
+            fuel_rows =
+                filter(r -> r["name"] == "fuel_price", tree["time_series_associations"])
+            @test length(fuel_rows) == 1
+            curves = [
+                c.operation_cost.value.variable_operation_cost.value for
+                c in PSU.PCOM.get_components(doc, "ThermalStandard") if
+                c.operation_cost.value.variable_operation_cost.value isa
+                PSU.PCOM.FuelCurve &&
+                !isnothing(
+                    c.operation_cost.value.variable_operation_cost.value.fuel_cost_time_series,
+                )
+            ]
+            @test length(curves) == 1
+            @test only(curves).fuel_cost_time_series == only(fuel_rows)["association_id"]
+            @test only(curves).fuel_cost_time_series > 0
+            # The written document reads back with the id in place.
+            reread = PSU.PCOM.read_document(joinpath(tmp, "system.json"))
+            @test PSU.PCOM.document_tree(reread)["time_series_associations"] ==
+                  tree["time_series_associations"]
         end
     end
 end
@@ -295,6 +332,173 @@ end
     # `services` never leaks into build_kwargs as an unmapped field.
     @test !haskey(report.unmapped_fields, ("VariableReserve", "services"))
     @test !haskey(report.unmapped_fields, ("ACBus", "services"))
+end
+
+@testset "build_document: ext is carried in the document's ext table" begin
+    raw_data = Dict{String, Any}(
+        "components" => Any[
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "ACBus"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-bus1")),
+                "name" => "bus1", "number" => 1, "available" => true,
+                "bustype" => "REF",
+                "ext" => Dict{String, Any}("ARNAME" => "north", "LEN" => 4.5),
+            ),
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "ACBus"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-bus2")),
+                "name" => "bus2", "number" => 2, "available" => true,
+                "bustype" => "PQ",
+                "ext" => Dict{String, Any}(),
+            ),
+            # PSY6's Arc has no ext, so its ext is reported dropped instead of written.
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "Arc"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-arc")),
+                "from" => Dict("value" => "uuid-bus1"),
+                "to" => Dict("value" => "uuid-bus2"),
+                "ext" => Dict{String, Any}("note" => "dropped"),
+            ),
+            # A skipped component's ext has no component to land on.
+            Dict{String, Any}(
+                "__metadata__" => Dict("type" => "SomeUnmappedType"),
+                "internal" => Dict("uuid" => Dict("value" => "uuid-gone")),
+                "name" => "gone",
+                "ext" => Dict{String, Any}("lost" => true),
+            ),
+        ],
+    )
+    raw = Dict{String, Any}(
+        "data" => raw_data,
+        "units_settings" => Dict("base_value" => 100.0),
+        "frequency" => 60.0,
+        "metadata" => Dict{String, Any}("name" => nothing, "description" => nothing),
+        "data_format_version" => "5.0.0",
+    )
+    case = PSU.Psy5Case(raw, "test-ext", nothing)
+    report = PSU.ConversionReport()
+    doc, ledger = PSU.build_document(case, report)
+
+    @test doc.ext == Dict(
+        PSU.lookup_id(ledger, "uuid-bus1") =>
+            Dict{String, Any}("ARNAME" => "north", "LEN" => 4.5),
+    )
+    @test report.unmapped_fields[("Arc", "ext")] == 1
+    @test !haskey(report.unmapped_fields, ("ACBus", "ext"))
+    PSU.PCOM.validate_document(doc)
+end
+
+@testset "build_document: unmapped PSY5 fields are kept in ext" begin
+    function _bus(uuid, number; extra...)
+        raw = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "ACBus"),
+            "internal" => Dict("uuid" => Dict("value" => uuid)),
+            "name" => "bus$number", "number" => number, "available" => true,
+            "bustype" => "REF",
+        )
+        for (k, v) in extra
+            raw[string(k)] = v
+        end
+        return raw
+    end
+    function _doc(components)
+        raw = Dict{String, Any}(
+            "data" => Dict{String, Any}("components" => Any[components...]),
+            "units_settings" => Dict("base_value" => 100.0),
+            "frequency" => 60.0,
+            "metadata" =>
+                Dict{String, Any}("name" => nothing, "description" => nothing),
+            "data_format_version" => "5.0.0",
+        )
+        report = PSU.ConversionReport()
+        doc, ledger =
+            PSU.build_document(PSU.Psy5Case(raw, "test-unmapped", nothing), report)
+        return doc, ledger, report
+    end
+
+    doc, ledger, report = _doc([
+        # An unmapped field alongside the component's own ext.
+        _bus(
+            "uuid-b1",
+            1;
+            legacy_flag = true,
+            ext = Dict{String, Any}("ARNAME" => "north"),
+        ),
+        # Only an unmapped field, no ext of its own.
+        _bus("uuid-b2", 2; legacy_rating = 7.5),
+        # PSY6's Arc has no ext: the field is reported but has nowhere to go.
+        Dict{String, Any}(
+            "__metadata__" => Dict("type" => "Arc"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-arc")),
+            "from" => Dict("value" => "uuid-b1"),
+            "to" => Dict("value" => "uuid-b2"),
+            "legacy_arc_field" => 1,
+        ),
+    ])
+    @test doc.ext[PSU.lookup_id(ledger, "uuid-b1")] == Dict{String, Any}(
+        "ARNAME" => "north",
+        "psy5_unmapped" => Dict{String, Any}("legacy_flag" => true),
+    )
+    @test doc.ext[PSU.lookup_id(ledger, "uuid-b2")] ==
+          Dict{String, Any}("psy5_unmapped" => Dict{String, Any}("legacy_rating" => 7.5))
+    @test !haskey(doc.ext, PSU.lookup_id(ledger, "uuid-arc"))
+    @test report.unmapped_fields[("ACBus", "legacy_flag")] == 1
+    @test report.unmapped_fields[("Arc", "legacy_arc_field")] == 1
+    PSU.PCOM.validate_document(doc)
+
+    # The key is reserved: a PSY5 ext already using it is an error, not a silent merge.
+    @test_throws PSU.Psy5FormatError _doc([
+        _bus("uuid-b3", 3; legacy_flag = true,
+            ext = Dict{String, Any}("psy5_unmapped" => "mine")),
+    ])
+end
+
+@testset "build_document: a dynamic model is dropped, its static device kept" begin
+    _dynamic(uuid) = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "DynamicGenerator"),
+        "internal" => Dict("uuid" => Dict("value" => uuid)),
+        "name" => "gen-dyn",
+    )
+    _shunt(uuid, name, dynamic) = Dict{String, Any}(
+        "__metadata__" => Dict("type" => "FixedAdmittance"),
+        "internal" => Dict("uuid" => Dict("value" => uuid)),
+        "name" => name, "available" => true,
+        "bus" => Dict("value" => "uuid-bus"),
+        "Y" => Dict("real" => 0.0, "imag" => 0.1),
+        "dynamic_injector" => Dict("value" => dynamic),
+    )
+    raw = Dict{String, Any}(
+        "data" => Dict{String, Any}(
+            "components" => Any[
+                Dict{String, Any}(
+                    "__metadata__" => Dict("type" => "ACBus"),
+                    "internal" => Dict("uuid" => Dict("value" => "uuid-bus")),
+                    "name" => "bus1", "number" => 1, "available" => true,
+                    "bustype" => "REF", "base_voltage" => 230.0,
+                ),
+                # The outcome must not depend on whether the dynamic model comes first.
+                _dynamic("uuid-dyn-a"),
+                _shunt("uuid-sh-a", "after", "uuid-dyn-a"),
+                _shunt("uuid-sh-b", "before", "uuid-dyn-b"),
+                _dynamic("uuid-dyn-b"),
+            ],
+        ),
+        "units_settings" => Dict("base_value" => 100.0),
+        "frequency" => 60.0,
+        "metadata" => Dict{String, Any}("name" => nothing, "description" => nothing),
+        "data_format_version" => "5.0.0",
+    )
+    report = PSU.ConversionReport()
+    doc, ledger = PSU.build_document(PSU.Psy5Case(raw, "test-dynamic", nothing), report)
+
+    shunts = doc.components["FixedAdmittance"]
+    @test sort([s.name for s in shunts]) == ["after", "before"]
+    @test all(s -> s.dynamic_injector isa PSU.OpenAPI.Runtime.Absent, shunts)
+    @test report.dropped_dynamic_models["FixedAdmittance"] == 2
+    @test report.unmapped_types["DynamicGenerator"] == 2
+    @test isempty(report.cascaded_skips)
+    @test occursin("DYNAMIC MODELS DROPPED", sprint(show, MIME("text/plain"), report))
+    PSU.PCOM.validate_document(doc)
 end
 
 @testset "build_document: a service association to a skipped entity is dropped" begin
@@ -441,4 +645,20 @@ end
     @test length(Set(a.attribute_id for a in geo_associations)) == 1
 
     PSU.PCOM.validate_document(doc)
+end
+
+@testset "build_document: shared attribute rows use the PSY6 type names" begin
+    # PSY5's `Transformer3W` is PSY6's `ThreeWindingTransformer`; every owner of the shared
+    # impedance correction table must be named the PSY6 way, not only the first.
+    path = joinpath(@__DIR__, "..", "data", "PSSEParsingTestSystems",
+        "psse_modified_14bus_nominal_icd.json")
+    if require_corpus_file(path)
+        doc, _ = PSU.build_document(PSU.read_psy5(path), PSU.ConversionReport())
+        rows = doc.supplemental_attribute_associations
+        @test !isempty(rows)
+        @test all(a -> a.component_type == doc.component_types_by_id[a.component_id], rows)
+        @test !any(a -> a.component_type == "Transformer3W", rows)
+        @test any(a -> a.component_type == "ThreeWindingTransformer", rows)
+        PSU.PCOM.validate_document(doc)
+    end
 end

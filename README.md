@@ -115,6 +115,15 @@ Generation runs in its own environment pinned to `PowerSystems = "5"`. That is d
 this package must never depend on PowerSystems, and the generator is the only thing here that
 does.
 
+The full-corpus generator builds every system in every PowerSystemCaseBuilder category into
+`data/<Category>/` (the corpus tests read only `PSISystems` and `PSITestSystems`). A system that
+fails to build is recorded rather than fatal: `data/psb_build_report.md` lists each case's
+outcome, with full errors in `data/psb_build_errors/`. A system with a required argument (the
+`psid_psse_test_*` systems) is built once per allowed value, as `<system>__<argument>_<value>`.
+Options: `--categories A,B`, `--systems a,b`, `--variants` (also build each non-default value of
+every boolean argument, e.g. `add_reserves`), `--skip-existing` (resume an interrupted run), and
+`--out DIR`.
+
 ### Python tier
 
 Converted documents are also validated against the generated Python models. The tier is
@@ -128,6 +137,49 @@ test/python/.venv/bin/pip install -r test/python/requirements.txt
 Point `PSU_PYTHON` at an existing interpreter to use one instead. `power-openapi-models` is not
 on PyPI, so `requirements.txt` installs it from GitHub — the environment must be able to reach
 it.
+
+## Comparing PSY5 and PSY6 systems
+
+`scripts/psy5_psy6_compare/` checks that an upgraded case is the same system it started as.
+For each PSY5 case (a `System` JSON with its `_time_series_storage.h5` beside it) it:
+
+1. loads the case with PowerSystems 5 and snapshots it,
+2. upgrades it with `convert_system`,
+3. loads the result with PowerSystems 6 and snapshots it, and
+4. diffs the two snapshots.
+
+PSY5 and PSY6 are the same package to Julia, so they cannot share a process: each step runs in
+its own environment (`psy5_env/`, `psy6_env/`), and the steps hand off through version-neutral
+JSON snapshots. A snapshot holds every component's fields read through its getters in system
+base units, references as type + name, and each time series' metadata. The time series values
+go to an HDF5 file beside it (`psy5_values.h5`, `psy6_values.h5`) and are compared element by
+element. Step 3 is also the check that PSY6 can deserialize the upgraded bundle at all: a
+`from_file` failure is reported as that case's error.
+
+```bash
+julia scripts/psy5_psy6_compare/run.jl --instantiate data/PSITestSystems     # first run
+julia scripts/psy5_psy6_compare/run.jl data/PSITestSystems/c_sys5.json       # one case
+julia scripts/psy5_psy6_compare/run.jl --steps compare data/PSITestSystems   # re-diff only
+julia scripts/psy5_psy6_compare/run.jl data   # every generated case, all categories
+```
+
+Results go to `scripts/psy5_psy6_compare/work/` (`--work DIR` to change):
+
+  - `summary.md`: one row per case, with its result, difference counts, and the components and
+    fields the updater's `ConversionReport` says it could not carry across.
+  - `run.log`: everything every step printed, appended per run.
+  - per case: `comparison.md` (including the conversion report), every difference in
+    `diffs.json`, the converted bundle, and a `<step>_error.txt` with the stack trace for any
+    step that threw. A step clears its own and every later step's outputs before it runs, so a
+    failure never leaves an earlier run's results standing in.
+
+The run exits non-zero if any case fails a step or has an unexpected difference.
+
+Differences that are intended PSY6 breaking changes are listed in
+`scripts/psy5_psy6_compare/known_differences.jl`: type mappings (e.g. `Transformer2W` →
+`TwoWindingTransformer`, with its `circuit` lifted for comparison) and individual accepted
+differences, each with a reason. Everything not listed there fails the case. Fields new in PSY6
+are reported but never fail.
 
 ## Development
 

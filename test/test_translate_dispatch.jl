@@ -158,7 +158,8 @@
         @test PSU.has_translator("Line")
         @test PSU.has_translator("ThermalStandard")
         for name in
-            ("Arc", "ConstantReserve", "VariableReserve", "Transformer2W", "TapTransformer",
+            ("Arc", "MonitoredLine", "ConstantReserve", "VariableReserve", "Transformer2W",
+            "TapTransformer",
             "PhaseShiftingTransformer", "Transformer3W", "TModelHVDCLine")
             @test PSU.has_translator(name)
         end
@@ -166,8 +167,10 @@
     end
 
     @testset "DIRECT_TYPES" begin
-        @test length(PSU.DIRECT_TYPES) == 20
+        @test length(PSU.DIRECT_TYPES) == 23
         @test !(:Arc in PSU.DIRECT_TYPES)
+        # PSY6 folded MonitoredLine into Line; it has its own translator.
+        @test !(:MonitoredLine in PSU.DIRECT_TYPES)
         @test !(:ExponentialLoad in PSU.DIRECT_TYPES)
         @test !(:MonitoredLine in PSU.DIRECT_TYPES)
         @test !(:FixedAdmittance in PSU.DIRECT_TYPES)
@@ -204,6 +207,97 @@
         @test arc.from_id == PSU.lookup_id(led5, "uuid-arc-from")
         @test arc.to_id == PSU.lookup_id(led5, "uuid-arc-to")
         @test isempty(rep5.unmapped_fields)
+    end
+
+    @testset "MonitoredLine: becomes a Line with operational_flow_limit" begin
+        led = PSU.Ledger()
+        rep = PSU.ConversionReport()
+        ctx = PSU.TranslationContext(led, rep, 100.0)
+
+        PSU.assign_id!(led, "uuid-ml-arc")
+        PSU.assign_id!(led, "uuid-ml")
+        raw_ml = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "MonitoredLine"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-ml")),
+            "name" => "inter_area_line",
+            "available" => true,
+            "active_power_flow" => 0.0,
+            "reactive_power_flow" => 0.0,
+            "arc" => Dict("value" => "uuid-ml-arc"),
+            "r" => 0.01,
+            "x" => 0.1,
+            "b" => Dict("from" => 0.0, "to" => 0.0),
+            "g" => Dict("from" => 0.0, "to" => 0.0),
+            "flow_limits" => Dict("from_to" => 7.0, "to_from" => 6.0),
+            "rating" => 10.0,
+            "angle_limits" => Dict("min" => -1.57, "max" => 1.57),
+            "rating_b" => nothing,
+            "rating_c" => nothing,
+        )
+        out = PSU.translate_component(raw_ml, ctx)
+        @test length(out) == 1
+        line = only(out)
+        @test nameof(typeof(line)) === :Line
+        @test line.id == PSU.lookup_id(led, "uuid-ml")
+        @test line.rating == 10.0
+        limit = line.operational_flow_limit
+        @test (limit.from_to_min, limit.from_to_max) == (0.0, 7.0)
+        @test (limit.to_from_min, limit.to_from_max) == (0.0, 6.0)
+        # flow_limits is carried, not reported dropped.
+        @test isempty(rep.unmapped_fields)
+        @test isempty(rep.unmapped_types)
+    end
+
+    @testset "TwoTerminalGenericHVDCLine: rating from active_power_limits_from" begin
+        led = PSU.Ledger()
+        rep = PSU.ConversionReport()
+        ctx = PSU.TranslationContext(led, rep, 100.0)
+
+        PSU.assign_id!(led, "uuid-dc-arc")
+        PSU.assign_id!(led, "uuid-dc")
+        raw_dc = Dict{String, Any}(
+            "__metadata__" =>
+                Dict("module" => "PowerSystems", "type" => "TwoTerminalGenericHVDCLine"),
+            "internal" => Dict("uuid" => Dict("value" => "uuid-dc")),
+            "name" => "DCL2",
+            "available" => true,
+            "active_power_flow" => 0.0,
+            "arc" => Dict("value" => "uuid-dc-arc"),
+            "active_power_limits_from" => Dict("min" => -30.0, "max" => 25.0),
+            "active_power_limits_to" => Dict("min" => -30.0, "max" => 30.0),
+            "reactive_power_limits_from" => Dict("min" => -30.0, "max" => 30.0),
+            "reactive_power_limits_to" => Dict("min" => -30.0, "max" => 30.0),
+            "loss" => Dict{String, Any}(
+                "__metadata__" => Dict(
+                    "module" => "InfrastructureSystems",
+                    "type" => "InputOutputCurve",
+                    "parameters" => ["LinearFunctionData"],
+                ),
+                "input_at_zero" => nothing,
+                "function_data" => Dict{String, Any}(
+                    "__metadata__" => Dict(
+                        "module" => "InfrastructureSystems",
+                        "type" => "LinearFunctionData",
+                    ),
+                    "constant_term" => 0.0,
+                    "proportional_term" => 0.01,
+                ),
+            ),
+        )
+        line = only(PSU.translate_component(raw_dc, ctx))
+        @test nameof(typeof(line)) === :TwoTerminalGenericHVDCLine
+        @test line.rating == 25.0
+        # The limits' min and the `_to` side have no PSY6 home, so they stay reported.
+        @test haskey(
+            rep.unmapped_fields,
+            ("TwoTerminalGenericHVDCLine", "active_power_limits_from"),
+        )
+
+        delete!(raw_dc, "active_power_limits_from")
+        @test_throws PSU.Psy5FormatError PSU.translate_component(
+            raw_dc,
+            PSU.TranslationContext(led, PSU.ConversionReport(), 100.0),
+        )
     end
 
     @testset "ExponentialLoad: α/β renamed to alpha/beta" begin
@@ -246,9 +340,7 @@ end
     line = Dict{String, Any}(
         "active_power_limits_from" => limits, "active_power_limits_to" => limits,
     )
-    rated = PSU._with_transfer_rating(Val(:TwoTerminalGenericHVDCLine), line)
-    @test rated["rating"] == 3.0
-    @test !haskey(PSU._with_transfer_rating(Val(:TwoTerminalVSCLine), line), "rating")
+    @test PSU._with_rating_from_limits(line)["rating"] == 2.0
 
     vsc = Dict{String, Any}(
         "name" => "vsc", "rated_dc_voltage" => 400.0,
@@ -259,13 +351,12 @@ end
         "ac_control_to" => "AC_REACTIVE_POWER", "ac_setpoint_to" => 1.0,
         "remote_bus_control_to" => 0,
     )
-    split = PSU._with_converter_setpoints(Val(:TwoTerminalVSCLine), vsc)
-    @test split["dc_voltage_setpoint_from"] ≈ 420.0
+    split = PSU._vsc_setpoints(
+        vsc,
+        PSU.TranslationContext(PSU.Ledger(), PSU.ConversionReport(), 100.0),
+    )
+    @test split["dc_voltage_setpoint_from"] == 1.05
     @test split["power_factor_setpoint_from"] == 0.9
     @test split["dc_power_setpoint_to"] == 0.4
     @test !haskey(split, "dc_setpoint_from")
-    @test_throws PSU.Psy5FormatError PSU._with_converter_setpoints(
-        Val(:TwoTerminalVSCLine),
-        merge(vsc, Dict("rated_dc_voltage" => 0.0)),
-    )
 end

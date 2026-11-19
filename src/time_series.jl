@@ -132,18 +132,88 @@ owner_translated(ledger::Ledger, row::AbstractDict) =
     has_id(ledger, row["owner_uuid"]) && !is_skipped(ledger, row["owner_uuid"])
 
 """
-PSY5's `features` column is a JSON-encoded list. This translator has no destination for a
-populated one, so a non-empty value fails loudly rather than being dropped.
+Feature names PSY6 reserves because they name a field of a time series or of the key that
+addresses one (the `TimeSeriesFeatures.propertyNames` exclusion in SiennaSchemas). PSY5 had
+no such rule, and tools that build PSY5 systems from other models write some of them (a
+model year as `horizon`), so [`_features`](@ref) renames them.
 """
-function _features(row::AbstractDict)
-    value = _association_value(get(row, "features", nothing))
-    if !isnothing(value) && !isempty(JSON.parse(String(value)))
-        throw(
-            Psy5FormatError(
-                "non-empty time series features are not supported: " *
-                "name=$(row["name"]) owner_type=$(row["owner_type"]) features=$value",
-            ),
-        )
+const RESERVED_FEATURE_NAMES = Set([
+    "application_data", "array_shape", "association_id", "component_field", "count",
+    "data",
+    "data_hash", "dtype", "element_shape", "element_type", "ext", "features", "horizon",
+    "id",
+    "initial_timestamp", "interval", "interval_alignment", "length", "name",
+    "owner_category",
+    "owner_id", "owner_type", "per_unit_of", "percentiles", "quantity_kind",
+    "resolution",
+    "scenario_count", "time_reference", "time_series_type", "timestamps",
+    "timestamps_uri",
+    "unit_system", "units", "uri",
+])
+
+const RESERVED_FEATURE_SUFFIX = "_feature"
+
+"""A PSY5 feature name as PSY6 stores it: a reserved name gets `_feature` appended."""
+function _psy6_feature_name(name::AbstractString)
+    if name in RESERVED_FEATURE_NAMES
+        return name * RESERVED_FEATURE_SUFFIX
     end
-    return Dict{String, Any}()
+    return String(name)
+end
+
+_psy6_features(features::AbstractDict) =
+    Dict{String, Any}(_psy6_feature_name(k) => v for (k, v) in features)
+
+function _features_error(row::AbstractDict, value, problem::AbstractString)
+    return Psy5FormatError(
+        "time series features $value on name=$(row["name"]) " *
+        "owner_type=$(row["owner_type"]): $problem",
+    )
+end
+
+"""
+A row's PSY5 features as a dictionary. PSY5 stores them as a JSON list of one-pair objects
+(`[{"year":2024}]`) with Bool, Int or String values, the encoding IS3's reader expects.
+"""
+function _psy5_features(row::AbstractDict)
+    features = Dict{String, Any}()
+    value = _association_value(get(row, "features", nothing))
+    if isnothing(value)
+        return features
+    end
+    for pair in JSON.parse(String(value))
+        if length(pair) != 1
+            throw(_features_error(row, value, "each entry must hold exactly one pair"))
+        end
+        name, feature = only(pair)
+        if haskey(features, name)
+            throw(_features_error(row, value, "duplicate feature \"$name\""))
+        end
+        features[String(name)] = feature
+    end
+    return features
+end
+
+"""A row's features as PSY6 stores them, reserved names renamed by [`_psy6_feature_name`](@ref)."""
+function _features(row::AbstractDict)
+    psy5 = _psy5_features(row)
+    features = _psy6_features(psy5)
+    if length(features) != length(psy5)
+        throw(_features_error(row, psy5, "a renamed feature collides with another"))
+    end
+    return features
+end
+
+"""Warn about and report each feature [`_features`](@ref) renames on `row`."""
+function _record_feature_renames!(row::AbstractDict, report::ConversionReport)
+    owner_type = string(row["owner_type"])
+    for name in keys(_psy5_features(row))
+        if name in RESERVED_FEATURE_NAMES
+            @warn "time series feature \"$name\" is reserved in PSY6; carried as " *
+                  "\"$(_psy6_feature_name(name))\" (first seen on $owner_type " *
+                  "\"$(row["name"])\")" maxlog = 1
+            record_approximate_mapping!(report, owner_type, "features.$name")
+        end
+    end
+    return nothing
 end

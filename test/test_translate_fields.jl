@@ -333,6 +333,15 @@
         # is not a MarketBidCost fieldname (that field is minimum_energy_offer), so nothing
         # downstream needs to record it again.
         @test scalar_rep.unmapped_fields[("MarketBidCost", "no_load_cost")] == 1
+        # PSY5 has no slope/style fields: the schema defaults are written, and flagged.
+        @test translated["incremental_slope"] === false
+        @test translated["decremental_slope"] === false
+        @test translated["curve_style"] == 0
+        @test translated["curve_multistep"] == 0
+        for field in
+            ("incremental_slope", "decremental_slope", "curve_style", "curve_multistep")
+            @test scalar_rep.schema_defaults[("MarketBidCost", field)] == 1
+        end
 
         # actually constructs: ICOM.decode (from_json's OpenAPI 1.1 replacement) is what
         # PCOM.read_document uses to turn a JSON dict into a typed model, and this is the
@@ -378,29 +387,31 @@
         @test translated_curve["shut_down"]["function_data"]["proportional_term"] == 1.0
     end
 
-    @testset "embedded time-series pointers error loudly" begin
-        # PSY5 sometimes embeds a live time-series reference directly in a value field
-        # instead of a literal value. PSY6 has no field type for that, so it must throw
-        # rather than convert a bogus value or drop the pointer silently.
-        forecast_key_rep = PSU.ConversionReport()
+    @testset "embedded time-series pointers: carried where PSY6 names a series" begin
+        # `FuelCurve.fuel_cost` has a PSY6 field naming the series: the key is deferred as a
+        # placeholder id until the catalog exists (`resolve_series_refs`).
+        key = Dict{String, Any}(
+            "__metadata__" => Dict("type" => "ForecastKey"),
+            "name" => "fuel_cost",
+        )
         fuel_curve = Dict{String, Any}(
             "__metadata__" => Dict("type" => "FuelCurve"),
             "power_units" => "NATURAL_UNITS",
-            "fuel_cost" => Dict{String, Any}(
-                "__metadata__" => Dict("type" => "ForecastKey"),
-                "name" => "fuel_cost",
-            ),
+            "fuel_cost" => key,
         )
-        err = try
-            PSU.translate_value(fuel_curve, led, forecast_key_rep)
-            nothing
-        catch e
-            e
-        end
-        @test typeof(err) === PSU.Psy5FormatError
-        message = sprint(showerror, err)
-        @test occursin("FuelCurve.fuel_cost", message)
-        @test occursin("ForecastKey", message)
+        fuel_led = PSU.Ledger()
+        fuel_led.owner = "uuid-gen"
+        translated = PSU.translate_value(fuel_curve, fuel_led, PSU.ConversionReport())
+        @test !haskey(translated, "fuel_cost")
+        @test translated["fuel_cost_time_series"] == -1
+        @test only(fuel_led.series_refs).owner_uuid == "uuid-gen"
+        @test only(fuel_led.series_refs).key["name"] == "fuel_cost"
+        # Outside a component there is no owner to resolve the key against.
+        @test_throws PSU.Psy5FormatError PSU.translate_value(
+            fuel_curve,
+            PSU.Ledger(),
+            PSU.ConversionReport(),
+        )
 
         static_ts_key_rep = PSU.ConversionReport()
         market_bid = Dict{String, Any}(

@@ -31,6 +31,40 @@ is the *system* base (`Area`, `LoadZone`, `FixedAdmittance`, `AreaInterchange`,
 recorded per component *"in lieu of a system-level table"*. `ACBus`, `Arc`, `AGC`, and `DCBus`
 still declare none; their base remains implicit on the system base.
 
+### Converting each field into its declared unit
+
+Not every field is per unit in PSY6. The schema declares a unit for each field (`x-unit`):
+either through a basis field with a per-unit option (`power_units`, `parameter_units`), a basis
+field without one (`admittance_units`: S or MVAr; `energy_units`: MWh), a data field
+(`level_data_type`: m³, m or MWh), or outright (reserve `requirement` is MW, LCC impedances
+are ohm). The updater converts every field it writes by one rule (`src/translate/units.jl`):
+
+  - **PSY6 side**: the unit the schema declares, read from the model packages
+    (`unit_discriminator`, `declared_unit`). A per-unit basis is chosen wherever one exists,
+    and any basis the conversion chose is written (`admittance_units = COMPONENT_MVAR`, ...).
+  - **PSY5 side**: how PSY5 stored the field. Fields PSY5's descriptors mark
+    `needs_conversion` are device-base per unit; that table is generated
+    (`src/translate/psy5_units_generated.jl`, by
+    `scripts/psy5_units/generate_psy5_units.jl`). Fields PSY5 stored some other way without
+    saying so are listed by hand in `PSY5_STORAGE`: system-base per unit (reserve
+    `requirement`, `FixedAdmittance.Y`, LCC impedances), relative to another value (reservoir
+    levels as a fraction of `storage_level_limits.max`; VSC DC voltage limits in per unit of
+    `rated_dc_voltage`), per hour where PSY6 is per second (reservoir flows), or already
+    natural (bases, LCC kV fields).
+  - **Conversion**: a per-unit PSY6 unit takes PSY5's device-base value as is. A power unit
+    (MW, MVA, MVAr, MWh, and rates) multiplies by the MVA base PSY5's value is on. Ohm, siemens
+    and kV also need a voltage base, taken from the component's buses: an injector's `bus`, or
+    a branch's `arc`, whose two ends share a base except across a transformer (whose
+    impedances are per unit and never converted); where they differ, the `from` bus is used.
+    LCC impedances are the exception: PSY5 put each on the voltage of the circuit it sits in,
+    the DC line's `r` on `scheduled_dc_voltage` and each converter's on its own
+    `rectifier_base_voltage` or `inverter_base_voltage`, and they are converted on that.
+
+A field whose PSY6 unit is physical and whose PSY5 storage is not known is never silently
+copied: it is listed under UNVERIFIED UNITS in the `ConversionReport`. An optional one is left
+unset with its PSY5 value kept in `ext["psy5_unmapped"]`; a required one is written as PSY5
+stored it. A new entry there means `PSY5_STORAGE` needs the field's convention.
+
 ## Type parameters become fields
 
 PSY5 encodes variation in the type parameter; PSY6 in a property, often with a new vocabulary.
@@ -69,7 +103,10 @@ Consequences worth knowing:
   - **The 1-3 winding pair becomes 3-1**: `r_13`/`x_13`/`base_power_13` → `r_31`/`x_31`/`base_power_31`.
     The 1-2 and 2-3 pairs keep their names. A silent-corruption trap.
   - **Availability and rating are circuit-level.** `Transformer3W`'s top-level `available` and
-    `rating` have no PSY6 home; each circuit carries its own.
+    `rating` have no PSY6 home; each circuit carries its own. A circuit is available only if
+    both the transformer and its winding are (`available && available_<winding>`), so a
+    transformer PSY5 marked out of service gets three unavailable circuits; the top-level value
+    is kept in `ext`.
   - **`g`/`b` become one `magnetizing_shunt`** (`ComplexNumber`). On a three-winding transformer
     it sits star-bus-to-ground, so `shunt_location = "STAR"` — unlike the two-winding case,
     whose `primary_shunt` genuinely is primary-side and takes the `"PRIMARY"` default.
@@ -128,9 +165,11 @@ Three element layouts and one time series type make the crossing:
 | `DeterministicSingleTimeSeries`                   | derived by `transform_single_time_series!` |
 
 A derived forecast stores no array of its own in PSY6 — it re-describes the
-`SingleTimeSeries` it came from. InfraStore derives from every series at a resolution or from
-none, so a sidecar whose derived rows cover only some of them aborts rather than gaining or
-losing forecasts. Every other layout and type (`PiecewiseLinearData`, `Probabilistic`,
+`SingleTimeSeries` it came from. InfraStore derives from every series of one owner category
+(components, or supplemental attributes) at a resolution or from none. PSY5 and PSY6 both
+derive for components only, so a supplemental attribute's series, such as an outage
+probability, keeps no derived forecast. A sidecar whose derived rows cover only some of a
+category's series at a resolution aborts rather than gaining or losing forecasts. Every other layout and type (`PiecewiseLinearData`, `Probabilistic`,
 `Scenarios`) errors: the two stores agree on nothing but plain scalars, and a `Probabilistic`
 association row carries no percentiles to rebuild one from.
 
@@ -170,18 +209,67 @@ written — so filling them into the document too would add a second copy with n
 
 ## Fields with no PSY6 home
 
-Dropped by design: `services` (schema convention), `WindingGroupNumber` (superseded by
-`alpha`), `Transformer3W.available` / `.rating` (now circuit-level).
+**Rule: data that would otherwise be lost is moved to `ext`.** A PSY5 value with no PSY6
+field is kept on the component it came from, in the document's `ext` table under the reserved
+key `psy5_unmapped`, and PSY6 merges it into that component's `ext` on import:
 
-Dropped without a stated replacement, and worth reporting when encountered:
-`TapTransformer.tap_limits`, `TapTransformer.voltage_setpoint`.
+```julia
+get_ext(component)["psy5_unmapped"]  # Dict("R_th" => 5.0e-6, "X_th" => 5.0e-6, ...)
+```
+
+  - Keys are the PSY5 field name, or `Type.field` for a field of a nested struct (e.g.
+    `ImportExportCost.ancillary_service_offers`, `head_to_volume_factor.input_at_zero`).
+  - Values are exactly as PSY5 stored them, including its per-unit basis (device base for
+    unit-bearing fields), so they are a record of the source, not PSY6 values.
+  - The component's own PSY5 `ext` entries are carried alongside, unchanged. A PSY5 `ext` that
+    already uses the key `psy5_unmapped` is an error rather than silently merged.
+  - Every kept field is also listed under UNMAPPED FIELDS in the `ConversionReport`.
+
+Examples: `Source.R_th`/`X_th`; the HVDC lines' `active_power_limits_from`/`_to` (only
+`from.max` survives, as `rating`); a transformer `control_objective` written as `UNDEFINED`
+because no band data could be found for it.
+
+**Non-physical values PSY6 rejects** are treated the same way. A transformer winding base
+voltage (`base_voltage_primary`, `_secondary`, ...) or a VSC line's `rated_dc_voltage` of 0 or
+less, which PSY5 accepted (some MATPOWER cases and test systems record none), is left unset
+(the schema fields are optional). The value is kept in `psy5_unmapped` and counted under
+INVALID VALUES DROPPED in the `ConversionReport`. So is every value PSY5 stored relative to such
+a base (a VSC DC voltage setpoint or limit), since it has no physical value. A required field,
+including the VSC setpoint the converter's control mode selects, is written as PSY5 stored it,
+so the document stays valid. A bus's `base_voltage` is written as stored: PSY6's `Line` checks
+need one.
+
+Where `ext` cannot hold it, the data is still lost, and only reported:
+
+  - **Skipped components** (a PSY5 type with no PSY6 counterpart, and the components that
+    reference one) have no PSY6 component to carry an `ext`.
+  - **Dynamic models** (`DynamicGenerator`, `DynamicInverter`, ...) have no home in the 0.2
+    schema and are skipped. A static device linked to one through `dynamic_injector` is kept
+    without the link, rather than skipped with it, and is counted under DYNAMIC MODELS
+    DROPPED in the `ConversionReport`.
+  - **`Arc`, `TransmissionInterface` and `TransformerCircuit`** have no `ext` in PSY6. A
+    two- or three-winding transformer's dropped fields go on the transformer, not its circuits.
+
+Not lost, but no longer a field of their own: `services` (now `ServiceAssociation` rows),
+`WindingGroupNumber` (now the circuit's `alpha`), `Transformer3W.available`/`.rating` (now
+per circuit), and `TapTransformer.tap_limits`/`voltage_setpoint` (now the circuit's
+`tap_ratio_limits`/`controlled_voltage_limits` when its control objective needs them).
 
 ## What PSY6 cannot yet express
 
 **Time-series-valued fields.** PSY5 embeds a `ForecastKey` or `StaticTimeSeriesKey` directly in
 a value field — `FuelCurve.fuel_cost` and `MarketBidCost.incremental_offer_curves` in the
-corpus. PSY6 types these as scalars or curves, with no representation for "this comes from a
-time series."
+corpus. PSY6 names such a series by the integer id of its time series association instead.
+
+  - **`FuelCurve.fuel_cost`: converted.** The key becomes `fuel_cost_time_series`, the
+    association id of the series it names (same owner, name, kind, features and resolution).
+    The ids are minted by the sidecar's catalog, which is written after the components, so the
+    field is written as a placeholder during translation and filled in once the catalog exists
+    (`resolve_series_refs` in `src/convert.jl`).
+  - **`MarketBidCost` with time-series offer curves: not yet converted.** PSY6's counterpart,
+    `MarketBidTimeSeriesCost`, needs `minimum_energy_offer`, `start_up`, `shut_down` and both
+    offer curves as time series, where PSY5 holds scalars (or `nothing`). Carrying it means
+    creating series PSY5 never had; until that is decided, conversion throws.
 
 **Scalar operating costs, resolved.** `MarketBidCost.shut_down` and `no_load_cost` are typed as
 a concrete `InputOutputCurve`; PSY5 writes a bare `Float64`. The schema now sanctions this: its
