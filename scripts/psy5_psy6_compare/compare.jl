@@ -5,10 +5,11 @@
 #   julia --project=scripts/psy5_psy6_compare/psy6_env \
 #       scripts/psy5_psy6_compare/compare.jl <work_dir> <case.json>...
 #
-# Needs only JSON and HDF5; it never loads PowerSystems.
+# Needs only JSON, HDF5 and the time series schema models; it never loads PowerSystems.
 
 import HDF5
 import JSON
+import InfrastructureTimeSeriesOpenAPIModels as ITSOM
 
 include(joinpath(@__DIR__, "case_layout.jl"))
 include(joinpath(@__DIR__, "known_differences.jl"))
@@ -330,9 +331,27 @@ function diff_components!(out, psy5::AbstractDict, psy6::AbstractDict, system::A
     end
 end
 
-time_series_key(r::AbstractDict) =
-    (r["type"], r["name"], JSON.json(get(r, "resolution", nothing)))
-time_series_label(key) = "$(key[1]) \"$(key[2])\" @ $(key[3])"
+features_key(features::AbstractDict) = JSON.json(sort!(collect(features); by = first))
+features_key(features) = JSON.json(features)
+
+# Features are part of a series' identity: two series may share a name and resolution.
+time_series_key(r::AbstractDict) = (
+    r["type"],
+    r["name"],
+    JSON.json(get(r, "resolution", nothing)),
+    features_key(get(r, "features", nothing)),
+)
+function time_series_label(key)
+    label = "$(key[1]) \"$(key[2])\" @ $(key[3])"
+    if key[4] in ("[]", "null")
+        return label
+    end
+    return "$label $(key[4])"
+end
+
+# The PSY5 side of a time series list, with its feature names in PSY6 terms.
+psy5_series(records::AbstractVector) = map(with_psy6_features, records)
+psy5_series(records) = records
 
 keyed(records::AbstractVector, key) = Dict(key(r) => r for r in records)
 # An `attempt` error record in place of the list: compared whole.
@@ -509,7 +528,7 @@ function diff_attribute!(
     diff_keyed!(
         out,
         Site(site.psy5_type, site.psy6_type, path),
-        get(a, "time_series", Any[]),
+        psy5_series(get(a, "time_series", Any[])),
         get(b, "time_series", Any[]),
         time_series_key,
         time_series_label,
@@ -567,7 +586,7 @@ function diff_time_series!(out, psy5::AbstractDict, psy6::AbstractDict, files::V
             diff_keyed!(
                 out,
                 Site(psy5_type, psy6_type, name),
-                psy5[psy5_type][name],
+                psy5_series(psy5[psy5_type][name]),
                 records,
                 time_series_key,
                 time_series_label,

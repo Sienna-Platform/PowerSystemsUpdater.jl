@@ -104,8 +104,11 @@ self-describing matrix row, so the padding has to be read off and the row rebuil
 """
 struct PiecewiseStepLayout <: Psy5ElementLayout end
 
+# PSY5 labels a Float64 element "CONSTANT", but some writers store the type name instead;
+# PSY5's reader resolves both to Float64.
 const PSY5_ELEMENT_LAYOUTS = Dict{String, Psy5ElementLayout}(
     "CONSTANT" => ScalarLayout(),
+    "Float64" => ScalarLayout(),
     "PiecewiseStepData" => PiecewiseStepLayout(),
 )
 
@@ -269,16 +272,6 @@ the values are per-unit on the owner's own base.
 _store_unit_system(::Nothing) = nothing
 _store_unit_system(::AbstractString) = InfraStore.ComponentBase
 
-"""
-The store's feature dictionary for a row, which is always empty.
-
-[`_features`](@ref) is what makes that true: it refuses a populated features list rather than
-dropping it. Called here as well as on the document side so a conversion driven straight
-through [`convert_time_series`](@ref) keeps the same guarantee — features are part of a
-series' identity in InfraStore, so a dropped one would silently rename the series.
-"""
-_store_features(row::AbstractDict) = _features(row)
-
 # ── Staging one association ─────────────────────────────────────────────────────
 
 """
@@ -342,6 +335,7 @@ function _stage_time_series!(
     report::ConversionReport,
 )
     data, layout = _legacy_array(file, row)
+    _record_feature_renames!(row, report)
     array, element_type = _static_values(layout, data)
     multiplier = _scaling_factor_multiplier(row)
     series = InfraStore.SingleTimeSeries(
@@ -360,7 +354,7 @@ function _stage_time_series!(
         string(row["owner_type"]),
         _owner_category(row),
         series;
-        features = _store_features(row),
+        features = _features(row),
     )
     return nothing
 end
@@ -374,6 +368,7 @@ function _stage_time_series!(
     report::ConversionReport,
 )
     data, layout = _legacy_array(file, row)
+    _record_feature_renames!(row, report)
     array, element_type = _window_values(layout, data)
     windows = _window_count(row, size(array, 2))
     multiplier = _scaling_factor_multiplier(row)
@@ -396,7 +391,7 @@ function _stage_time_series!(
         string(row["owner_type"]),
         _owner_category(row),
         series;
-        features = _store_features(row),
+        features = _features(row),
     )
     return nothing
 end
@@ -476,7 +471,7 @@ function _derive_forecasts!(store::InfraStore.Store, rows::AbstractVector{<:Abst
                 ),
             )
         end
-        sources = get(static_owners, resolution, Set{Tuple{String, String}}())
+        sources = get(static_owners, resolution, Set{AssociationIdentity}())
         covered = _association_identities(group)[resolution]
         if covered != sources
             throw(
@@ -524,17 +519,15 @@ function _group_by_category_and_resolution(
     return grouped
 end
 
-# Association identity within a resolution: the (owner, name) pair, which is what InfraStore
-# addresses a series by. Features are not part of it because `_features` has already refused
-# any row that carries them.
+const AssociationIdentity = Tuple{String, String, Dict{String, Any}}
+
+# Association identity within a resolution: owner, name and features, which is what InfraStore
+# addresses a series by.
 function _association_identities(rows::AbstractVector{<:AbstractDict})
-    identities = Dict{String, Set{Tuple{String, String}}}()
+    identities = Dict{String, Set{AssociationIdentity}}()
     for row in rows
-        key = (String(row["owner_uuid"]), String(row["name"]))
-        push!(
-            get!(identities, string(row["resolution"]), Set{Tuple{String, String}}()),
-            key,
-        )
+        key = (String(row["owner_uuid"]), String(row["name"]), _features(row))
+        push!(get!(Set{AssociationIdentity}, identities, string(row["resolution"])), key)
     end
     return identities
 end

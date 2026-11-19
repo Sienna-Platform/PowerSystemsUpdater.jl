@@ -343,11 +343,12 @@ function _series_association_id(ref::SeriesRef, rows, ledger::Ledger)
     key_type = _psy5_type_name(key)
     owner_id = lookup_id(ledger, ref.owner_uuid)
     resolution = _milliseconds(get(key, "resolution", nothing))
+    key_features = _psy6_features(get(key, "features", Dict{String, Any}()))
     matches = [
         row for row in rows if row["owner_id"] == owner_id &&
         row["name"] == key["name"] &&
         row["time_series_type"] in SERIES_KEY_TYPES[key_type] &&
-        get(row, "features", Dict()) == get(key, "features", Dict()) &&
+        get(row, "features", Dict()) == key_features &&
         (isnothing(resolution) || _milliseconds(row["resolution"]) == resolution)
     ]
     if length(matches) != 1

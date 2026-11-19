@@ -50,6 +50,7 @@ end
     )
     @test_throws PSU.Psy5FormatError PSU._element_layout("PiecewiseLinearData", unmapped)
     @test PSU._element_layout("CONSTANT", unmapped) === PSU.ScalarLayout()
+    @test PSU._element_layout("Float64", unmapped) === PSU.ScalarLayout()
 
     # Scalars carry no element_type: InfraStore derives the dtype from the array itself.
     values, element_type = PSU._static_values(PSU.ScalarLayout(), [1.0, 2.0, 3.0])
@@ -176,6 +177,55 @@ end
             end
         end
         @test found == 1
+    end
+
+    # ── Features ───────────────────────────────────────────────────────────────
+    # Two series with one owner and name, told apart only by a feature, both reach the
+    # store with their features; the derived-forecast coverage check tells them apart too.
+    let
+        rows = [
+            Dict{String, Any}(
+                "id" => i, "time_series_uuid" => "ts-$year",
+                "time_series_type" => "SingleTimeSeries",
+                "initial_timestamp" => "2024-01-01T00:00:00",
+                "resolution" => "P0DT3600.000S", "horizon" => nothing,
+                "interval" => nothing, "name" => "max_active_power",
+                "owner_uuid" => "uuid-load", "owner_type" => "PowerLoad",
+                "owner_category" => "Component", "features" => "[{\"year\":$year}]",
+                "scaling_factor_multiplier" => nothing, "units" => nothing,
+            ) for (i, year) in ((1, 2024), (2, 2030))
+        ]
+        mktempdir() do tmp
+            legacy = joinpath(tmp, "legacy.h5")
+            PSU.HDF5.h5open(legacy, "w") do file
+                for (year, scale) in ((2024, 1.0), (2030, 2.0))
+                    group = PSU.HDF5.create_group(file, "$(PSU.PSY5_TS_ROOT_PATH)/ts-$year")
+                    group["data"] = scale .* [1.0, 2.0, 3.0]
+                    PSU.HDF5.attributes(group)["data_type"] = "CONSTANT"
+                end
+            end
+            store = InfraStore.Store(; in_memory = true)
+            try
+                batch = InfraStore.AddBatch()
+                PSU.HDF5.h5open(legacy, "r") do file
+                    for row in rows
+                        PSU._stage_time_series!(
+                            PSU.SingleKind(), batch, file, row, 1, PSU.ConversionReport(),
+                        )
+                    end
+                end
+                InfraStore.add_time_series_bulk!(store, batch)
+                stored = Dict(
+                    m.features["year"] => InfraStore.read_by_id(store, m.id).data for
+                    m in InfraStore.list_metadata(store)
+                )
+                @test stored == Dict(2024 => [1.0, 2.0, 3.0], 2030 => [2.0, 4.0, 6.0])
+            finally
+                InfraStore.close!(store)
+            end
+        end
+        identities = PSU._association_identities(rows)["P0DT3600.000S"]
+        @test length(identities) == 2
     end
 
     # ── Round trip through the reader PSY6 actually uses ───────────────────────

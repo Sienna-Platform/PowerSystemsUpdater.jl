@@ -706,6 +706,39 @@ const NESTED_ALIGNMENTS = (
     fuel_cost_series_as_fuel_cost,
 )
 
+# Time series feature names PSY6 reserves (a feature may not shadow a time series field) are
+# carried with a `_feature` suffix: tools that build PSY5 systems from other models write a
+# model year as `horizon`. The list is read from the schema. Applied to the PSY5 record, so the
+# feature's value is still compared.
+function _reserved_feature_names()
+    schemas = (JSON.parse(r.json) for r in ITSOM._SCHEMA_RESOURCE_DATA)
+    defs = only(
+        s["\$defs"] for s in schemas if haskey(get(s, "\$defs", Dict()), "TimeSeriesFeatures")
+    )
+    return Set{String}(defs["TimeSeriesFeatures"]["propertyNames"]["not"]["enum"])
+end
+const RESERVED_FEATURE_NAMES = _reserved_feature_names()
+
+function psy6_feature_name(name::AbstractString)
+    if name in RESERVED_FEATURE_NAMES
+        return name * "_feature"
+    end
+    return name
+end
+
+psy6_feature_names(features::AbstractDict) =
+    Dict{String, Any}(psy6_feature_name(k) => v for (k, v) in features)
+psy6_feature_names(features) = features
+
+function with_psy6_features(record::AbstractDict)
+    if !haskey(record, "features")
+        return record
+    end
+    aligned = Dict{String, Any}(record)
+    aligned["features"] = psy6_feature_names(record["features"])
+    return aligned
+end
+
 """
 An accepted difference. `kind` is a `Difference` kind (`compare.jl`); `psy5_type` and `path`
 are glob patterns; `when(psy5, psy6)` narrows the match to particular values.
