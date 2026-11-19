@@ -38,6 +38,33 @@ than as silently missing data. That reporting is the point as much as the conver
 package doubles as a conformance exercise for SiennaSchemas and the generated serde, run
 against a real corpus of systems.
 
+## Known source of error: time series scale
+
+PSY5 stored a normalized profile and the name of an owner accessor, the multiplier. A read
+returned profile values times the accessor value, for example `get_max_active_power`.
+
+In PSY6, `per_unit_of = "base_power"` means the values are a fraction of the owner's
+`base_power`. A label added without a rescale makes every value wrong by `base_power /
+max_active_power`. In the PSY5 RTS systems, `max_active_power / base_power` ranges from 0.045
+(`RenewableNonDispatch`) through 3.33 (`PowerLoad`) to 8.47 (`RenewableDispatch`). An unscaled
+label then makes values up to about 22 times too large or 8.47 times too small. The error
+applies to PSU-converted PSY5 files and to any profile normalized by `max_active_power` that
+gets `per_unit_of = "base_power"` without a rescale.
+
+PSU multiplies each series by its owner's multiplier value and writes the PSY6 label. The table
+in [`src/psy5_multipliers.jl`](src/psy5_multipliers.jl) lists each multiplier and its output.
+When the owner has no value (for example `FixedAdmittance` or `HybridSystem`), PSU drops the
+series and counts it in the report section `DROPPED TIME SERIES (no PSY5 scale)`.
+
+One behavior changes. PSY5 read the multiplier at each read, so a later change of
+`max_active_power` changed the profile. A PSY6 series stores the scaled values and does not
+follow that change.
+
+Known limit: a series with no PSY5 multiplier stays unlabeled. PowerOperationsModels rejects
+an unlabeled physical series with an error. Reservoir multiplier series
+(`get_storage_capacity`, `get_storage_target`, `get_inflow`) keep their values and
+component-base labels with no `per_unit_of`, and PSY6 rejects them at load.
+
 ## Local setup
 
 `PowerOpenAPIModels` and `InfrastructureSystems` are **not registered** — both are resolved by

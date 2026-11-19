@@ -21,7 +21,8 @@ association, owner and `ext` keys.
 PSY5 offers `SYSTEM_BASE`, `DEVICE_BASE`, `NATURAL_UNITS`. **PSY6 drops `SYSTEM_BASE`.**
 
 Stored PSY5 values are already device base — `_get_multiplier(…, ::Val{DEVICE_BASE}, ::Any) = 1.0`,
-with the other two derived at access time. So no rescaling is needed to emit `DEVICE_BASE`.
+with the other two derived at access time. So no component field needs rescaling to emit
+`DEVICE_BASE`. PSU does rescale some time series; see the time-series section of this page.
 
 PSY6 now records `base_power` on `Line`, `MonitoredLine`, and ten other components whose base
 is the *system* base (`Area`, `LoadZone`, `FixedAdmittance`, `AreaInterchange`,
@@ -138,22 +139,29 @@ The association metadata moves too. PSY5 embeds a whole SQLite database inside t
 puts the rows in the document as `time_series_associations`, with `time_series_storage_file`
 naming the sidecar by basename. Four columns do not map straight across:
 
-| PSY5                        | PSY6                            |
-|:--------------------------- |:------------------------------- |
-| `owner_uuid`                | `owner_id`, an integer          |
-| `time_series_uuid`          | dropped with UUID identity      |
-| `metadata_uuid`             | dropped with UUID identity      |
-| `scaling_factor_multiplier` | `unit_system` + `quantity_kind` |
+| PSY5                        | PSY6                                                                             |
+|:--------------------------- |:-------------------------------------------------------------------------------- |
+| `owner_uuid`                | `owner_id`, an integer                                                           |
+| `time_series_uuid`          | dropped with UUID identity                                                       |
+| `metadata_uuid`             | dropped with UUID identity                                                       |
+| `scaling_factor_multiplier` | scaled values (reservoirs unchanged) + `per_unit_of` / `units` + `quantity_kind` |
 
 PSY5 stored a scaled series as a fraction and named an accessor to multiply it by on
-retrieval. PSY6 rescales nothing, so the multiplier's meaning is re-expressed: the values are
-per-unit on the owner's own base, which is `unit_system = DEVICE_BASE`, and the accessor's
-physical quantity becomes `quantity_kind` (a `Core/units.json` vocabulary name).
+retrieval. PSY6 states the physical quantity in the series itself, so the updater multiplies
+each series by its owner's accessor value and labels the result. A power series on the
+component base gets `per_unit_of = "base_power"`. A series on a service, an area, or a load
+zone gets `units = "MW"`. Each result also gets a `quantity_kind` (a `Core/units.json`
+vocabulary name). The table at the top of
+[`src/psy5_multipliers.jl`](https://github.com/Sienna-Platform/PowerSystemsUpdater.jl/blob/main/src/psy5_multipliers.jl)
+lists every accessor, its PSY5 meaning, and its PSY6 output.
 
 The reservoir accessors — `get_storage_capacity`, `get_storage_target`, `get_inflow` — get a
 basis but no `quantity_kind`: a reservoir level is an energy, a volume, or a head depending on
 the owner's `level_data_type`, which an association row does not carry. Those are counted in
 the conversion report as unmapped `quantity_kind` rather than guessed at.
+
+A series whose owner has no accessor value is dropped and counted in the conversion report under
+`DROPPED TIME SERIES (no PSY5 scale)`. PSY5 had no usable scale for these series.
 
 The document's `element_type` and `application_data` are left unset. Both describe the stored
 array, and PSY6 reads an array's description from the catalog — where `element_type` *is*

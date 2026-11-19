@@ -68,12 +68,12 @@ function _scaling_factor_multiplier(row::AbstractDict)
 end
 
 """
-The physical quantity a normalized series scales back to, keyed by the PSY5 accessor that
-named the base.
+The physical quantity a PSY5 multiplier names, keyed by the PSY5 accessor.
 
 Values are `quantity_types` names from `SiennaSchemas`' `Core/units.json`, the vocabulary
-PSY6's `quantity_kind` column draws on. With `unit_system` set to `COMPONENT_BASE` the values
-are dimensionless, so this is the only remaining record of what they measure.
+PSY6's `quantity_kind` column draws on. A multiplier does not mean per unit on the owner's own
+base: the store labels and the factor for each accessor come from `psy5_multipliers.jl`. This
+table serves the reservoir path of [`_quantity_kind`](@ref).
 
 The reservoir accessors (`get_storage_capacity`, `get_storage_target`, `get_inflow`) are
 deliberately absent: their quantity depends on the owning reservoir's `level_data_type`

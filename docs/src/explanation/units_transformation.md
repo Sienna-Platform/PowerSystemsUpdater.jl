@@ -16,8 +16,9 @@ stamps `power_units` on every PSY6 model that declares the field.
 PSY5 already stores its numbers per-unit on a base — the component's own `base_power` when
 it declares one, the system base otherwise (`base_power_for` in `src/base_power.jl` supplies
 that fallback). The updater's job is to say what a number already is, not to change what it
-is. Every `power_units` this package writes is `"COMPONENT_BASE"`, and no value is ever
-rescaled: a PSY5 `0.8` reaches the PSY6 blob as `0.8`. The stamp is a label, not a
+is. Every `power_units` this package writes is `"COMPONENT_BASE"`, and no component field is
+ever rescaled: a PSY5 `0.8` reaches the PSY6 blob as `0.8`. PSU rescales some time series; see
+the time-series section of `psy5_to_psy6_component_changes.md`. The stamp is a label, not a
 computation.
 
 ## Vocabulary

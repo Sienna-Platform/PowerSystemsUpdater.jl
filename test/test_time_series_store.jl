@@ -1,3 +1,6 @@
+import PowerSystems as PSY
+using PowerSystems: @u_str
+
 const InfraStore = PSU.InfraStore
 const Dates = PSU.Dates
 
@@ -221,7 +224,11 @@ end
                 scaled = filter(m -> !isnothing(m.unit_system), metadata)
                 @test !isempty(scaled)
                 for entry in scaled
-                    @test entry.unit_system === InfraStore.ComponentBase
+                    if entry.units == "MW"
+                        @test entry.unit_system === InfraStore.NaturalUnits
+                    else
+                        @test entry.unit_system === InfraStore.ComponentBase
+                    end
                 end
                 for entry in metadata
                     @test entry.owner_id > 0
@@ -259,6 +266,374 @@ end
                 )
             finally
                 InfraStore.close!(store)
+            end
+        end
+    end
+end
+
+# ── Scale, label, drop ─────────────────────────────────────────────────────────
+
+const MAX_ACTIVE_MARKER = """{"__metadata__":{"module":"PowerSystems","function":"get_max_active_power"}}"""
+const INFLOW_MARKER = """{"__metadata__":{"module":"PowerSystems","function":"get_inflow"}}"""
+const REQUIREMENT_MARKER = """{"__metadata__":{"module":"PowerSystems","function":"get_requirement"}}"""
+
+function synthetic_owner(type_name, uuid, fields)
+    return Dict{String, Any}(
+        "__metadata__" => Dict("type" => type_name),
+        "internal" => Dict("uuid" => Dict("value" => uuid)),
+        "name" => uuid,
+        fields...,
+    )
+end
+
+function synthetic_row(
+    id,
+    uuid,
+    owner_uuid,
+    owner_type,
+    marker;
+    name = "ts",
+    type = "SingleTimeSeries",
+    horizon = nothing,
+    interval = nothing,
+    window_count = nothing,
+)
+    return Dict{String, Any}(
+        "id" => id, "time_series_uuid" => uuid, "time_series_type" => type,
+        "initial_timestamp" => "2020-01-01T00:00:00", "resolution" => "P0DT1H",
+        "horizon" => horizon, "interval" => interval, "window_count" => window_count,
+        "length" => 3, "name" => name, "owner_uuid" => owner_uuid,
+        "owner_type" => owner_type, "owner_category" => "Component",
+        "features" => "[]", "scaling_factor_multiplier" => marker, "units" => nothing,
+    )
+end
+
+"""
+Write a PSY5 sidecar holding `rows` and one array per row UUID, and return a `Psy5Case` over
+`owners`, with every owner assigned an id in the returned ledger.
+"""
+function synthetic_case(dir, rows, arrays, owners; base = 100.0)
+    path = joinpath(dir, "ts_psy5.h5")
+    db_path = joinpath(dir, "assoc.sqlite")
+    db = PSU.SQLite.DB(db_path)
+    columns = collect(keys(first(rows)))
+    PSU.SQLite.DBInterface.execute(
+        db,
+        "CREATE TABLE time_series_associations (" * join(columns, ", ") * ")",
+    )
+    for row in rows
+        PSU.SQLite.DBInterface.execute(
+            db,
+            "INSERT INTO time_series_associations VALUES (" *
+            join(fill("?", length(columns)), ", ") * ")",
+            [row[c] for c in columns],
+        )
+    end
+    PSU.SQLite.DBInterface.close!(db)
+    PSU.HDF5.h5open(path, "w") do file
+        file[PSU.PSY5_TS_METADATA_ROOT_PATH] = read(db_path)
+        group = PSU.HDF5.create_group(file, PSU.PSY5_TS_ROOT_PATH)
+        for (uuid, data) in arrays
+            sub = PSU.HDF5.create_group(group, uuid)
+            sub["data"] = data
+            PSU.HDF5.attributes(sub)["data_type"] = "CONSTANT"
+        end
+    end
+    raw = Dict{String, Any}(
+        "units_settings" => Dict("base_value" => base),
+        "data" => Dict("components" => collect(values(owners))),
+    )
+    ledger = PSU.Ledger()
+    for uuid in keys(owners)
+        PSU.assign_id!(ledger, uuid)
+    end
+    return PSU.Psy5Case(raw, path, path), ledger
+end
+
+function catalog_entries(out)
+    catalog =
+        InfraStore.open_store(joinpath(out, PSU.TIME_SERIES_FILENAME); read_only = true)
+    try
+        return InfraStore.list_metadata(catalog)
+    finally
+        InfraStore.close!(catalog)
+    end
+end
+
+@testset "time series scale, label, drop" begin
+    owners = Dict(
+        "u-gen" => synthetic_owner(
+            "ThermalStandard", "u-gen", Dict("max_active_power" => 0.25),
+        ),
+        "u-unit" => synthetic_owner(
+            "ThermalStandard", "u-unit", Dict("max_active_power" => 1.0),
+        ),
+        "u-res" =>
+            synthetic_owner("VariableReserve", "u-res", Dict("requirement" => 0.5)),
+        "u-adm" => synthetic_owner("FixedAdmittance", "u-adm", Dict()),
+        "u-hyd" => synthetic_owner("HydroReservoir", "u-hyd", Dict()),
+    )
+    profile = [0.2, 0.4, 0.8]
+    rows = [
+        synthetic_row(1, "ts-gen", "u-gen", "ThermalStandard", MAX_ACTIVE_MARKER),
+        synthetic_row(2, "ts-unit", "u-unit", "ThermalStandard", MAX_ACTIVE_MARKER),
+        synthetic_row(3, "ts-res", "u-res", "VariableReserve", REQUIREMENT_MARKER),
+        synthetic_row(4, "ts-adm", "u-adm", "FixedAdmittance", MAX_ACTIVE_MARKER),
+        synthetic_row(
+            5, "fc-adm", "u-adm", "FixedAdmittance", MAX_ACTIVE_MARKER;
+            name = "fc", type = "Deterministic", horizon = "P0DT2H",
+            interval = "P0DT1H",
+            window_count = 2,
+        ),
+        synthetic_row(
+            6, "dst-adm", "u-adm", "FixedAdmittance", nothing;
+            name = "ts", type = "DeterministicSingleTimeSeries", horizon = "P0DT2H",
+            interval = "P0DT1H",
+        ),
+        synthetic_row(
+            7, "fc-gen", "u-gen", "ThermalStandard", MAX_ACTIVE_MARKER;
+            name = "fc", type = "Deterministic", horizon = "P0DT2H",
+            interval = "P0DT1H",
+            window_count = 2,
+        ),
+        synthetic_row(
+            8,
+            "ts-hyd",
+            "u-hyd",
+            "HydroReservoir",
+            INFLOW_MARKER;
+            name = "inflow",
+        ),
+    ]
+    windows = [0.2 0.4; 0.6 0.8]
+    arrays = Dict{String, Array{Float64}}()
+    for r in rows
+        if r["time_series_type"] == "Deterministic"
+            arrays[r["time_series_uuid"]] = windows
+        else
+            arrays[r["time_series_uuid"]] = profile
+        end
+    end
+    mktempdir() do tmp
+        case, ledger = synthetic_case(tmp, rows, arrays, owners)
+        out = joinpath(tmp, "out")
+        mkpath(out)
+        report = PSU.ConversionReport()
+        _, associations = PSU.convert_time_series(case, ledger, out, report)
+        entries = catalog_entries(out)
+        @test length(entries) == 5
+        @test length(associations) == 5
+
+        store = InfraStore.open_store(
+            joinpath(out, PSU.TIME_SERIES_FILENAME); read_only = true,
+        )
+        try
+            by_owner = Dict(
+                (e.owner_id, e.name) => e for e in entries
+            )
+            gen = by_owner[(PSU.lookup_id(ledger, "u-gen"), "ts")]
+            @test InfraStore.read_by_id(store, gen.id).data == profile .* 0.25
+            @test gen.per_unit_of == "base_power"
+            @test gen.unit_system === InfraStore.ComponentBase
+            @test gen.quantity_kind == "ActivePower"
+
+            unit = by_owner[(PSU.lookup_id(ledger, "u-unit"), "ts")]
+            @test InfraStore.read_by_id(store, unit.id).data == profile
+            plain = InfraStore.Store(; path = joinpath(tmp, "plain.h5"), overwrite = true)
+            try
+                InfraStore.add_time_series!(
+                    plain, 1, "ThermalStandard", InfraStore.Component,
+                    InfraStore.SingleTimeSeries(
+                        Dates.DateTime(2020, 1, 1), Dates.Hour(1), profile, "ts";
+                        unit_system = InfraStore.ComponentBase,
+                        quantity_kind = "ActivePower", per_unit_of = "base_power",
+                    ),
+                )
+                InfraStore.flush!(plain)
+                @test only(InfraStore.list_metadata(plain)).data_hash == unit.data_hash
+            finally
+                InfraStore.close!(plain)
+            end
+
+            res = by_owner[(PSU.lookup_id(ledger, "u-res"), "ts")]
+            @test InfraStore.read_by_id(store, res.id).data == profile .* 50.0
+            @test res.units == "MW"
+            @test isnothing(res.per_unit_of)
+            @test res.unit_system === InfraStore.NaturalUnits
+
+            forecast = by_owner[(PSU.lookup_id(ledger, "u-gen"), "fc")]
+            @test InfraStore.read_by_id(store, forecast.id).data == windows .* 0.25
+
+            inflow = by_owner[(PSU.lookup_id(ledger, "u-hyd"), "inflow")]
+            @test InfraStore.read_by_id(store, inflow.id).data == profile
+            @test inflow.unit_system === InfraStore.ComponentBase
+            @test isnothing(inflow.per_unit_of)
+        finally
+            InfraStore.close!(store)
+        end
+
+        @test report.dropped_time_series ==
+              Dict(("FixedAdmittance", "get_max_active_power") => 3)
+        @test PSU.has_findings(report)
+    end
+
+    # A multiplier on a piecewise layout has no scalar to multiply.
+    piecewise_scale() = PSU._scale_values(
+        PSU.PiecewiseStepLayout(),
+        zeros(2, 4),
+        PSU._declaration(
+            "get_max_active_power",
+            rows[1],
+            Dict{String, Any}("u-gen" => owners["u-gen"]),
+            100.0,
+            PSU.ConversionReport(),
+        ),
+        rows[1],
+    )
+    for part in ("ThermalStandard", "u-gen", "name=ts", "get_max_active_power")
+        @test_throws part piecewise_scale()
+    end
+    @test_throws PSU.Psy5FormatError piecewise_scale()
+end
+
+@testset "time series unknown accessor and reservoir piecewise" begin
+    owners = Dict{String, Any}(
+        "u-gen" => synthetic_owner(
+            "ThermalStandard", "u-gen", Dict("max_active_power" => 0.25),
+        ),
+        "u-hyd" => synthetic_owner("HydroReservoir", "u-hyd", Dict()),
+    )
+    bad_marker = """{"__metadata__":{"module":"PowerSystems","function":"get_nonexistent"}}"""
+    bad = synthetic_row(7, "ts-bad", "u-gen", "ThermalStandard", bad_marker; name = "bad")
+    for part in ("id=7", "ThermalStandard", "u-gen", "name=bad", "get_nonexistent")
+        @test_throws part PSU._has_scale("get_nonexistent", bad, owners, 100.0)
+    end
+    @test_throws PSU.Psy5FormatError PSU._has_scale("get_nonexistent", bad, owners, 100.0)
+
+    hydro = synthetic_row(
+        8, "ts-hyd", "u-hyd", "HydroReservoir", INFLOW_MARKER; name = "inflow",
+    )
+    declaration = PSU._declaration(
+        "get_inflow", hydro, owners, 100.0, PSU.ConversionReport(),
+    )
+    @test isone(declaration.factor)
+    @test declaration.unit_system === InfraStore.ComponentBase
+    @test isnothing(declaration.per_unit_of)
+    values = zeros(2, 4)
+    @test PSU._scale_values(PSU.PiecewiseStepLayout(), values, declaration, hydro) ===
+          values
+end
+
+# ── Corpus magnitudes ──────────────────────────────────────────────────────────
+
+const RAW_CU_FACTORS = Dict{String, Function}(
+    "PowerLoad" => owner -> owner["max_active_power"],
+    "RenewableDispatch" => owner -> owner["rating"] * owner["power_factor"],
+    "RenewableNonDispatch" => owner -> owner["rating"] * owner["power_factor"],
+)
+
+"""
+Every `SingleTimeSeries` of `case` that has a PSY5 multiplier and a load or renewable owner,
+as `(row, owner, profile)`: the association row, the raw owner and the normalized array PSY5
+stored. The test reads the multiplier from the raw owner fields in `RAW_CU_FACTORS`, not
+from `PSU.scale_factor`.
+"""
+function psy5_profiles(case)
+    owners = Dict(PSU.component_uuid(raw) => raw for raw in PSU.all_components(case))
+    rows = filter(
+        r ->
+            r["time_series_type"] == "SingleTimeSeries" &&
+                !isnothing(PSU._scaling_factor_multiplier(r)) &&
+                haskey(RAW_CU_FACTORS, r["owner_type"]),
+        PSU.read_associations(case.time_series_path),
+    )
+    return PSU.HDF5.h5open(case.time_series_path, "r") do file
+        [
+            (
+                row = row,
+                owner = owners[row["owner_uuid"]],
+                profile = first(PSU._legacy_array(file, row)),
+            ) for row in rows
+        ]
+    end
+end
+
+function raw_cu_factor(item)
+    return RAW_CU_FACTORS[item.row["owner_type"]](item.owner)
+end
+
+is_static_series(::Type{<:InfraStore.SingleTimeSeries}) = true
+is_static_series(::Type) = false
+
+@testset "time series corpus magnitudes" begin
+    dir = joinpath(@__DIR__, "..", "data")
+    for path in (
+        joinpath(dir, "PSISystems", "5_bus_matpower_DA"),
+        joinpath(dir, "PSITestSystems", "c_sys5_all_components"),
+    )
+        require_corpus_file(path) || continue
+        case = PSU.read_psy5(path)
+        _, ledger = PSU.build_document(case, PSU.ConversionReport())
+        items = psy5_profiles(case)
+        @test !isempty(items)
+        mktempdir() do tmp
+            PSU.convert_system(path, tmp; force = true)
+            entries = catalog_entries(tmp)
+            store = InfraStore.open_store(
+                joinpath(tmp, PSU.TIME_SERIES_FILENAME); read_only = true,
+            )
+            try
+                by_key = Dict(
+                    (e.owner_id, e.name) => e for
+                    e in entries if is_static_series(e.time_series_type)
+                )
+                for item in items
+                    entry = by_key[(
+                        PSU.lookup_id(ledger, item.row["owner_uuid"]),
+                        string(item.row["name"]),
+                    )]
+                    @test InfraStore.read_by_id(store, entry.id).data ≈
+                          item.profile .* raw_cu_factor(item)
+                end
+            finally
+                InfraStore.close!(store)
+            end
+        end
+    end
+end
+
+const PSY6_OWNER_TYPES = Dict(
+    "PowerLoad" => PSY.PowerLoad,
+    "RenewableDispatch" => PSY.RenewableDispatch,
+)
+
+const PSY6_SYSTEMS = ("5_bus_matpower_DA", "modified_RTS_GMLC_DA_sys")
+
+@testset "time series PSY6 magnitudes" begin
+    for name in PSY6_SYSTEMS
+        path = joinpath(@__DIR__, "..", "data", "PSISystems", name)
+        require_corpus_file(path) || continue
+        case = PSU.read_psy5(path)
+        items = filter(
+            i -> haskey(PSY6_OWNER_TYPES, i.row["owner_type"]),
+            psy5_profiles(case),
+        )
+        @test !isempty(items)
+        if name == "modified_RTS_GMLC_DA_sys"
+            system_base = case.raw["units_settings"]["base_value"]
+            @test any(i -> i.owner["base_power"] != system_base, items)
+        end
+        mktempdir() do tmp
+            PSU.convert_system(path, tmp; force = true)
+            sys = PSY.from_file(joinpath(tmp, "system.json"))
+            for item in items
+                owner = PSY.get_component(
+                    PSY6_OWNER_TYPES[item.row["owner_type"]], sys, item.owner["name"],
+                )
+                expected = item.profile .* raw_cu_factor(item) .* item.owner["base_power"]
+                @test PSY.get_time_series_values(
+                    PSY.SingleTimeSeries, owner, string(item.row["name"]), u"MW",
+                ) ≈ expected
             end
         end
     end
